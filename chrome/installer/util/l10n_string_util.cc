@@ -6,24 +6,47 @@
 
 #include "chrome/installer/util/l10n_string_util.h"
 
-#include <atlbase.h>
 #include <stdint.h>
 
 #include <algorithm>
 #include <limits>
 #include <memory>
 
+#include "base/bind.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
+#include "base/stl_util.h"
+#include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "chrome/installer/util/language_selector.h"
+#include "base/win/atl.h"
+#include "base/win/embedded_i18n/language_selector.h"
+#include "chrome/install_static/install_details.h"
+#include "chrome/install_static/install_modes.h"
+#include "chrome/installer/util/google_update_settings.h"
+#include "chrome/installer/util/installer_util_strings.h"
 
 namespace {
 
-const installer::LanguageSelector& GetLanguageSelector() {
-  static const installer::LanguageSelector instance;
+constexpr base::win::i18n::LanguageSelector::LangToOffset
+    kLanguageOffsetPairs[] = {
+#define HANDLE_LANGUAGE(l_, o_) {L## #l_, o_},
+        DO_LANGUAGES
+#undef HANDLE_LANGUAGE
+};
 
-  return instance;
+// Returns the language under which Chrome was downloaded, or an empty string if
+// no such language is specified.
+base::string16 GetPreferredLanguageFromGoogleUpdate() {
+  base::string16 language;
+  GoogleUpdateSettings::GetLanguage(&language);
+  return language;
+}
+
+const base::win::i18n::LanguageSelector& GetLanguageSelector() {
+  static base::NoDestructor<base::win::i18n::LanguageSelector> instance(
+      GetPreferredLanguageFromGoogleUpdate(), kLanguageOffsetPairs);
+  return *instance;
 }
 
 installer::TranslationDelegate* g_translation_delegate = NULL;
@@ -40,6 +63,9 @@ void SetTranslationDelegate(TranslationDelegate* delegate) {
 }
 
 std::wstring GetLocalizedString(int base_message_id) {
+  // Map |base_message_id| to the base id for the current install mode.
+  base_message_id = GetBaseMessageIdForMode(base_message_id);
+
   if (g_translation_delegate)
     return g_translation_delegate->GetLocalizedString(base_message_id);
 
@@ -103,6 +129,37 @@ std::wstring GetLocalizedEulaResource() {
 
 std::wstring GetCurrentTranslation() {
   return GetLanguageSelector().selected_translation();
+}
+
+int GetBaseMessageIdForMode(int base_message_id) {
+// Generate the constants holding the mode-specific resource ID arrays.
+#define HANDLE_MODE_STRING(id, ...)                                    \
+  static constexpr int k##id##Strings[] = {__VA_ARGS__};               \
+  static_assert(                                                       \
+      base::size(k##id##Strings) == install_static::NUM_INSTALL_MODES, \
+      "resource " #id                                                  \
+      " has the wrong number of mode-specific "                        \
+      "strings.");
+  DO_MODE_STRINGS
+#undef HANDLE_MODE_STRING
+
+  const int* mode_strings = nullptr;
+  switch (base_message_id) {
+// Generate the cases mapping each mode-specific resource ID to its array.
+#define HANDLE_MODE_STRING(id, ...)    \
+  case id:                             \
+    mode_strings = &k##id##Strings[0]; \
+    break;
+    DO_MODE_STRINGS
+#undef HANDLE_MODE_STRING
+    default:
+      // This ID has no per-mode variants.
+      return base_message_id;
+  }
+
+  // Return the variant of |base_message_id| for the current mode.
+  return mode_strings[install_static::InstallDetails::Get()
+                          .install_mode_index()];
 }
 
 }  // namespace installer

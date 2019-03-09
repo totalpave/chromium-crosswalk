@@ -27,9 +27,13 @@ class WebviewInfo : public Extension::ManifestData {
   static bool IsResourceWebviewAccessible(const Extension* extension,
                                           const std::string& partition_id,
                                           const std::string& relative_path);
+  // Returns true if the given |extension| has any webview accessible
+  // resources in the given |partition_id|.
+  static bool HasWebviewAccessibleResources(const Extension& extension,
+                                            const std::string& partition_id);
 
   // Define out of line constructor/destructor to please Clang.
-  WebviewInfo(const std::string& extension_id);
+  explicit WebviewInfo(const std::string& extension_id);
   ~WebviewInfo() override;
 
   void AddPartitionItem(std::unique_ptr<PartitionItem> item);
@@ -50,7 +54,7 @@ class WebviewHandler : public ManifestHandler {
   bool Parse(Extension* extension, base::string16* error) override;
 
  private:
-  const std::vector<std::string> Keys() const override;
+  base::span<const char* const> Keys() const override;
 
   DISALLOW_COPY_AND_ASSIGN(WebviewHandler);
 };

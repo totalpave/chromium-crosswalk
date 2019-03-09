@@ -49,8 +49,6 @@ var AudioNode = function() {
 Polymer({
   is: 'audio-settings',
 
-  behaviors: [Polymer.NeonAnimatableBehavior],
-
   properties: {
     /**
      * An AudioNode which is currently being edited.
@@ -58,7 +56,9 @@ Polymer({
      */
     currentEditableObject: {
       type: Object,
-      value: function() { return {}; }
+      value: function() {
+        return {};
+      }
     },
 
     /**
@@ -66,20 +66,35 @@ Polymer({
      * This is initially set to -1 (i.e. no node selected) becuase no devices
      * have been copied.
      */
-    currentEditIndex: {type: Number, value: function() { return -1; }},
+    currentEditIndex: {
+      type: Number,
+      value: function() {
+        return -1;
+      }
+    },
 
     /**
      * A counter that will auto increment everytime a new node is added
      * or copied and used to set a new id. This allows the |AudioNode.id|
      * to allows be unique.
      */
-    nodeCount: {type: Number, value: function() { return 0; }},
+    nodeCount: {
+      type: Number,
+      value: function() {
+        return 0;
+      }
+    },
 
     /**
      * A set of audio nodes.
      * @type !Array<!AudioNode>
      */
-    nodes: {type: Array, value: function() { return []; }},
+    nodes: {
+      type: Array,
+      value: function() {
+        return [];
+      }
+    },
 
     /**
      * A set of options for the possible audio node types.
@@ -108,14 +123,7 @@ Polymer({
   },
 
   ready: function() {
-    this.title = 'Audio';
-  },
-
-  initialize: function() {
-    if (!this.initialized) {
-      chrome.send('requestAudioNodes');
-      this.initialized = true;
-    }
+    chrome.send('requestAudioNodes');
   },
 
   /**
@@ -150,6 +158,7 @@ Polymer({
     // in |node|.
     var node = this.nodes[this.currentEditIndex];
     chrome.send('insertAudioNode', [node]);
+    this.$.editDialog.close();
   },
 
   /**
@@ -189,7 +198,7 @@ Polymer({
     var index = event.model.index;
     this.currentEditIndex = index;
     this.currentEditableObject = this.nodes[index];
-    this.$.editDialog.toggle();
+    this.$.editDialog.showModal();
   },
 
   /**

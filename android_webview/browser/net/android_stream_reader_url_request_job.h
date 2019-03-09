@@ -19,10 +19,6 @@
 #include "net/http/http_byte_range.h"
 #include "net/url_request/url_request_job.h"
 
-namespace base {
-class TaskRunner;
-}
-
 namespace net {
 class HttpResponseHeaders;
 class HttpResponseInfo;
@@ -79,9 +75,9 @@ class AndroidStreamReaderURLRequestJob : public net::URLRequestJob {
    public:
     virtual ~DelegateObtainer() {}
 
-    typedef base::Callback<void(std::unique_ptr<Delegate>)> Callback;
+    using Callback = base::OnceCallback<void(std::unique_ptr<Delegate>)>;
     virtual void ObtainDelegate(net::URLRequest* request,
-                                const Callback& callback) = 0;
+                                Callback callback) = 0;
   };
 
   AndroidStreamReaderURLRequestJob(net::URLRequest* request,
@@ -100,15 +96,10 @@ class AndroidStreamReaderURLRequestJob : public net::URLRequestJob {
   void SetExtraRequestHeaders(const net::HttpRequestHeaders& headers) override;
   bool GetMimeType(std::string* mime_type) const override;
   bool GetCharset(std::string* charset) override;
-  int GetResponseCode() const override;
   void GetResponseInfo(net::HttpResponseInfo* info) override;
 
  protected:
   ~AndroidStreamReaderURLRequestJob() override;
-
-  // Gets the TaskRunner for the worker thread.
-  // Overridden in unittests.
-  virtual base::TaskRunner* GetWorkerThreadRunner();
 
   // Creates an InputStreamReader instance.
   // Overridden in unittests to return a mock.

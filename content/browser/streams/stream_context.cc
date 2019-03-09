@@ -5,8 +5,10 @@
 #include "content/browser/streams/stream_context.h"
 
 #include "base/bind.h"
+#include "base/task/post_task.h"
 #include "content/browser/streams/stream_registry.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
 using base::UserDataAdapter;
@@ -24,13 +26,14 @@ StreamContext::StreamContext() {}
 StreamContext* StreamContext::GetFor(BrowserContext* context) {
   if (!context->GetUserData(kStreamContextKeyName)) {
     scoped_refptr<StreamContext> stream = new StreamContext();
-    context->SetUserData(kStreamContextKeyName,
-                         new UserDataAdapter<StreamContext>(stream.get()));
+    context->SetUserData(
+        kStreamContextKeyName,
+        std::make_unique<UserDataAdapter<StreamContext>>(stream.get()));
     // Check first to avoid memory leak in unittests.
-    if (BrowserThread::IsMessageLoopValid(BrowserThread::IO)) {
-      BrowserThread::PostTask(
-          BrowserThread::IO, FROM_HERE,
-          base::Bind(&StreamContext::InitializeOnIOThread, stream));
+    if (BrowserThread::IsThreadInitialized(BrowserThread::IO)) {
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::IO},
+          base::BindOnce(&StreamContext::InitializeOnIOThread, stream));
     }
   }
 
@@ -49,7 +52,7 @@ void StreamContext::DeleteOnCorrectThread() const {
   // the current thread.
   // TODO(zork): Remove this custom deleter, and fix the leaks in all the
   // tests.
-  if (BrowserThread::IsMessageLoopValid(BrowserThread::IO) &&
+  if (BrowserThread::IsThreadInitialized(BrowserThread::IO) &&
       !BrowserThread::CurrentlyOn(BrowserThread::IO)) {
     BrowserThread::DeleteSoon(BrowserThread::IO, FROM_HERE, this);
     return;

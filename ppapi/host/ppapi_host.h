@@ -23,7 +23,6 @@ namespace ppapi {
 
 namespace proxy {
 class ResourceMessageCallParams;
-class ResourceMessageReplyParams;
 class SerializedHandle;
 }
 
@@ -66,7 +65,7 @@ class PPAPI_HOST_EXPORT PpapiHost : public IPC::Sender, public IPC::Listener {
   void SendUnsolicitedReplyWithHandles(
       PP_Resource resource,
       const IPC::Message& msg,
-      const std::vector<proxy::SerializedHandle>& handles);
+      std::vector<proxy::SerializedHandle>* handles);
 
   // Create a ResourceHost with the given |nested_msg|.
   std::unique_ptr<ResourceHost> CreateResourceHost(

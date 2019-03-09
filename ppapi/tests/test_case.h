@@ -197,7 +197,7 @@ class TestCase {
       // Now give the loop a chance to clean up.
       loop_.PostQuit(true /* should_destroy */);
       loop_.Run();
-      // Tell the main thread to quit its nested message loop, now that the test
+      // Tell the main thread to quit its nested run loop, now that the test
       // is complete.
       TestCase::QuitMainMessageLoop(instance_);
     }
@@ -315,8 +315,8 @@ struct Stringinator {
 
 // Define some full specializations for types that can just use stringstream.
 #define DEFINE_STRINGINATOR_FOR_TYPE(type) \
-template <> \
-struct Stringinator<type> : public StringinatorBase<type> {};
+  template <>                              \
+  struct Stringinator<type> : public StringinatorBase<type> {}
 DEFINE_STRINGINATOR_FOR_TYPE(int32_t);
 DEFINE_STRINGINATOR_FOR_TYPE(uint32_t);
 DEFINE_STRINGINATOR_FOR_TYPE(int64_t);

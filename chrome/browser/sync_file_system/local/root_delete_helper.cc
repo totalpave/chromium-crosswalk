@@ -4,6 +4,7 @@
 
 #include "chrome/browser/sync_file_system/local/root_delete_helper.h"
 
+#include "base/bind.h"
 #include "base/sequenced_task_runner.h"
 #include "chrome/browser/sync_file_system/local/local_file_change_tracker.h"
 #include "chrome/browser/sync_file_system/local/local_file_sync_status.h"
@@ -23,12 +24,13 @@ namespace {
 void ResetFileChangeTracker(storage::FileSystemContext* file_system_context,
                             const storage::FileSystemURL& url) {
   DCHECK(file_system_context->default_file_task_runner()->
-             RunsTasksOnCurrentThread());
+             RunsTasksInCurrentSequence());
   SyncFileSystemBackend* backend =
       SyncFileSystemBackend::GetBackend(file_system_context);
   DCHECK(backend);
   DCHECK(backend->change_tracker());
-  backend->change_tracker()->ResetForFileSystem(url.origin(), url.type());
+  backend->change_tracker()->ResetForFileSystem(url.origin().GetURL(),
+                                                url.type());
 }
 
 }  // namespace
@@ -60,7 +62,7 @@ void RootDeleteHelper::Run() {
             "%s", url_.DebugString().c_str());
 
   file_system_context_->DeleteFileSystem(
-      url_.origin(), url_.type(),
+      url_.origin().GetURL(), url_.type(),
       base::Bind(&RootDeleteHelper::DidDeleteFileSystem,
                  weak_factory_.GetWeakPtr()));
 }
@@ -76,10 +78,11 @@ void RootDeleteHelper::DidDeleteFileSystem(base::File::Error error) {
   // TODO(kinuko): This should be probably automatically handled in
   // DeleteFileSystem via QuotaUtil::DeleteOriginDataOnFileThread.
   file_system_context_->default_file_task_runner()->PostTaskAndReply(
-      FROM_HERE, base::Bind(&ResetFileChangeTracker,
-                            base::RetainedRef(file_system_context_), url_),
-      base::Bind(&RootDeleteHelper::DidResetFileChangeTracker,
-                 weak_factory_.GetWeakPtr()));
+      FROM_HERE,
+      base::BindOnce(&ResetFileChangeTracker,
+                     base::RetainedRef(file_system_context_), url_),
+      base::BindOnce(&RootDeleteHelper::DidResetFileChangeTracker,
+                     weak_factory_.GetWeakPtr()));
 }
 
 void RootDeleteHelper::DidResetFileChangeTracker() {
@@ -88,8 +91,7 @@ void RootDeleteHelper::DidResetFileChangeTracker() {
 
   // Reopening the filesystem.
   file_system_context_->sandbox_delegate()->OpenFileSystem(
-      url_.origin(),
-      url_.type(),
+      url_.origin().GetURL(), url_.type(),
       storage::OPEN_FILE_SYSTEM_CREATE_IF_NONEXISTENT,
       base::Bind(&RootDeleteHelper::DidOpenFileSystem,
                  weak_factory_.GetWeakPtr()),

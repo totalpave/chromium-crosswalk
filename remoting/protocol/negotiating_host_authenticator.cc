@@ -19,7 +19,7 @@
 #include "remoting/protocol/spake2_authenticator.h"
 #include "remoting/protocol/token_validator.h"
 #include "remoting/protocol/v2_authenticator.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 namespace remoting {
 namespace protocol {
@@ -75,15 +75,15 @@ NegotiatingHostAuthenticator::CreateWithThirdPartyAuth(
   return result;
 }
 
-NegotiatingHostAuthenticator::~NegotiatingHostAuthenticator() {}
+NegotiatingHostAuthenticator::~NegotiatingHostAuthenticator() = default;
 
 void NegotiatingHostAuthenticator::ProcessMessage(
-    const buzz::XmlElement* message,
+    const jingle_xmpp::XmlElement* message,
     const base::Closure& resume_callback) {
   DCHECK_EQ(state(), WAITING_MESSAGE);
   state_ = PROCESSING_MESSAGE;
 
-  const buzz::XmlElement* pairing_tag = message->FirstNamed(kPairingInfoTag);
+  const jingle_xmpp::XmlElement* pairing_tag = message->FirstNamed(kPairingInfoTag);
   if (pairing_tag) {
     client_id_ = pairing_tag->Attr(kClientIdAttribute);
   }
@@ -157,7 +157,7 @@ void NegotiatingHostAuthenticator::ProcessMessage(
         WAITING_MESSAGE,
         base::Bind(&NegotiatingAuthenticatorBase::ProcessMessageInternal,
                    base::Unretained(this),
-                   base::Owned(new buzz::XmlElement(*message)),
+                   base::Owned(new jingle_xmpp::XmlElement(*message)),
                    resume_callback));
     return;
   }
@@ -166,7 +166,7 @@ void NegotiatingHostAuthenticator::ProcessMessage(
   ProcessMessageInternal(message, resume_callback);
 }
 
-std::unique_ptr<buzz::XmlElement>
+std::unique_ptr<jingle_xmpp::XmlElement>
 NegotiatingHostAuthenticator::GetNextMessage() {
   return GetNextMessageInternal();
 }

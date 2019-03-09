@@ -8,9 +8,9 @@
 #include <utility>
 
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "components/url_formatter/url_formatter.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension_set.h"
 #include "extensions/common/feature_switch.h"
@@ -28,8 +28,6 @@ using extensions::api::manifest_types::ChromeSettingsOverrides;
 
 namespace extensions {
 namespace {
-
-const char kWwwPrefix[] = "www.";
 
 std::unique_ptr<GURL> CreateManifestURL(const std::string& url) {
   std::unique_ptr<GURL> manifest_url(new GURL(url));
@@ -102,12 +100,13 @@ std::unique_ptr<ChromeSettingsOverrides::Search_provider> ParseSearchEngine(
   return std::move(overrides->search_provider);
 }
 
-// A www. prefix is not informative and thus not worth the limited real estate
-// in the permissions UI.
-std::string RemoveWwwPrefix(const std::string& url) {
-  if (base::StartsWith(url, kWwwPrefix, base::CompareCase::INSENSITIVE_ASCII))
-    return url.substr(strlen(kWwwPrefix));
-  return url;
+std::string FormatUrlForDisplay(const GURL& url) {
+  base::StringPiece host = url.host_piece();
+  // A www. prefix is not informative and thus not worth the limited real estate
+  // in the permissions UI.
+  // TODO(catmullings): Ideally, we wouldn't be using custom code to format URLs
+  // here, since we have a number of methods that do that more universally.
+  return base::UTF16ToUTF8(url_formatter::StripWWW(base::UTF8ToUTF16(host)));
 }
 
 }  // namespace
@@ -149,13 +148,11 @@ bool SettingsOverridesHandler::Parse(Extension* extension,
 
   if (info->search_engine) {
     PermissionsParser::AddAPIPermission(
-        extension,
-        new SettingsOverrideAPIPermission(
-            PermissionsInfo::GetInstance()->GetByID(
-                APIPermission::kSearchProvider),
-            RemoveWwwPrefix(CreateManifestURL(info->search_engine->search_url)
-                                ->GetOrigin()
-                                .host())));
+        extension, new SettingsOverrideAPIPermission(
+                       PermissionsInfo::GetInstance()->GetByID(
+                           APIPermission::kSearchProvider),
+                       FormatUrlForDisplay(*CreateManifestURL(
+                           info->search_engine->search_url))));
   }
   if (!info->startup_pages.empty()) {
     PermissionsParser::AddAPIPermission(
@@ -164,24 +161,23 @@ bool SettingsOverridesHandler::Parse(Extension* extension,
             PermissionsInfo::GetInstance()->GetByID(
                 APIPermission::kStartupPages),
             // We only support one startup page even though the type of the
-            // manifest
-            // property is a list, only the first one is used.
-            RemoveWwwPrefix(info->startup_pages[0].GetContent())));
+            // manifest property is a list, only the first one is used.
+            FormatUrlForDisplay(info->startup_pages[0])));
   }
   if (info->homepage) {
     PermissionsParser::AddAPIPermission(
         extension,
         new SettingsOverrideAPIPermission(
             PermissionsInfo::GetInstance()->GetByID(APIPermission::kHomepage),
-            RemoveWwwPrefix(info->homepage.get()->GetContent())));
+            FormatUrlForDisplay(*(info->homepage))));
   }
-  extension->SetManifestData(manifest_keys::kSettingsOverride,
-                             info.release());
+  extension->SetManifestData(manifest_keys::kSettingsOverride, std::move(info));
   return true;
 }
 
-const std::vector<std::string> SettingsOverridesHandler::Keys() const {
-  return SingleKey(manifest_keys::kSettingsOverride);
+base::span<const char* const> SettingsOverridesHandler::Keys() const {
+  static constexpr const char* kKeys[] = {manifest_keys::kSettingsOverride};
+  return kKeys;
 }
 
 }  // namespace extensions

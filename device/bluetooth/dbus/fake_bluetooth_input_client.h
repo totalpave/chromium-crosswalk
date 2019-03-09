@@ -5,6 +5,8 @@
 #ifndef DEVICE_BLUETOOTH_DBUS_FAKE_BLUETOOTH_INPUT_CLIENT_H_
 #define DEVICE_BLUETOOTH_DBUS_FAKE_BLUETOOTH_INPUT_CLIENT_H_
 
+#include <memory>
+
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
@@ -37,7 +39,7 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothInputClient
   ~FakeBluetoothInputClient() override;
 
   // BluetoothInputClient overrides
-  void Init(dbus::Bus* bus) override;
+  void Init(dbus::Bus* bus, const std::string& bluetooth_service_name) override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
   Properties* GetProperties(const dbus::ObjectPath& object_path) override;
@@ -52,11 +54,10 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothInputClient
                          const std::string& property_name);
 
   // Static properties we return.
-  typedef std::map<const dbus::ObjectPath, Properties*> PropertiesMap;
-  PropertiesMap properties_map_;
+  std::map<const dbus::ObjectPath, std::unique_ptr<Properties>> properties_map_;
 
   // List of observers interested in event notifications from us.
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   DISALLOW_COPY_AND_ASSIGN(FakeBluetoothInputClient);
 };

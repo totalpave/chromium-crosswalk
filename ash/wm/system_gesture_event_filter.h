@@ -12,11 +12,6 @@
 
 namespace ash {
 class OverviewGestureHandler;
-class ShelfGestureHandler;
-
-namespace test {
-class SystemGestureEventFilterTest;
-}
 
 // An event filter which handles system level gesture events.
 class SystemGestureEventFilter : public ui::EventHandler {
@@ -31,10 +26,9 @@ class SystemGestureEventFilter : public ui::EventHandler {
   void OnGestureEvent(ui::GestureEvent* event) override;
 
  private:
-  friend class ash::test::SystemGestureEventFilterTest;
+  friend class SystemGestureEventFilterTest;
 
   std::unique_ptr<OverviewGestureHandler> overview_gesture_handler_;
-  std::unique_ptr<ShelfGestureHandler> shelf_gesture_handler_;
 
   DISALLOW_COPY_AND_ASSIGN(SystemGestureEventFilter);
 };

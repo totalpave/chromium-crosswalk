@@ -10,18 +10,16 @@
 #include "base/callback_forward.h"
 #include "base/memory/ref_counted.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "device/usb/public/mojom/device.mojom.h"
 
 namespace base {
 class DictionaryValue;
 class ListValue;
+class Value;
 }
 
 namespace content {
 class BrowserContext;
-}
-
-namespace device {
-class UsbDevice;
 }
 
 namespace extensions {
@@ -35,13 +33,12 @@ namespace extensions {
 class PrinterProviderAPI : public KeyedService {
  public:
   using GetPrintersCallback =
-      base::Callback<void(const base::ListValue& printers, bool done)>;
+      base::RepeatingCallback<void(const base::ListValue& printers, bool done)>;
   using GetCapabilityCallback =
-      base::Callback<void(const base::DictionaryValue& capability)>;
-  using PrintCallback =
-      base::Callback<void(bool success, const std::string& error)>;
+      base::OnceCallback<void(const base::DictionaryValue& capability)>;
+  using PrintCallback = base::OnceCallback<void(const base::Value& error)>;
   using GetPrinterInfoCallback =
-      base::Callback<void(const base::DictionaryValue& printer_info)>;
+      base::OnceCallback<void(const base::DictionaryValue& printer_info)>;
 
   static PrinterProviderAPI* Create(content::BrowserContext* context);
 
@@ -74,15 +71,15 @@ class PrinterProviderAPI : public KeyedService {
   // reported by the extension.
   virtual void DispatchGetCapabilityRequested(
       const std::string& printer_id,
-      const GetCapabilityCallback& callback) = 0;
+      GetCapabilityCallback callback) = 0;
 
   // It dispatches chrome.printerProvider.onPrintRequested event with the
   // provided print job. The event is dispatched only to the extension that
   // manages printer with id |job.printer_id|.
   // |callback| is passed the print status returned by the extension, and it
   // must not be null.
-  virtual void DispatchPrintRequested(const PrinterProviderPrintJob& job,
-                                      const PrintCallback& callback) = 0;
+  virtual void DispatchPrintRequested(PrinterProviderPrintJob job,
+                                      PrintCallback callback) = 0;
 
   // Returns print job associated with the print request with id |request_id|
   // for extension |extension|.
@@ -95,8 +92,8 @@ class PrinterProviderAPI : public KeyedService {
   // extension identified by |extension_id|.
   virtual void DispatchGetUsbPrinterInfoRequested(
       const std::string& extension_id,
-      scoped_refptr<device::UsbDevice> device,
-      const PrinterProviderAPI::GetPrinterInfoCallback& callback) = 0;
+      const device::mojom::UsbDeviceInfo& device,
+      GetPrinterInfoCallback callback) = 0;
 };
 
 }  // namespace extensions

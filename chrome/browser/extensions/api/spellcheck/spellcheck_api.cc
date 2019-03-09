@@ -13,8 +13,6 @@
 
 namespace extensions {
 
-namespace errors = manifest_errors;
-
 namespace {
 
 SpellcheckDictionaryInfo* GetSpellcheckDictionaryInfo(
@@ -46,13 +44,13 @@ SpellcheckAPI::SpellcheckAPI(content::BrowserContext* context)
 SpellcheckAPI::~SpellcheckAPI() {
 }
 
-static base::LazyInstance<BrowserContextKeyedAPIFactory<SpellcheckAPI> >
-    g_factory = LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<BrowserContextKeyedAPIFactory<SpellcheckAPI>>::
+    DestructorAtExit g_spellcheck_api_factory = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<SpellcheckAPI>*
 SpellcheckAPI::GetFactoryInstance() {
-  return g_factory.Pointer();
+  return g_spellcheck_api_factory.Pointer();
 }
 
 void SpellcheckAPI::OnExtensionLoaded(content::BrowserContext* browser_context,
@@ -73,7 +71,7 @@ void SpellcheckAPI::OnExtensionLoaded(content::BrowserContext* browser_context,
 void SpellcheckAPI::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
-    UnloadedExtensionInfo::Reason reason) {
+    UnloadedExtensionReason reason) {
   SpellcheckDictionaryInfo* spellcheck_info =
       GetSpellcheckDictionaryInfo(extension);
   if (spellcheck_info) {

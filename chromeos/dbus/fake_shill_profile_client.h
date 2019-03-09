@@ -5,19 +5,20 @@
 #ifndef CHROMEOS_DBUS_FAKE_SHILL_PROFILE_CLIENT_H_
 #define CHROMEOS_DBUS_FAKE_SHILL_PROFILE_CLIENT_H_
 
-#include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/shill_manager_client.h"
 #include "chromeos/dbus/shill_profile_client.h"
 
 namespace chromeos {
 
 // A stub implementation of ShillProfileClient.
-class CHROMEOS_EXPORT FakeShillProfileClient :
-      public ShillProfileClient,
+class COMPONENT_EXPORT(CHROMEOS_DBUS) FakeShillProfileClient
+    : public ShillProfileClient,
       public ShillProfileClient::TestInterface {
  public:
   FakeShillProfileClient();
@@ -55,14 +56,17 @@ class CHROMEOS_EXPORT FakeShillProfileClient :
   bool UpdateService(const std::string& profile_path,
                      const std::string& service_path) override;
   void GetProfilePaths(std::vector<std::string>* profiles) override;
+  void GetProfilePathsContainingService(
+      const std::string& service_path,
+      std::vector<std::string>* profiles) override;
   bool GetService(const std::string& service_path,
                   std::string* profile_path,
                   base::DictionaryValue* properties) override;
+  bool HasService(const std::string& service_path) override;
   void ClearProfiles() override;
 
  private:
   struct ProfileProperties;
-  typedef std::map<std::string, ProfileProperties*> ProfileMap;
 
   bool AddOrUpdateServiceImpl(const std::string& profile_path,
                               const std::string& service_path,
@@ -71,9 +75,11 @@ class CHROMEOS_EXPORT FakeShillProfileClient :
   ProfileProperties* GetProfile(const dbus::ObjectPath& profile_path,
                                 const ErrorCallback& error_callback);
 
-  // The values are owned by this class and are explicitly destroyed where
-  // necessary.
-  ProfileMap profiles_;
+  // List of profiles known to the client in order they were added, and in the
+  // reverse order of priority.
+  // |AddProfile| will encure that shared profile is never added after a user
+  // profile.
+  std::vector<std::unique_ptr<ProfileProperties>> profiles_;
 
   DISALLOW_COPY_AND_ASSIGN(FakeShillProfileClient);
 };

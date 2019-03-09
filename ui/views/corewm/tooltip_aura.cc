@@ -18,6 +18,7 @@
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
+#include "ui/views/painter.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
@@ -31,8 +32,18 @@ const int kTooltipMaxWidthPixels = 400;
 const int kCursorOffsetX = 10;
 const int kCursorOffsetY = 15;
 
+// TODO(varkha): Update if native widget can be transparent on Linux.
+bool CanUseTranslucentTooltipWidget() {
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+  return false;
+#else
+  return true;
+#endif
+}
+
 // Creates a widget of type TYPE_TOOLTIP
-views::Widget* CreateTooltipWidget(aura::Window* tooltip_window) {
+views::Widget* CreateTooltipWidget(aura::Window* tooltip_window,
+                                   const gfx::Rect& bounds) {
   views::Widget* widget = new views::Widget;
   views::Widget::InitParams params;
   // For aura, since we set the type to TYPE_TOOLTIP, the widget will get
@@ -42,6 +53,10 @@ views::Widget* CreateTooltipWidget(aura::Window* tooltip_window) {
   DCHECK(params.context);
   params.keep_on_top = true;
   params.accept_events = false;
+  params.bounds = bounds;
+  if (CanUseTranslucentTooltipWidget())
+    params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
+  params.shadow_type = views::Widget::InitParams::SHADOW_TYPE_NONE;
   widget->Init(params);
   return widget;
 }
@@ -55,13 +70,12 @@ namespace corewm {
 class TooltipAura::TooltipView : public views::View {
  public:
   TooltipView()
-      : render_text_(gfx::RenderText::CreateInstance()),
-        max_width_(0) {
-    const int kHorizontalPadding = 3;
-    const int kVerticalPadding = 2;
-    SetBorder(Border::CreateEmptyBorder(
-        kVerticalPadding, kHorizontalPadding,
-        kVerticalPadding, kHorizontalPadding));
+      : render_text_(gfx::RenderText::CreateHarfBuzzInstance()), max_width_(0) {
+    const int kHorizontalPadding = 8;
+    const int kVerticalPaddingTop = 4;
+    const int kVerticalPaddingBottom = 5;
+    SetBorder(CreateEmptyBorder(kVerticalPaddingTop, kHorizontalPadding,
+                                kVerticalPaddingBottom, kHorizontalPadding));
 
     set_owned_by_client();
     render_text_->SetWordWrapBehavior(gfx::WRAP_LONG_WORDS);
@@ -86,7 +100,7 @@ class TooltipAura::TooltipView : public views::View {
     OnPaintBorder(canvas);
   }
 
-  gfx::Size GetPreferredSize() const override {
+  gfx::Size CalculatePreferredSize() const override {
     gfx::Size view_size = render_text_->GetStringSize();
     gfx::Insets insets = border()->GetInsets();
     view_size.Enlarge(insets.width(), insets.height());
@@ -107,16 +121,31 @@ class TooltipAura::TooltipView : public views::View {
     render_text_->SetColor(color);
   }
 
+  void SetBackgroundColor(SkColor background_color) {
+    // Corner radius of tooltip background.
+    const float kTooltipCornerRadius = 2.f;
+    SetBackground(CanUseTranslucentTooltipWidget()
+                      ? views::CreateBackgroundFromPainter(
+                            views::Painter::CreateSolidRoundRectPainter(
+                                background_color, kTooltipCornerRadius))
+                      : views::CreateSolidBackground(background_color));
+
+    // Force the text color to be readable when |background_color| is not
+    // opaque.
+    render_text_->set_subpixel_rendering_suppressed(
+        SkColorGetA(background_color) != 0xFF);
+  }
+
   void SetMaxWidth(int width) {
     max_width_ = width;
     ResetDisplayRect();
   }
 
+  gfx::RenderText* render_text_for_test() { return render_text_.get(); }
+
  private:
   void ResetDisplayRect() {
-    gfx::Insets insets = border()->GetInsets();
-    int max_text_width = max_width_ - insets.width();
-    render_text_->SetDisplayRect(gfx::Rect(0, 0, max_text_width, 100000));
+    render_text_->SetDisplayRect(gfx::Rect(0, 0, max_width_, 100000));
   }
 
   std::unique_ptr<gfx::RenderText> render_text_;
@@ -135,8 +164,12 @@ TooltipAura::~TooltipAura() {
   DestroyWidget();
 }
 
-void TooltipAura::SetTooltipBounds(const gfx::Point& mouse_pos,
-                                   const gfx::Size& tooltip_size) {
+gfx::RenderText* TooltipAura::GetRenderTextForTest() {
+  return tooltip_view_->render_text_for_test();
+}
+
+gfx::Rect TooltipAura::GetTooltipBounds(const gfx::Point& mouse_pos,
+                                        const gfx::Size& tooltip_size) {
   gfx::Rect tooltip_rect(mouse_pos, tooltip_size);
   tooltip_rect.Offset(kCursorOffsetX, kCursorOffsetY);
   display::Screen* screen = display::Screen::GetScreen();
@@ -155,7 +188,7 @@ void TooltipAura::SetTooltipBounds(const gfx::Point& mouse_pos,
     tooltip_rect.set_y(mouse_pos.y() - tooltip_size.height());
 
   tooltip_rect.AdjustToFit(display_bounds);
-  widget_->SetBounds(tooltip_rect);
+  return tooltip_rect;
 }
 
 void TooltipAura::DestroyWidget() {
@@ -179,19 +212,20 @@ void TooltipAura::SetText(aura::Window* window,
   tooltip_view_->SetMaxWidth(GetMaxWidth(location));
   tooltip_view_->SetText(tooltip_text);
 
+  const gfx::Rect adjusted_bounds =
+      GetTooltipBounds(location, tooltip_view_->GetPreferredSize());
+
   if (!widget_) {
-    widget_ = CreateTooltipWidget(tooltip_window_);
+    widget_ = CreateTooltipWidget(tooltip_window_, adjusted_bounds);
     widget_->SetContentsView(tooltip_view_.get());
     widget_->AddObserver(this);
+  } else {
+    widget_->SetBounds(adjusted_bounds);
   }
 
-  SetTooltipBounds(location, tooltip_view_->GetPreferredSize());
-
   ui::NativeTheme* native_theme = widget_->GetNativeTheme();
-  tooltip_view_->set_background(
-      views::Background::CreateSolidBackground(
-          native_theme->GetSystemColor(
-              ui::NativeTheme::kColorId_TooltipBackground)));
+  tooltip_view_->SetBackgroundColor(native_theme->GetSystemColor(
+      ui::NativeTheme::kColorId_TooltipBackground));
   tooltip_view_->SetForegroundColor(native_theme->GetSystemColor(
       ui::NativeTheme::kColorId_TooltipText));
 }

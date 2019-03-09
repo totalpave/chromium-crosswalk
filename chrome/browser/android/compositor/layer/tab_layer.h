@@ -6,12 +6,13 @@
 #define CHROME_BROWSER_ANDROID_COMPOSITOR_LAYER_TAB_LAYER_H_
 
 #include <memory>
+#include <vector>
 
 #include "base/macros.h"
 #include "chrome/browser/android/compositor/layer/layer.h"
+#include "ui/android/resources/nine_patch_resource.h"
 
 namespace cc {
-class ImageLayer;
 class Layer;
 class NinePatchLayer;
 class SolidColorLayer;
@@ -26,9 +27,6 @@ namespace ui {
 class ResourceManager;
 }
 
-class SkBitmap;
-
-namespace chrome {
 namespace android {
 
 class ContentLayer;
@@ -46,7 +44,10 @@ class TabLayer : public Layer {
                                         LayerTitleCache* layer_title_cache,
                                         TabContentManager* tab_content_manager);
 
+  // TODO(meiliang): This method needs another parameter, a resource that can be
+  // used to indicate the currently selected tab for the TabLayer.
   void SetProperties(int id,
+                     const std::vector<int>& ids,
                      bool can_use_live_layer,
                      int toolbar_resource_id,
                      int close_button_resource_id,
@@ -80,6 +81,7 @@ class TabLayer : public Layer {
                      float saturation,
                      float brightness,
                      float close_btn_width,
+                     float close_btn_asset_size,
                      float static_to_view_blend,
                      float content_width,
                      float content_height,
@@ -88,14 +90,15 @@ class TabLayer : public Layer {
                      bool show_toolbar,
                      int default_theme_color,
                      int toolbar_background_color,
+                     int close_button_color,
                      bool anonymize_toolbar,
+                     bool show_tab_title,
                      int toolbar_textbox_resource_id,
                      int toolbar_textbox_background_color,
                      float toolbar_textbox_alpha,
                      float toolbar_alpha,
                      float toolbar_y_offset,
                      float side_border_scale,
-                     bool attach_content,
                      bool inset_border);
 
   bool is_incognito() const { return incognito_; }
@@ -117,10 +120,21 @@ class TabLayer : public Layer {
  private:
   void SetTitle(DecorationTitle* title);
 
+  void SetContentProperties(int id,
+                            const std::vector<int>& tab_ids,
+                            bool can_use_live_layer,
+                            float static_to_view_blend,
+                            bool should_override_content_alpha,
+                            float content_alpha_override,
+                            float saturation,
+                            bool should_clip,
+                            const gfx::Rect& clip,
+                            ui::NinePatchResource* inner_shadow_resource,
+                            float inner_shadow_alpha);
+
   const bool incognito_;
-  bool toolbar_background_color_;
-  bool tab_switcher_themes_enabled_;
   ui::ResourceManager* resource_manager_;
+  TabContentManager* tab_content_manager_;
   LayerTitleCache* layer_title_cache_;
 
   // [layer]-+-[toolbar]
@@ -152,6 +166,5 @@ class TabLayer : public Layer {
 };
 
 }  //  namespace android
-}  //  namespace chrome
 
 #endif  // CHROME_BROWSER_ANDROID_COMPOSITOR_LAYER_TAB_LAYER_H_

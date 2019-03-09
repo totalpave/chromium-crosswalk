@@ -43,10 +43,20 @@ struct MEDIA_EXPORT CdmKeyInformation {
   CdmKeyInformation(const CdmKeyInformation& other);
   ~CdmKeyInformation();
 
+  static std::string KeyStatusToString(KeyStatus key_status);
+
   std::vector<uint8_t> key_id;
   KeyStatus status;
   uint32_t system_code;
 };
+
+// The following are for logging use only.
+
+MEDIA_EXPORT std::ostream& operator<<(std::ostream& os,
+                                      CdmKeyInformation::KeyStatus status);
+
+MEDIA_EXPORT std::ostream& operator<<(std::ostream& os,
+                                      const CdmKeyInformation& info);
 
 }  // namespace media
 

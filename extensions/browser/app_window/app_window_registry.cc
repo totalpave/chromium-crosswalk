@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "content/public/browser/browser_context.h"
@@ -24,10 +25,6 @@ namespace extensions {
 void AppWindowRegistry::Observer::OnAppWindowAdded(AppWindow* app_window) {
 }
 
-void AppWindowRegistry::Observer::OnAppWindowIconChanged(
-    AppWindow* app_window) {
-}
-
 void AppWindowRegistry::Observer::OnAppWindowRemoved(AppWindow* app_window) {
 }
 
@@ -35,8 +32,7 @@ void AppWindowRegistry::Observer::OnAppWindowHidden(AppWindow* app_window) {
 }
 
 void AppWindowRegistry::Observer::OnAppWindowShown(AppWindow* app_window,
-                                                   bool was_shown) {
-}
+                                                   bool was_hidden) {}
 
 void AppWindowRegistry::Observer::OnAppWindowActivated(AppWindow* app_window) {
 }
@@ -45,14 +41,12 @@ AppWindowRegistry::Observer::~Observer() {
 }
 
 AppWindowRegistry::AppWindowRegistry(content::BrowserContext* context)
-    : context_(context),
-      devtools_callback_(base::Bind(&AppWindowRegistry::OnDevToolsStateChanged,
-                                    base::Unretained(this))) {
-  content::DevToolsAgentHost::AddAgentStateCallback(devtools_callback_);
+    : context_(context) {
+  content::DevToolsAgentHost::AddObserver(this);
 }
 
 AppWindowRegistry::~AppWindowRegistry() {
-  content::DevToolsAgentHost::RemoveAgentStateCallback(devtools_callback_);
+  content::DevToolsAgentHost::RemoveObserver(this);
 }
 
 // static
@@ -62,26 +56,24 @@ AppWindowRegistry* AppWindowRegistry::Get(content::BrowserContext* context) {
 
 void AppWindowRegistry::AddAppWindow(AppWindow* app_window) {
   BringToFront(app_window);
-  FOR_EACH_OBSERVER(Observer, observers_, OnAppWindowAdded(app_window));
-}
-
-void AppWindowRegistry::AppWindowIconChanged(AppWindow* app_window) {
-  AddAppWindowToList(app_window);
-  FOR_EACH_OBSERVER(Observer, observers_, OnAppWindowIconChanged(app_window));
+  for (auto& observer : observers_)
+    observer.OnAppWindowAdded(app_window);
 }
 
 void AppWindowRegistry::AppWindowActivated(AppWindow* app_window) {
   BringToFront(app_window);
-  FOR_EACH_OBSERVER(Observer, observers_, OnAppWindowActivated(app_window));
+  for (auto& observer : observers_)
+    observer.OnAppWindowActivated(app_window);
 }
 
 void AppWindowRegistry::AppWindowHidden(AppWindow* app_window) {
-  FOR_EACH_OBSERVER(Observer, observers_, OnAppWindowHidden(app_window));
+  for (auto& observer : observers_)
+    observer.OnAppWindowHidden(app_window);
 }
 
 void AppWindowRegistry::AppWindowShown(AppWindow* app_window, bool was_hidden) {
-  FOR_EACH_OBSERVER(Observer, observers_,
-                    OnAppWindowShown(app_window, was_hidden));
+  for (auto& observer : observers_)
+    observer.OnAppWindowShown(app_window, was_hidden);
 }
 
 void AppWindowRegistry::RemoveAppWindow(AppWindow* app_window) {
@@ -89,11 +81,16 @@ void AppWindowRegistry::RemoveAppWindow(AppWindow* app_window) {
       std::find(app_windows_.begin(), app_windows_.end(), app_window);
   if (it != app_windows_.end())
     app_windows_.erase(it);
-  FOR_EACH_OBSERVER(Observer, observers_, OnAppWindowRemoved(app_window));
+  for (auto& observer : observers_)
+    observer.OnAppWindowRemoved(app_window);
 }
 
 void AppWindowRegistry::AddObserver(Observer* observer) {
   observers_.AddObserver(observer);
+}
+
+bool AppWindowRegistry::HasObserver(const Observer* observer) const {
+  return observers_.HasObserver(observer);
 }
 
 void AppWindowRegistry::RemoveObserver(Observer* observer) {
@@ -103,9 +100,7 @@ void AppWindowRegistry::RemoveObserver(Observer* observer) {
 AppWindowRegistry::AppWindowList AppWindowRegistry::GetAppWindowsForApp(
     const std::string& app_id) const {
   AppWindowList app_windows;
-  for (AppWindowList::const_iterator i = app_windows_.begin();
-       i != app_windows_.end();
-       ++i) {
+  for (auto i = app_windows_.cbegin(); i != app_windows_.cend(); ++i) {
     if ((*i)->extension_id() == app_id)
       app_windows.push_back(*i);
   }
@@ -114,9 +109,7 @@ AppWindowRegistry::AppWindowList AppWindowRegistry::GetAppWindowsForApp(
 
 void AppWindowRegistry::CloseAllAppWindowsForApp(const std::string& app_id) {
   const AppWindowList windows = GetAppWindowsForApp(app_id);
-  for (AppWindowRegistry::const_iterator it = windows.begin();
-       it != windows.end();
-       ++it) {
+  for (auto it = windows.cbegin(); it != windows.cend(); ++it) {
     (*it)->GetBaseWindow()->Close();
   }
 }
@@ -132,9 +125,7 @@ AppWindow* AppWindowRegistry::GetAppWindowForWebContents(
 
 AppWindow* AppWindowRegistry::GetAppWindowForNativeWindow(
     gfx::NativeWindow window) const {
-  for (AppWindowList::const_iterator i = app_windows_.begin();
-       i != app_windows_.end();
-       ++i) {
+  for (auto i = app_windows_.cbegin(); i != app_windows_.cend(); ++i) {
     if ((*i)->GetNativeWindow() == window)
       return *i;
   }
@@ -145,9 +136,7 @@ AppWindow* AppWindowRegistry::GetAppWindowForNativeWindow(
 AppWindow* AppWindowRegistry::GetCurrentAppWindowForApp(
     const std::string& app_id) const {
   AppWindow* result = NULL;
-  for (AppWindowList::const_iterator i = app_windows_.begin();
-       i != app_windows_.end();
-       ++i) {
+  for (auto i = app_windows_.cbegin(); i != app_windows_.cend(); ++i) {
     if ((*i)->extension_id() == app_id) {
       result = *i;
       if (result->GetBaseWindow()->IsActive())
@@ -162,9 +151,7 @@ AppWindow* AppWindowRegistry::GetAppWindowForAppAndKey(
     const std::string& app_id,
     const std::string& window_key) const {
   AppWindow* result = NULL;
-  for (AppWindowList::const_iterator i = app_windows_.begin();
-       i != app_windows_.end();
-       ++i) {
+  for (auto i = app_windows_.cbegin(); i != app_windows_.cend(); ++i) {
     if ((*i)->extension_id() == app_id && (*i)->window_key() == window_key) {
       result = *i;
       if (result->GetBaseWindow()->IsActive())
@@ -180,28 +167,22 @@ bool AppWindowRegistry::HadDevToolsAttached(
   return key.empty() ? false : inspected_windows_.count(key) != 0;
 }
 
-void AppWindowRegistry::OnDevToolsStateChanged(
-    content::DevToolsAgentHost* agent_host,
-    bool attached) {
-  content::WebContents* web_contents = agent_host->GetWebContents();
-  // Ignore unrelated notifications.
-  if (!web_contents || web_contents->GetBrowserContext() != context_)
-    return;
-
-  std::string key = GetWindowKeyForWebContents(web_contents);
-  if (key.empty())
-    return;
-
-  if (attached)
+void AppWindowRegistry::DevToolsAgentHostAttached(
+    content::DevToolsAgentHost* agent_host) {
+  std::string key = GetWindowKeyForAgentHost(agent_host);
+  if (!key.empty())
     inspected_windows_.insert(key);
-  else
+}
+
+void AppWindowRegistry::DevToolsAgentHostDetached(
+    content::DevToolsAgentHost* agent_host) {
+  std::string key = GetWindowKeyForAgentHost(agent_host);
+  if (!key.empty())
     inspected_windows_.erase(key);
 }
 
 void AppWindowRegistry::AddAppWindowToList(AppWindow* app_window) {
-  const AppWindowList::iterator it =
-      std::find(app_windows_.begin(), app_windows_.end(), app_window);
-  if (it != app_windows_.end())
+  if (base::ContainsValue(app_windows_, app_window))
     return;
   app_windows_.push_back(app_window);
 }
@@ -212,6 +193,14 @@ void AppWindowRegistry::BringToFront(AppWindow* app_window) {
   if (it != app_windows_.end())
     app_windows_.erase(it);
   app_windows_.push_front(app_window);
+}
+
+std::string AppWindowRegistry::GetWindowKeyForAgentHost(
+    content::DevToolsAgentHost* agent_host) const {
+  content::WebContents* web_contents = agent_host->GetWebContents();
+  if (!web_contents || web_contents->GetBrowserContext() != context_)
+    return std::string();
+  return GetWindowKeyForWebContents(web_contents);
 }
 
 std::string AppWindowRegistry::GetWindowKeyForWebContents(

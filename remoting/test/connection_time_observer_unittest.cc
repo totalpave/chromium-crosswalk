@@ -35,11 +35,9 @@ class ConnectionTimeObserverTest : public ::testing::Test {
   DISALLOW_COPY_AND_ASSIGN(ConnectionTimeObserverTest);
 };
 
-ConnectionTimeObserverTest::ConnectionTimeObserverTest() {
-}
+ConnectionTimeObserverTest::ConnectionTimeObserverTest() = default;
 
-ConnectionTimeObserverTest::~ConnectionTimeObserverTest() {
-}
+ConnectionTimeObserverTest::~ConnectionTimeObserverTest() = default;
 
 void ConnectionTimeObserverTest::SetUp() {
   connection_time_observer_.reset(new ConnectionTimeObserver());
@@ -139,7 +137,7 @@ TEST_F(ConnectionTimeObserverTest, TestOnConnectionStateChangedWithoutTestMap) {
   // Note: This test can only guarantee a positive TimeDelta between a previous
   // state and the CONNECTED state. Prior states have non-deterministic times
   // between each other.
-  base::Timer timer(true, false);
+  base::OneShotTimer timer;
   timer.Start(FROM_HERE,
               base::TimeDelta::FromMilliseconds(10),
               run_loop.QuitClosure());

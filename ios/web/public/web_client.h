@@ -5,12 +5,21 @@
 #ifndef IOS_WEB_PUBLIC_WEB_CLIENT_H_
 #define IOS_WEB_PUBLIC_WEB_CLIENT_H_
 
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/callback.h"
+#include "base/optional.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_piece.h"
+#include "base/task/task_scheduler/task_scheduler.h"
+#include "base/values.h"
+#include "ios/web/public/user_agent.h"
+#include "mojo/public/cpp/system/message_pipe.h"
+#include "services/service_manager/public/cpp/manifest.h"
+#include "services/service_manager/public/mojom/service.mojom.h"
 #include "ui/base/layout.h"
 #include "url/url_util.h"
 
@@ -25,6 +34,10 @@ class GURL;
 
 namespace net {
 class SSLInfo;
+}
+
+namespace service_manager {
+class Service;
 }
 
 namespace web {
@@ -48,19 +61,27 @@ class WebClient {
 
   // Allows the embedder to set a custom WebMainParts implementation for the
   // browser startup code.
-  virtual WebMainParts* CreateWebMainParts();
+  virtual std::unique_ptr<WebMainParts> CreateWebMainParts();
 
   // Gives the embedder a chance to perform tasks before a web view is created.
   virtual void PreWebViewCreation() const {}
 
-  // Gives the embedder a chance to register its own standard and saveable url
-  // schemes early on in the startup sequence.
-  virtual void AddAdditionalSchemes(
-      std::vector<url::SchemeWithType>* additional_standard_schemes) const {}
+  // An embedder may support schemes that are otherwise unknown to lower-level
+  // components. To control how /net/url and other components interpret urls of
+  // such schemes, the embedder overrides |AddAdditionalSchemes| and adds to the
+  // vectors inside the |Schemes| structure.
+  struct Schemes {
+    Schemes();
+    ~Schemes();
+    // "Standard" (RFC3986 syntax) schemes.
+    std::vector<std::string> standard_schemes;
+    // See https://www.w3.org/TR/powerful-features/#is-origin-trustworthy.
+    std::vector<std::string> secure_schemes;
+  };
 
-  // Returns the languages used in the Accept-Languages HTTP header.
-  // Used to decide URL formating.
-  virtual std::string GetAcceptLangs(BrowserState* state) const;
+  // Gives the embedder a chance to register its own standard and secure url
+  // schemes early on in the startup sequence.
+  virtual void AddAdditionalSchemes(Schemes* schemes) const {}
 
   // Returns the embedding application locale string.
   virtual std::string GetApplicationLocale() const;
@@ -70,24 +91,11 @@ class WebClient {
   // browser would return true for "chrome://about" URL.
   virtual bool IsAppSpecificURL(const GURL& url) const;
 
-  // Returns true if web views can be created using an alloc, init call.
-  // Web view creation using an alloc, init call is disabled by default.
-  // If this is disallowed all web view creation must happen through the
-  // web view creation utils methods that vend a web view.
-  // This is called once (only in debug builds) before the first web view is
-  // created and not called repeatedly.
-  virtual bool AllowWebViewAllocInit() const;
-
   // Returns text to be displayed for an unsupported plugin.
   virtual base::string16 GetPluginNotSupportedText() const;
 
-  // Returns a string describing the embedder product name and version, of the
-  // form "productname/version".  Used as part of the user agent string.
-  virtual std::string GetProduct() const;
-
-  // Returns the user agent. |desktop_user_agent| is true if desktop user agent
-  // is requested.
-  virtual std::string GetUserAgent(bool desktop_user_agent) const;
+  // Returns the user agent string for the specified type.
+  virtual std::string GetUserAgent(UserAgentType type) const;
 
   // Returns a string resource given its id.
   virtual base::string16 GetLocalizedString(int message_id) const;
@@ -114,9 +122,47 @@ class WebClient {
 
   // Gives the embedder a chance to provide the JavaScript to be injected into
   // the web view as early as possible. Result must not be nil.
-  virtual NSString* GetEarlyPageScript() const;
+  // The script returned will be injected in all frames (main and subframes).
+  //
+  // TODO(crbug.com/703964): Change the return value to NSArray<NSString*> to
+  // improve performance.
+  virtual NSString* GetDocumentStartScriptForAllFrames(
+      BrowserState* browser_state) const;
 
-  // Informs the embedder that a certificate error has occurred. If
+  // Gives the embedder a chance to provide the JavaScript to be injected into
+  // the web view as early as possible. Result must not be nil.
+  // The script returned will only be injected in the main frame.
+  //
+  // TODO(crbug.com/703964): Change the return value to NSArray<NSString*> to
+  // improve performance.
+  virtual NSString* GetDocumentStartScriptForMainFrame(
+      BrowserState* browser_state) const;
+
+  // Handles an incoming service request from the Service Manager.
+  virtual std::unique_ptr<service_manager::Service> HandleServiceRequest(
+      const std::string& service_name,
+      service_manager::mojom::ServiceRequest request);
+
+  // Allows the embedder to augment service manifests for existing services.
+  // Specifically, the sets of exposed and required capabilities, interface
+  // filter capabilities (deprecated), and packaged services will be taken from
+  // the returned Manifest and amended to those of the existing Manifest for the
+  // service named |name|.
+  //
+  // If no overlay is provided for the service, this returns |base::nullopt|.
+  virtual base::Optional<service_manager::Manifest> GetServiceManifestOverlay(
+      base::StringPiece name);
+
+  // Allows the embedder to bind an interface request for a WebState-scoped
+  // interface that originated from the main frame of |web_state|. Called if
+  // |web_state| could not bind the request for |interface_name| itself.
+  virtual void BindInterfaceRequestFromMainFrame(
+      WebState* web_state,
+      const std::string& interface_name,
+      mojo::ScopedMessagePipeHandle interface_pipe) {}
+
+  // Informs the embedder that a certificate error has occurred. |cert_error| is
+  // a network error code defined in //net/base/net_error_list.h. If
   // |overridable| is true, the user can ignore the error and continue. The
   // embedder can call the |callback| asynchronously (an argument of true means
   // that |cert_error| should be ignored and web// should load the page).
@@ -127,6 +173,23 @@ class WebClient {
       const GURL& request_url,
       bool overridable,
       const base::Callback<void(bool)>& callback);
+
+  // Returns the information to display when a navigation error occurs.
+  // |error| and |error_html| are always valid pointers. Embedder may set
+  // |error_html| to an HTML page containing the details of the error and maybe
+  // links to more info.
+  virtual void PrepareErrorPage(WebState* web_state,
+                                const GURL& url,
+                                NSError* error,
+                                bool is_post,
+                                bool is_off_the_record,
+                                NSString** error_html);
+
+  // Allows upper layers to inject experimental flags to the web layer.
+  // TODO(crbug.com/734150): Clean up this flag after experiment. If need for a
+  // second flag arises before clean up, consider generalizing to an experiment
+  // flags struct instead of adding a bool method for each experiment.
+  virtual bool IsSlimNavigationManagerEnabled() const;
 };
 
 }  // namespace web

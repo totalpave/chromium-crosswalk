@@ -10,17 +10,18 @@
 
 #include "base/logging.h"
 #include "base/stl_util.h"
-#include "content/browser/appcache/appcache_executable_handler.h"
 #include "content/browser/appcache/appcache_group.h"
 #include "content/browser/appcache/appcache_host.h"
 #include "content/browser/appcache/appcache_storage.h"
 #include "content/common/appcache_interfaces.h"
+#include "third_party/blink/public/mojom/appcache/appcache.mojom.h"
+#include "url/origin.h"
 
 namespace content {
 
 AppCache::AppCache(AppCacheStorage* storage, int64_t cache_id)
     : cache_id_(cache_id),
-      owning_group_(NULL),
+      owning_group_(nullptr),
       online_whitelist_all_(false),
       is_complete_(false),
       cache_size_(0),
@@ -36,8 +37,6 @@ AppCache::~AppCache() {
   }
   DCHECK(!owning_group_.get());
   storage_->working_set()->RemoveCache(this);
-  STLDeleteContainerPairSecondPointers(
-      executable_handlers_.begin(), executable_handlers_.end());
 }
 
 void AppCache::UnassociateHost(AppCacheHost* host) {
@@ -63,64 +62,33 @@ bool AppCache::AddOrModifyEntry(const GURL& url, const AppCacheEntry& entry) {
 }
 
 void AppCache::RemoveEntry(const GURL& url) {
-  EntryMap::iterator found = entries_.find(url);
+  auto found = entries_.find(url);
   DCHECK(found != entries_.end());
   cache_size_ -= found->second.response_size();
   entries_.erase(found);
 }
 
 AppCacheEntry* AppCache::GetEntry(const GURL& url) {
-  EntryMap::iterator it = entries_.find(url);
-  return (it != entries_.end()) ? &(it->second) : NULL;
+  auto it = entries_.find(url);
+  return (it != entries_.end()) ? &(it->second) : nullptr;
 }
 
 const AppCacheEntry* AppCache::GetEntryAndUrlWithResponseId(
     int64_t response_id,
     GURL* optional_url_out) {
-  for (EntryMap::const_iterator iter = entries_.begin();
-       iter !=  entries_.end(); ++iter) {
-    if (iter->second.response_id() == response_id) {
+  for (const auto& pair : entries_) {
+    if (pair.second.response_id() == response_id) {
       if (optional_url_out)
-        *optional_url_out = iter->first;
-      return &iter->second;
+        *optional_url_out = pair.first;
+      return &pair.second;
     }
   }
-  return NULL;
+  return nullptr;
 }
 
-AppCacheExecutableHandler* AppCache::GetExecutableHandler(int64_t response_id) {
-  HandlerMap::const_iterator found = executable_handlers_.find(response_id);
-  if (found != executable_handlers_.end())
-    return found->second;
-  return NULL;
-}
-
-AppCacheExecutableHandler* AppCache::GetOrCreateExecutableHandler(
-    int64_t response_id,
-    net::IOBuffer* handler_source) {
-  AppCacheExecutableHandler* handler = GetExecutableHandler(response_id);
-  if (handler)
-    return handler;
-
-  GURL handler_url;
-  const AppCacheEntry* entry = GetEntryAndUrlWithResponseId(
-      response_id, &handler_url);
-  if (!entry || !entry->IsExecutable())
-    return NULL;
-
-  DCHECK(storage_->service()->handler_factory());
-  std::unique_ptr<AppCacheExecutableHandler> own_ptr =
-      storage_->service()->handler_factory()->CreateHandler(handler_url,
-                                                            handler_source);
-  handler = own_ptr.release();
-  if (!handler)
-    return NULL;
-  executable_handlers_[response_id] = handler;
-  return handler;
-}
-
-GURL AppCache::GetNamespaceEntryUrl(const AppCacheNamespaceVector& namespaces,
-                                    const GURL& namespace_url) const {
+GURL AppCache::GetNamespaceEntryUrl(
+    const std::vector<AppCacheNamespace>& namespaces,
+    const GURL& namespace_url) const {
   size_t count = namespaces.size();
   for (size_t i = 0; i < count; ++i) {
     if (namespaces[i].namespace_url == namespace_url)
@@ -208,19 +176,18 @@ void AppCache::ToDatabaseRecords(
   cache_record->update_time = update_time_;
   cache_record->cache_size = 0;
 
-  for (EntryMap::const_iterator iter = entries_.begin();
-       iter != entries_.end(); ++iter) {
+  for (const auto& pair : entries_) {
     entries->push_back(AppCacheDatabase::EntryRecord());
     AppCacheDatabase::EntryRecord& record = entries->back();
-    record.url = iter->first;
+    record.url = pair.first;
     record.cache_id = cache_id_;
-    record.flags = iter->second.types();
-    record.response_id = iter->second.response_id();
-    record.response_size = iter->second.response_size();
+    record.flags = pair.second.types();
+    record.response_id = pair.second.response_id();
+    record.response_size = pair.second.response_size();
     cache_record->cache_size += record.response_size;
   }
 
-  GURL origin = group->manifest_url().GetOrigin();
+  const url::Origin origin = url::Origin::Create(group->manifest_url());
 
   for (size_t i = 0; i < intercept_namespaces_.size(); ++i) {
     intercepts->push_back(AppCacheDatabase::NamespaceRecord());
@@ -297,35 +264,34 @@ bool AppCache::FindResponseForRequest(const GURL& url,
   return *found_network_namespace;
 }
 
-
-void AppCache::ToResourceInfoVector(AppCacheResourceInfoVector* infos) const {
+void AppCache::ToResourceInfoVector(
+    std::vector<blink::mojom::AppCacheResourceInfo>* infos) const {
   DCHECK(infos && infos->empty());
-  for (EntryMap::const_iterator iter = entries_.begin();
-       iter !=  entries_.end(); ++iter) {
-    infos->push_back(AppCacheResourceInfo());
-    AppCacheResourceInfo& info = infos->back();
-    info.url = iter->first;
-    info.is_master = iter->second.IsMaster();
-    info.is_manifest = iter->second.IsManifest();
-    info.is_intercept = iter->second.IsIntercept();
-    info.is_fallback = iter->second.IsFallback();
-    info.is_foreign = iter->second.IsForeign();
-    info.is_explicit = iter->second.IsExplicit();
-    info.size = iter->second.response_size();
-    info.response_id = iter->second.response_id();
+  for (const auto& pair : entries_) {
+    infos->push_back(blink::mojom::AppCacheResourceInfo());
+    blink::mojom::AppCacheResourceInfo& info = infos->back();
+    info.url = pair.first;
+    info.is_master = pair.second.IsMaster();
+    info.is_manifest = pair.second.IsManifest();
+    info.is_intercept = pair.second.IsIntercept();
+    info.is_fallback = pair.second.IsFallback();
+    info.is_foreign = pair.second.IsForeign();
+    info.is_explicit = pair.second.IsExplicit();
+    info.size = pair.second.response_size();
+    info.response_id = pair.second.response_id();
   }
 }
 
 // static
 const AppCacheNamespace* AppCache::FindNamespace(
-    const AppCacheNamespaceVector& namespaces,
+    const std::vector<AppCacheNamespace>& namespaces,
     const GURL& url) {
   size_t count = namespaces.size();
   for (size_t i = 0; i < count; ++i) {
     if (namespaces[i].IsMatch(url))
       return &namespaces[i];
   }
-  return NULL;
+  return nullptr;
 }
 
 }  // namespace content

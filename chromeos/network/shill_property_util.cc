@@ -6,12 +6,11 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <set>
 
-#include "base/i18n/icu_encoding_detection.h"
+#include "base/i18n/encoding_detection.h"
 #include "base/i18n/icu_string_conversions.h"
-#include "base/json/json_writer.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -58,29 +57,32 @@ bool CopyStringFromDictionary(const base::DictionaryValue& source,
       string_value.empty()) {
     return false;
   }
-  dest->SetStringWithoutPathExpansion(key, string_value);
+  dest->SetKey(key, base::Value(string_value));
   return true;
+}
+
+std::string GetStringFromDictionary(const base::Value* dict, const char* key) {
+  const base::Value* v = dict ? dict->FindKey(key) : nullptr;
+  return v ? v->GetString() : std::string();
 }
 
 }  // namespace
 
-void SetSSID(const std::string& ssid, base::DictionaryValue* properties) {
+void SetSSID(const std::string& ssid, base::Value* properties) {
   std::string hex_ssid = base::HexEncode(ssid.c_str(), ssid.size());
-  properties->SetStringWithoutPathExpansion(shill::kWifiHexSsid, hex_ssid);
+  properties->SetKey(shill::kWifiHexSsid, base::Value(hex_ssid));
 }
 
-std::string GetSSIDFromProperties(const base::DictionaryValue& properties,
+std::string GetSSIDFromProperties(const base::Value& properties,
                                   bool verbose_logging,
                                   bool* unknown_encoding) {
   if (unknown_encoding)
     *unknown_encoding = false;
 
   // Get name for debugging.
-  std::string name;
-  properties.GetStringWithoutPathExpansion(shill::kNameProperty, &name);
-
-  std::string hex_ssid;
-  properties.GetStringWithoutPathExpansion(shill::kWifiHexSsid, &hex_ssid);
+  std::string name = GetStringFromDictionary(&properties, shill::kNameProperty);
+  std::string hex_ssid =
+      GetStringFromDictionary(&properties, shill::kWifiHexSsid);
 
   if (hex_ssid.empty()) {
     if (verbose_logging)
@@ -109,8 +111,7 @@ std::string GetSSIDFromProperties(const base::DictionaryValue& properties,
     // TODO(stevenjb): This is currently experimental. If we find a case where
     // base::DetectEncoding() fails, we need to figure out whether we can use
     // country_code with ConvertToUtf8(). crbug.com/233267.
-    properties.GetStringWithoutPathExpansion(shill::kCountryProperty,
-                                             &encoding);
+    encoding = GetStringFromDictionary(&properties, shill::kCountryProperty);
   }
   std::string utf8_ssid;
   if (!encoding.empty() &&
@@ -134,35 +135,36 @@ std::string GetSSIDFromProperties(const base::DictionaryValue& properties,
   return ssid;
 }
 
-std::string GetNetworkIdFromProperties(
-    const base::DictionaryValue& properties) {
-  if (properties.empty())
+std::string GetNetworkIdFromProperties(const base::Value& properties) {
+  if (properties.DictEmpty())
     return "EmptyProperties";
-  std::string result;
-  if (properties.GetStringWithoutPathExpansion(shill::kGuidProperty, &result))
-    return result;
-  if (properties.GetStringWithoutPathExpansion(shill::kSSIDProperty, &result))
-    return result;
-  if (properties.GetStringWithoutPathExpansion(shill::kNameProperty, &result))
-    return result;
-  std::string type = "UnknownType";
-  properties.GetStringWithoutPathExpansion(shill::kTypeProperty, &type);
-  return "Unidentified " + type;
+  const base::Value* result =
+      properties.FindKeyOfType(shill::kGuidProperty, base::Value::Type::STRING);
+  if (!result) {
+    result = properties.FindKeyOfType(shill::kSSIDProperty,
+                                      base::Value::Type::STRING);
+  }
+  if (!result) {
+    result = properties.FindKeyOfType(shill::kNameProperty,
+                                      base::Value::Type::STRING);
+  }
+  if (result)
+    return result->GetString();
+  result =
+      properties.FindKeyOfType(shill::kTypeProperty, base::Value::Type::STRING);
+  return result ? "Unidentified " + result->GetString() : "UnknownType";
 }
 
 std::string GetNameFromProperties(const std::string& service_path,
-                                  const base::DictionaryValue& properties) {
-  std::string name;
-  properties.GetStringWithoutPathExpansion(shill::kNameProperty, &name);
-
+                                  const base::Value& properties) {
+  std::string name = GetStringFromDictionary(&properties, shill::kNameProperty);
   std::string validated_name = ValidateUTF8(name);
   if (validated_name != name) {
     NET_LOG(DEBUG) << "GetNameFromProperties: " << service_path
                    << " Validated name=" << validated_name << " name=" << name;
   }
 
-  std::string type;
-  properties.GetStringWithoutPathExpansion(shill::kTypeProperty, &type);
+  std::string type = GetStringFromDictionary(&properties, shill::kTypeProperty);
   if (type.empty()) {
     NET_LOG(ERROR) << "GetNameFromProperties: " << service_path << " No type.";
     return validated_name;
@@ -197,12 +199,12 @@ std::unique_ptr<NetworkUIData> GetUIDataFromValue(
   if (!ui_data_value.GetAsString(&ui_data_str))
     return std::unique_ptr<NetworkUIData>();
   if (ui_data_str.empty())
-    return base::WrapUnique(new NetworkUIData());
-  std::unique_ptr<base::DictionaryValue> ui_data_dict(
+    return std::make_unique<NetworkUIData>();
+  std::unique_ptr<base::Value> ui_data_dict(
       chromeos::onc::ReadDictionaryFromJson(ui_data_str));
   if (!ui_data_dict)
     return std::unique_ptr<NetworkUIData>();
-  return base::WrapUnique(new NetworkUIData(*ui_data_dict));
+  return std::make_unique<NetworkUIData>(*ui_data_dict);
 }
 
 std::unique_ptr<NetworkUIData> GetUIDataFromProperties(
@@ -222,12 +224,8 @@ std::unique_ptr<NetworkUIData> GetUIDataFromProperties(
 
 void SetUIData(const NetworkUIData& ui_data,
                base::DictionaryValue* shill_dictionary) {
-  base::DictionaryValue ui_data_dict;
-  ui_data.FillDictionary(&ui_data_dict);
-  std::string ui_data_blob;
-  base::JSONWriter::Write(ui_data_dict, &ui_data_blob);
-  shill_dictionary->SetStringWithoutPathExpansion(shill::kUIDataProperty,
-                                                  ui_data_blob);
+  shill_dictionary->SetKey(shill::kUIDataProperty,
+                           base::Value(ui_data.GetAsJson()));
 }
 
 bool CopyIdentifyingProperties(const base::DictionaryValue& service_properties,
@@ -241,7 +239,7 @@ bool CopyIdentifyingProperties(const base::DictionaryValue& service_properties,
   std::string type;
   service_properties.GetStringWithoutPathExpansion(shill::kTypeProperty, &type);
   success &= !type.empty();
-  dest->SetStringWithoutPathExpansion(shill::kTypeProperty, type);
+  dest->SetKey(shill::kTypeProperty, base::Value(type));
   if (type == shill::kTypeWifi) {
     success &=
         CopyStringFromDictionary(
@@ -280,12 +278,10 @@ bool CopyIdentifyingProperties(const base::DictionaryValue& service_properties,
           shill::kProviderHostProperty, &vpn_provider_host);
     }
     success &= !vpn_provider_type.empty();
-    dest->SetStringWithoutPathExpansion(shill::kProviderTypeProperty,
-                                        vpn_provider_type);
+    dest->SetKey(shill::kProviderTypeProperty, base::Value(vpn_provider_type));
 
     success &= !vpn_provider_host.empty();
-    dest->SetStringWithoutPathExpansion(shill::kProviderHostProperty,
-                                        vpn_provider_host);
+    dest->SetKey(shill::kProviderHostProperty, base::Value(vpn_provider_host));
   } else if (type == shill::kTypeEthernet || type == shill::kTypeEthernetEap) {
     // Ethernet and EthernetEAP don't have any additional identifying
     // properties.
@@ -351,33 +347,6 @@ bool IsLoggableShillProperty(const std::string& key) {
     s_skip_properties->insert(shill::kPassphraseProperty);
   }
   return s_skip_properties->count(key) == 0;
-}
-
-bool GetHomeProviderFromProperty(const base::Value& value,
-                                 std::string* home_provider_id) {
-  const base::DictionaryValue* dict = NULL;
-  if (!value.GetAsDictionary(&dict))
-    return false;
-  std::string home_provider_country;
-  std::string home_provider_name;
-  dict->GetStringWithoutPathExpansion(shill::kOperatorCountryKey,
-                                      &home_provider_country);
-  dict->GetStringWithoutPathExpansion(shill::kOperatorNameKey,
-                                      &home_provider_name);
-  // Set home_provider_id
-  if (!home_provider_name.empty() && !home_provider_country.empty()) {
-    *home_provider_id = base::StringPrintf(
-        "%s (%s)", home_provider_name.c_str(), home_provider_country.c_str());
-  } else {
-    if (!dict->GetStringWithoutPathExpansion(shill::kOperatorCodeKey,
-                                             home_provider_id)) {
-      return false;
-    }
-    LOG(WARNING)
-        << "Provider name and country not defined, using code instead: "
-        << *home_provider_id;
-  }
-  return true;
 }
 
 }  // namespace shill_property_util

@@ -5,14 +5,14 @@
 #include "content/browser/renderer_host/pepper/pepper_gamepad_host.h"
 
 #include "base/bind.h"
-#include "content/browser/gamepad/gamepad_service.h"
 #include "content/public/browser/browser_ppapi_host.h"
+#include "device/gamepad/gamepad_service.h"
+#include "device/gamepad/gamepad_shared_buffer.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/host/dispatch_host_message.h"
 #include "ppapi/host/host_message_context.h"
 #include "ppapi/host/ppapi_host.h"
 #include "ppapi/proxy/ppapi_messages.h"
-#include "ppapi/shared_impl/ppb_gamepad_shared.h"
 
 namespace content {
 
@@ -20,17 +20,15 @@ PepperGamepadHost::PepperGamepadHost(BrowserPpapiHost* host,
                                      PP_Instance instance,
                                      PP_Resource resource)
     : ResourceHost(host->GetPpapiHost(), instance, resource),
-      browser_ppapi_host_(host),
-      gamepad_service_(GamepadService::GetInstance()),
+      gamepad_service_(device::GamepadService::GetInstance()),
       is_started_(false),
       weak_factory_(this) {}
 
-PepperGamepadHost::PepperGamepadHost(GamepadService* gamepad_service,
+PepperGamepadHost::PepperGamepadHost(device::GamepadService* gamepad_service,
                                      BrowserPpapiHost* host,
                                      PP_Instance instance,
                                      PP_Resource resource)
     : ResourceHost(host->GetPpapiHost(), instance, resource),
-      browser_ppapi_host_(host),
       gamepad_service_(gamepad_service),
       is_started_(false),
       weak_factory_(this) {}
@@ -70,12 +68,12 @@ int32_t PepperGamepadHost::OnRequestMemory(
 
 void PepperGamepadHost::GotUserGesture(
     const ppapi::host::ReplyMessageContext& context) {
-  base::SharedMemoryHandle handle =
-      gamepad_service_->GetSharedMemoryHandleForProcess(
-          browser_ppapi_host_->GetPluginProcess().Handle());
+  base::ReadOnlySharedMemoryRegion region =
+      gamepad_service_->DuplicateSharedMemoryRegion();
 
   context.params.AppendHandle(ppapi::proxy::SerializedHandle(
-      handle, sizeof(ppapi::ContentGamepadHardwareBuffer)));
+      base::ReadOnlySharedMemoryRegion::TakeHandleForSerialization(
+          std::move(region))));
   host()->SendReply(context, PpapiPluginMsg_Gamepad_SendMemory());
 }
 

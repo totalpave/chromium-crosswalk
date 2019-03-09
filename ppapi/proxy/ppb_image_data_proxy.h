@@ -42,10 +42,9 @@ class SerializedHandle;
 // ImageData is an abstract base class for image data resources. Unlike most
 // resources, ImageData must be public in the header since a number of other
 // resources need to access it.
-class PPAPI_PROXY_EXPORT ImageData
-    : public ppapi::Resource,
-      public NON_EXPORTED_BASE(ppapi::thunk::PPB_ImageData_API),
-      public ppapi::PPB_ImageData_Shared {
+class PPAPI_PROXY_EXPORT ImageData : public ppapi::Resource,
+                                     public ppapi::thunk::PPB_ImageData_API,
+                                     public ppapi::PPB_ImageData_Shared {
  public:
   ~ImageData() override;
 
@@ -95,7 +94,6 @@ class PPAPI_PROXY_EXPORT PlatformImageData : public ImageData {
   // PPB_ImageData API.
   void* Map() override;
   void Unmap() override;
-  SkCanvas* GetPlatformCanvas() override;
   SkCanvas* GetCanvas() override;
 
   static ImageHandle NullHandle();
@@ -104,7 +102,7 @@ class PPAPI_PROXY_EXPORT PlatformImageData : public ImageData {
   std::unique_ptr<TransportDIB> transport_dib_;
 
   // Null when the image isn't mapped.
-  sk_sp<SkCanvas> mapped_canvas_;
+  std::unique_ptr<SkCanvas> mapped_canvas_;
 
   DISALLOW_COPY_AND_ASSIGN(PlatformImageData);
 };
@@ -123,7 +121,6 @@ class PPAPI_PROXY_EXPORT SimpleImageData : public ImageData {
   // PPB_ImageData API.
   void* Map() override;
   void Unmap() override;
-  SkCanvas* GetPlatformCanvas() override;
   SkCanvas* GetCanvas() override;
 
  private:

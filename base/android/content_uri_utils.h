@@ -13,8 +13,6 @@
 
 namespace base {
 
-bool RegisterContentUriUtils(JNIEnv* env);
-
 // Opens a content URI for read and returns the file descriptor to the caller.
 // Returns -1 if the URI is invalid.
 BASE_EXPORT File OpenContentUriForRead(const FilePath& content_uri);
@@ -25,6 +23,13 @@ BASE_EXPORT bool ContentUriExists(const FilePath& content_uri);
 // Gets MIME type from a content URI. Returns an empty string if the URI is
 // invalid.
 BASE_EXPORT std::string GetContentUriMimeType(const FilePath& content_uri);
+
+// Gets the display name from a content URI. Returns true if the name was found.
+BASE_EXPORT bool MaybeGetFileDisplayName(const FilePath& content_uri,
+                                         base::string16* file_display_name);
+
+// Deletes a content URI.
+BASE_EXPORT void DeleteContentUri(const FilePath& content_uri);
 
 }  // namespace base
 

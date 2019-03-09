@@ -6,12 +6,12 @@
 
 #include "base/base_paths.h"
 #include "base/command_line.h"
-#include "base/debug/stack_trace.h"
 #include "base/i18n/icu_util.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/process/memory.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
+#include "base/test/launcher/test_launcher.h"
 #include "base/test/test_suite.h"
 #include "base/test/test_timeouts.h"
 #include "build/build_config.h"
@@ -21,6 +21,8 @@
 #include "content/shell/common/shell_switches.h"
 #include "media/base/media_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/buildflags.h"
+#include "ui/base/ui_base_switches.h"
 
 #ifdef V8_USE_EXTERNAL_STARTUP_DATA
 #include "gin/v8_initializer.h"
@@ -42,7 +44,7 @@ namespace content {
 #if defined(OS_ANDROID)
 std::unique_ptr<base::MessagePump> CreateMessagePumpForUI() {
   return std::unique_ptr<base::MessagePump>(new NestedMessagePumpAndroid());
-};
+}
 #endif
 
 class ContentBrowserTestSuite : public ContentTestSuiteBase {
@@ -85,6 +87,9 @@ class ContentBrowserTestSuite : public ContentTestSuiteBase {
     InitializeMojo();
 #endif
 
+    // Browser tests are expected not to tear-down various globals.
+    base::TestSuite::DisableCheckForLeakedGlobals();
+
     ContentTestSuiteBase::Initialize();
   }
 
@@ -116,7 +121,7 @@ class ContentTestLauncherDelegate : public TestLauncherDelegate {
 
  protected:
   ContentMainDelegate* CreateContentMainDelegate() override {
-    return new ShellMainDelegate();
+    return new ShellMainDelegate(true);
   }
 
  private:
@@ -126,7 +131,11 @@ class ContentTestLauncherDelegate : public TestLauncherDelegate {
 }  // namespace content
 
 int main(int argc, char** argv) {
-  int default_jobs = std::max(1, base::SysInfo::NumberOfProcessors() / 2);
+  base::CommandLine::Init(argc, argv);
+  size_t parallel_jobs = base::NumParallelJobs();
+  if (parallel_jobs > 1U) {
+    parallel_jobs /= 2U;
+  }
   content::ContentTestLauncherDelegate launcher_delegate;
-  return LaunchTests(&launcher_delegate, default_jobs, argc, argv);
+  return LaunchTests(&launcher_delegate, parallel_jobs, argc, argv);
 }

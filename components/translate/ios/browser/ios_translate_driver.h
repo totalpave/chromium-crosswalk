@@ -10,7 +10,9 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "components/language/ios/browser/ios_language_detection_tab_helper.h"
 #include "components/translate/core/browser/translate_driver.h"
+#include "components/translate/core/common/translate_errors.h"
 #include "components/translate/ios/browser/language_detection_controller.h"
 #include "components/translate/ios/browser/translate_controller.h"
 #include "ios/web/public/web_state/web_state_observer.h"
@@ -44,9 +46,14 @@ class IOSTranslateDriver : public TranslateDriver,
     return translate_controller_.get();
   }
 
+  // Creates a callback to be used when language detection occurs.
+  language::IOSLanguageDetectionTabHelper::Callback
+  CreateLanguageDetectionCallback();
+
   // web::WebStateObserver methods.
-  void NavigationItemCommitted(
-      const web::LoadCommittedDetails& load_details) override;
+  void DidFinishNavigation(web::WebState* web_state,
+                           web::NavigationContext* navigation_context) override;
+  void WebStateDestroyed(web::WebState* web_state) override;
 
   // TranslateDriver methods.
   void OnIsPageTranslatedChanged() override;
@@ -57,7 +64,7 @@ class IOSTranslateDriver : public TranslateDriver,
                      const std::string& source_lang,
                      const std::string& target_lang) override;
   void RevertTranslation(int page_seq_no) override;
-  bool IsOffTheRecord() override;
+  bool IsIncognito() override;
   const std::string& GetContentsMimeType() override;
   const GURL& GetLastCommittedURL() override;
   const GURL& GetVisibleURL() override;
@@ -71,29 +78,25 @@ class IOSTranslateDriver : public TranslateDriver,
                              int page_seq_no,
                              const std::string& original_page_language,
                              double translation_time);
-  // Checks if the current running page translation is finished or errored and
-  // notifies the browser accordingly.  If the translation has not terminated,
-  // posts a task to check again later.
-  // Similar to TranslateHelper::CheckTranslateStatus on desktop.
-  void CheckTranslateStatus(const std::string& source_language,
-                            const std::string& target_language,
-                            int page_seq_no);
 
   // Returns true if the user has not navigated away and the the page is not
   // being destroyed.
   bool IsPageValid(int page_seq_no) const;
 
-  // Callback for LanguageDetectionController.
-  void OnLanguageDetermined(
-      const LanguageDetectionController::DetectionDetails& details);
+  // Used to kick off translation process.
+  void OnLanguageDetermined(const LanguageDetectionDetails& details);
 
   // TranslateController::Observer methods.
-  void OnTranslateScriptReady(bool success,
+  void OnTranslateScriptReady(TranslateErrors::Type error_type,
                               double load_time,
                               double ready_time) override;
-  void OnTranslateComplete(bool success,
+  void OnTranslateComplete(TranslateErrors::Type error_type,
                            const std::string& original_language,
                            double translation_time) override;
+
+  // The WebState this instance is observing. Will be null after
+  // WebStateDestroyed has been called.
+  web::WebState* web_state_ = nullptr;
 
   // The navigation manager of the tab we are associated with.
   web::NavigationManager* navigation_manager_;
@@ -101,8 +104,6 @@ class IOSTranslateDriver : public TranslateDriver,
   base::WeakPtr<TranslateManager> translate_manager_;
   std::unique_ptr<TranslateController> translate_controller_;
   std::unique_ptr<LanguageDetectionController> language_detection_controller_;
-  std::unique_ptr<LanguageDetectionController::CallbackList::Subscription>
-      language_detection_callback_subscription_;
 
   // An ever-increasing sequence number of the current page, used to match up
   // translation requests with responses.

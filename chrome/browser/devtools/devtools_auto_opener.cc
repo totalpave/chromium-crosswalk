@@ -9,17 +9,21 @@
 
 DevToolsAutoOpener::DevToolsAutoOpener()
     : browser_tab_strip_tracker_(this, nullptr, nullptr) {
-  browser_tab_strip_tracker_.Init(
-      BrowserTabStripTracker::InitWith::ALL_BROWERS);
+  browser_tab_strip_tracker_.Init();
 }
 
 DevToolsAutoOpener::~DevToolsAutoOpener() {
 }
 
-void DevToolsAutoOpener::TabInsertedAt(
-    content::WebContents* contents,
-    int index,
-    bool foreground) {
-  if (!DevToolsWindow::IsDevToolsWindow(contents))
-    DevToolsWindow::OpenDevToolsWindow(contents);
+void DevToolsAutoOpener::OnTabStripModelChanged(
+    TabStripModel* tab_strip_model,
+    const TabStripModelChange& change,
+    const TabStripSelectionChange& selection) {
+  if (change.type() != TabStripModelChange::kInserted)
+    return;
+
+  for (const auto& delta : change.deltas()) {
+    if (!DevToolsWindow::IsDevToolsWindow(delta.insert.contents))
+      DevToolsWindow::OpenDevToolsWindow(delta.insert.contents);
+  }
 }

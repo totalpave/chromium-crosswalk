@@ -2,27 +2,30 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# GYP version: components/gcm_driver.gypi:instance_id_driver
-source_set("instance_id") {
+import("//components/gcm_driver/config.gni")
+
+static_library("instance_id") {
   sources = [
-    "android/component_jni_registrar.cc",
-    "android/component_jni_registrar.h",
     "instance_id.cc",
     "instance_id.h",
     "instance_id_driver.cc",
     "instance_id_driver.h",
     "instance_id_impl.cc",
     "instance_id_impl.h",
+    "instance_id_profile_service.cc",
+    "instance_id_profile_service.h",
   ]
 
   deps = [
     "//base",
-    "//components/gcm_driver",
+    "//components/gcm_driver:gcm_buildflags",
+    "//components/keyed_service/core:core",
+    "//components/prefs:prefs",
     "//crypto",
+    "//services/network/public/mojom",
   ]
-  allow_circular_includes_from = [ "//components/gcm_driver" ]
 
-  if (is_android) {
+  if (use_gcm_from_platform) {
     sources -= [
       "instance_id_impl.cc",
       "instance_id_impl.h",
@@ -35,8 +38,7 @@ source_set("instance_id") {
   }
 }
 
-# GYP version: components/gcm_driver.gypi:instance_id_test_support
-source_set("test_support") {
+static_library("test_support") {
   testonly = true
   sources = [
     "fake_gcm_driver_for_instance_id.cc",
@@ -50,7 +52,7 @@ source_set("test_support") {
   ]
   deps = [
     "//base",
-    "//components/gcm_driver:test_support",
+    "//components/gcm_driver",
     "//testing/gtest",
   ]
 
@@ -69,7 +71,9 @@ source_set("unit_tests") {
     ":instance_id",
     ":test_support",
     "//base",
+    "//components/gcm_driver:gcm_buildflags",
     "//google_apis/gcm",
+    "//net:test_support",
     "//testing/gtest",
   ]
 }

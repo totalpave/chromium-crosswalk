@@ -5,7 +5,6 @@
 /**
  * Controller for list contents update.
  * @param {!ListContainer} listContainer
- * @param {!DetailsContainer} detailsContainer
  * @param {!DirectoryModel} directoryModel
  * @param {!MetadataModel} metadataModel
  * @param {!FileMetadataFormatter} fileMetadataFormatter
@@ -13,7 +12,6 @@
  * @struct
  */
 function MetadataUpdateController(listContainer,
-                                  detailsContainer,
                                   directoryModel,
                                   metadataModel,
                                   fileMetadataFormatter) {
@@ -36,12 +34,6 @@ function MetadataUpdateController(listContainer,
   this.listContainer_ = listContainer;
 
   /**
-   * @private {!DetailsContainer}
-   * @const
-   */
-  this.detailsContainer_ = detailsContainer;
-
-  /**
    * @private {!FileMetadataFormatter}
    * @const
    */
@@ -54,7 +46,7 @@ function MetadataUpdateController(listContainer,
       'update', this.onCachedMetadataUpdate_.bind(this));
 
   // Update metadata to change 'Today' and 'Yesterday' dates.
-  var today = new Date();
+  const today = new Date();
   today.setHours(0);
   today.setMinutes(0);
   today.setSeconds(0);
@@ -75,15 +67,16 @@ MetadataUpdateController.MILLISECONDS_IN_DAY_ = 24 * 60 * 60 * 1000;
  */
 MetadataUpdateController.prototype.refreshCurrentDirectoryMetadata =
     function() {
-  var entries = this.directoryModel_.getFileList().slice();
-  var directoryEntry = this.directoryModel_.getCurrentDirEntry();
-  if (!directoryEntry)
+  const entries = this.directoryModel_.getFileList().slice();
+  const directoryEntry = this.directoryModel_.getCurrentDirEntry();
+  if (!directoryEntry) {
     return;
+  }
 
   // TODO(dgozman): refresh content metadata only when modificationTime
   // changed.
-  var isFakeEntry = util.isFakeEntry(directoryEntry);
-  var changedEntries = (isFakeEntry ? [] : [directoryEntry]).concat(entries);
+  const isFakeEntry = util.isFakeEntry(directoryEntry);
+  const changedEntries = (isFakeEntry ? [] : [directoryEntry]).concat(entries);
   this.metadataModel_.notifyEntriesChanged(changedEntries);
 
   // We don't pass callback here. When new metadata arrives, we have an
@@ -109,12 +102,12 @@ MetadataUpdateController.prototype.onCachedMetadataUpdate_ = function(event) {
  * @private
  */
 MetadataUpdateController.prototype.dailyUpdateModificationTime_ = function() {
-  var entries = /** @type {!Array<!Entry>} */(
+  const entries = /** @type {!Array<!Entry>} */(
       this.directoryModel_.getFileList().slice());
-  this.metadataModel_.get(entries, ['modificationTime']).then(function() {
+  this.metadataModel_.get(entries, ['modificationTime']).then(() => {
     this.listContainer_.currentView.updateListItemsMetadata(
         'filesystem', entries);
-  }.bind(this));
+  });
   setTimeout(this.dailyUpdateModificationTime_.bind(this),
              MetadataUpdateController.MILLISECONDS_IN_DAY_);
 };
@@ -123,13 +116,12 @@ MetadataUpdateController.prototype.dailyUpdateModificationTime_ = function() {
  * @private
  */
 MetadataUpdateController.prototype.onPreferencesChanged_ = function() {
-  chrome.fileManagerPrivate.getPreferences(function(prefs) {
-    var use12hourClock = !prefs.use24hourClock;
+  chrome.fileManagerPrivate.getPreferences(prefs => {
+    const use12hourClock = !prefs.use24hourClock;
     this.fileMetadataFormatter_.setDateTimeFormat(use12hourClock);
     // TODO(oka): Remove these two lines, and add fileMetadataFormatter to
     // constructor for each field instead.
     this.listContainer_.table.setDateTimeFormat(use12hourClock);
-    this.detailsContainer_.setDateTimeFormat(use12hourClock);
     this.refreshCurrentDirectoryMetadata();
-  }.bind(this));
+  });
 };

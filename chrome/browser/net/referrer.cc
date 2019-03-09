@@ -12,9 +12,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/values.h"
-#include "chrome/browser/net/predictor.h"
 
 namespace chrome_browser_net {
 
@@ -68,7 +66,7 @@ void Referrer::SuggestHost(const GURL& url) {
   if (!url.has_host())  // TODO(jar): Is this really needed????
     return;
   DCHECK(url == url.GetWithEmptyPath());
-  SubresourceMap::iterator it = find(url);
+  auto it = find(url);
   if (it != end()) {
     it->second.SubresourceIsNeeded();
     return;
@@ -90,7 +88,7 @@ void Referrer::DeleteLeastUseful() {
   int64_t least_useful_lifetime = 0;  // Duration in milliseconds.
 
   const base::Time kNow(base::Time::Now());  // Avoid multiple calls.
-  for (SubresourceMap::iterator it = begin(); it != end(); ++it) {
+  for (auto it = begin(); it != end(); ++it) {
     int64_t lifetime = (kNow - it->second.birth_time()).InMilliseconds();
     double rate = it->second.subresource_use_rate();
     if (least_useful_url.has_host()) {
@@ -108,7 +106,7 @@ void Referrer::DeleteLeastUseful() {
 }
 
 void Referrer::Deserialize(const base::Value& value) {
-  if (value.GetType() != base::Value::TYPE_LIST)
+  if (value.type() != base::Value::Type::LIST)
     return;
   const base::ListValue* subresource_list(
       static_cast<const base::ListValue*>(&value));
@@ -132,16 +130,11 @@ void Referrer::Deserialize(const base::Value& value) {
   }
 }
 
-base::Value* Referrer::Serialize() const {
-  base::ListValue* subresource_list(new base::ListValue);
-  for (const_iterator it = begin(); it != end(); ++it) {
-    std::unique_ptr<base::StringValue> url_spec(
-        new base::StringValue(it->first.spec()));
-    std::unique_ptr<base::FundamentalValue> rate(
-        new base::FundamentalValue(it->second.subresource_use_rate()));
-
-    subresource_list->Append(std::move(url_spec));
-    subresource_list->Append(std::move(rate));
+std::unique_ptr<base::ListValue> Referrer::Serialize() const {
+  auto subresource_list = std::make_unique<base::ListValue>();
+  for (auto it = begin(); it != end(); ++it) {
+    subresource_list->AppendString(it->first.spec());
+    subresource_list->AppendDouble(it->second.subresource_use_rate());
   }
   return subresource_list;
 }

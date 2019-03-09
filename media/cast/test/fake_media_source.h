@@ -12,8 +12,7 @@
 
 #include <stdint.h>
 
-#include <queue>
-
+#include "base/containers/queue.h"
 #include "base/files/file_path.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/macros.h"
@@ -29,6 +28,7 @@
 
 struct AVCodecContext;
 struct AVFormatContext;
+struct AVFrame;
 
 namespace media {
 
@@ -37,8 +37,11 @@ class AudioConverter;
 class AudioFifo;
 class AudioTimestampHelper;
 class FFmpegGlue;
+class FFmpegDecodingLoop;
 class InMemoryUrlProtocol;
 class VideoFrame;
+
+struct ScopedPtrAVFreeContext;
 
 namespace cast {
 
@@ -54,9 +57,9 @@ class FakeMediaSource : public media::AudioConverter::InputCallback {
   // |video_config| is the desired video config.
   // |keep_frames| is true if all VideoFrames are saved in a queue.
   FakeMediaSource(scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-                  base::TickClock* clock,
-                  const AudioSenderConfig& audio_config,
-                  const VideoSenderConfig& video_config,
+                  const base::TickClock* clock,
+                  const FrameSenderConfig& audio_config,
+                  const FrameSenderConfig& video_config,
                   bool keep_frames);
   ~FakeMediaSource() final;
 
@@ -71,7 +74,7 @@ class FakeMediaSource : public media::AudioConverter::InputCallback {
   void Start(scoped_refptr<AudioFrameInput> audio_frame_input,
              scoped_refptr<VideoFrameInput> video_frame_input);
 
-  const VideoSenderConfig& get_video_config() const { return video_config_; }
+  const FrameSenderConfig& get_video_config() const { return video_config_; }
 
   scoped_refptr<media::VideoFrame> PopOldestInsertedVideoFrame();
 
@@ -104,7 +107,9 @@ class FakeMediaSource : public media::AudioConverter::InputCallback {
   ScopedAVPacket DemuxOnePacket(bool* audio);
 
   void DecodeAudio(ScopedAVPacket packet);
+  bool OnNewAudioFrame(AVFrame* frame);
   void DecodeVideo(ScopedAVPacket packet);
+  bool OnNewVideoFrame(AVFrame* frame);
   void Decode(bool decode_audio);
 
   // media::AudioConverter::InputCallback implementation.
@@ -113,12 +118,10 @@ class FakeMediaSource : public media::AudioConverter::InputCallback {
 
   AVStream* av_audio_stream();
   AVStream* av_video_stream();
-  AVCodecContext* av_audio_context();
-  AVCodecContext* av_video_context();
 
   const scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   const media::AudioParameters output_audio_params_;
-  const VideoSenderConfig video_config_;
+  const FrameSenderConfig video_config_;
   const bool keep_frames_;
   bool variable_frame_size_mode_;
   gfx::Size current_frame_size_;
@@ -126,7 +129,7 @@ class FakeMediaSource : public media::AudioConverter::InputCallback {
   scoped_refptr<AudioFrameInput> audio_frame_input_;
   scoped_refptr<VideoFrameInput> video_frame_input_;
   uint8_t synthetic_count_;
-  base::TickClock* const clock_;  // Not owned by this class.
+  const base::TickClock* const clock_;  // Not owned by this class.
 
   // Time when the stream starts.
   base::TimeTicks start_time_;
@@ -142,10 +145,14 @@ class FakeMediaSource : public media::AudioConverter::InputCallback {
   AVFormatContext* av_format_context_;
 
   int audio_stream_index_;
+  std::unique_ptr<AVCodecContext, ScopedPtrAVFreeContext> av_audio_context_;
+  std::unique_ptr<FFmpegDecodingLoop> audio_decoding_loop_;
   AudioParameters source_audio_params_;
   double playback_rate_;
 
   int video_stream_index_;
+  std::unique_ptr<AVCodecContext, ScopedPtrAVFreeContext> av_video_context_;
+  std::unique_ptr<FFmpegDecodingLoop> video_decoding_loop_;
   int video_frame_rate_numerator_;
   int video_frame_rate_denominator_;
 
@@ -158,13 +165,13 @@ class FakeMediaSource : public media::AudioConverter::InputCallback {
   // Track the timestamp of audio sent to the receiver.
   std::unique_ptr<media::AudioTimestampHelper> audio_sent_ts_;
 
-  std::queue<scoped_refptr<VideoFrame> > video_frame_queue_;
-  std::queue<scoped_refptr<VideoFrame> > inserted_video_frame_queue_;
+  base::queue<scoped_refptr<VideoFrame>> video_frame_queue_;
+  base::queue<scoped_refptr<VideoFrame>> inserted_video_frame_queue_;
   int64_t video_first_pts_;
   bool video_first_pts_set_;
   base::TimeDelta last_video_frame_timestamp_;
 
-  std::queue<AudioBus*> audio_bus_queue_;
+  base::queue<AudioBus*> audio_bus_queue_;
 
   // NOTE: Weak pointers must be invalidated before all other member variables.
   base::WeakPtrFactory<FakeMediaSource> weak_factory_;

@@ -6,7 +6,7 @@
 
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "third_party/WebKit/public/platform/WebURL.h"
+#include "third_party/blink/public/platform/web_url.h"
 
 using blink::WebString;
 using blink::WebURL;
@@ -16,7 +16,7 @@ namespace content {
 LocalStorageArea::LocalStorageArea(
     scoped_refptr<LocalStorageCachedArea> cached_area)
     : cached_area_(std::move(cached_area)),
-      id_(base::Uint64ToString(base::RandUint64())) {
+      id_(base::NumberToString(base::RandUint64())) {
   cached_area_->AreaCreated(this);
 }
 
@@ -28,29 +28,31 @@ unsigned LocalStorageArea::length() {
   return cached_area_->GetLength();
 }
 
-WebString LocalStorageArea::key(unsigned index) {
-  return cached_area_->GetKey(index);
+WebString LocalStorageArea::Key(unsigned index, bool* did_decrease_iterator) {
+  return WebString::FromUTF16(
+      cached_area_->GetKey(index, did_decrease_iterator));
 }
 
-WebString LocalStorageArea::getItem(const WebString& key) {
-  return cached_area_->GetItem(key);
+WebString LocalStorageArea::GetItem(const WebString& key) {
+  return WebString::FromUTF16(cached_area_->GetItem(key.Utf16()));
 }
 
-void LocalStorageArea::setItem(
-    const WebString& key, const WebString& value, const WebURL& page_url,
-    WebStorageArea::Result& result) {
-  if (!cached_area_->SetItem(key, value, page_url, id_))
-    result = ResultBlockedByQuota;
+void LocalStorageArea::SetItem(const WebString& key,
+                               const WebString& value,
+                               const WebURL& page_url,
+                               WebStorageArea::Result& result) {
+  if (!cached_area_->SetItem(key.Utf16(), value.Utf16(), page_url, id_))
+    result = kResultBlockedByQuota;
   else
-    result = ResultOK;
+    result = kResultOK;
 }
 
-void LocalStorageArea::removeItem(
-    const WebString& key, const WebURL& page_url) {
-  cached_area_->RemoveItem(key, page_url, id_);
+void LocalStorageArea::RemoveItem(const WebString& key,
+                                  const WebURL& page_url) {
+  cached_area_->RemoveItem(key.Utf16(), page_url, id_);
 }
 
-void LocalStorageArea::clear(const WebURL& page_url) {
+void LocalStorageArea::Clear(const WebURL& page_url) {
   cached_area_->Clear(page_url, id_);
 }
 

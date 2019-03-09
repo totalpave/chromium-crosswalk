@@ -11,8 +11,11 @@
 namespace cc {
 
 TilingSetEvictionQueue::TilingSetEvictionQueue(
-    PictureLayerTilingSet* tiling_set)
-    : tree_(tiling_set->tree()), phase_(EVENTUALLY_RECT) {
+    PictureLayerTilingSet* tiling_set,
+    bool is_drawing_layer)
+    : tree_(tiling_set->tree()),
+      phase_(EVENTUALLY_RECT),
+      is_drawing_layer_(is_drawing_layer) {
   // Early out if the layer has no tilings.
   if (!tiling_set->num_tilings())
     return;
@@ -25,8 +28,7 @@ TilingSetEvictionQueue::TilingSetEvictionQueue(
   current_tile_ = *eventually_iterator_;
 }
 
-TilingSetEvictionQueue::~TilingSetEvictionQueue() {
-}
+TilingSetEvictionQueue::~TilingSetEvictionQueue() = default;
 
 void TilingSetEvictionQueue::GenerateTilingOrder(
     PictureLayerTilingSet* tiling_set) {
@@ -232,7 +234,6 @@ bool TilingSetEvictionQueue::EvictionRectIterator::GetFirstTileAndCheckIfValid(
     if (tiling->pending_visible_rect().Intersects(tile_rect))
       return false;
   }
-  (*tilings_)[tiling_index_]->UpdateRequiredStatesOnTile(tile);
   prioritized_tile_ = (*tilings_)[tiling_index_]->MakePrioritizedTile(
       tile, priority_rect_type_);
   // In other cases, the tile we got is a viable candidate, return true.

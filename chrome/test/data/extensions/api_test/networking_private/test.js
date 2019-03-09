@@ -80,6 +80,7 @@ var availableTests = [
   },
   function requestNetworkScan() {
     chrome.networkingPrivate.requestNetworkScan();
+    chrome.networkingPrivate.requestNetworkScan('Cellular');
     chrome.test.succeed();
   },
   function startConnect() {
@@ -97,10 +98,6 @@ var availableTests = [
   function verifyDestination() {
     chrome.networkingPrivate.verifyDestination(
         verificationProperties, callbackPass(callbackResult));
-  },
-  function verifyAndEncryptCredentials() {
-    chrome.networkingPrivate.verifyAndEncryptCredentials(
-        verificationProperties, kGuid, callbackPass(callbackResult));
   },
   function verifyAndEncryptData() {
     chrome.networkingPrivate.verifyAndEncryptData(
@@ -127,6 +124,13 @@ var availableTests = [
     chrome.networkingPrivate.setCellularSimState(
         kGuid, simState, callbackPass(callbackResult));
   },
+  function selectCellularMobileNetwork() {
+    chrome.networkingPrivate.selectCellularMobileNetwork(
+        kGuid, 'fakeId', callbackPass(callbackResult));
+  },
+  function getGlobalPolicy() {
+    chrome.networkingPrivate.getGlobalPolicy(callbackPass(callbackResult));
+  }
 ];
 
 var testToRun = window.location.search.substring(1);

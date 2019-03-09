@@ -25,8 +25,8 @@ namespace cmd {
 }  // namespace cmd
 
 // Pack & unpack Command cmd_flags
-#define CMD_FLAG_SET_TRACE_LEVEL(level)     ((level & 3) << 0)
-#define CMD_FLAG_GET_TRACE_LEVEL(cmd_flags) ((cmd_flags >> 0) & 3)
+#define CMD_FLAG_SET_TRACE_LEVEL(level)     (level & 3)
+#define CMD_FLAG_GET_TRACE_LEVEL(cmd_flags) (cmd_flags & 3)
 
 // Computes the number of command buffer entries needed for a certain size. In
 // other words it rounds up to a multiple of entries.
@@ -78,6 +78,11 @@ struct CommandHeader {
                   "T::kArgFlags should equal cmd::kAtLeastN");
     DCHECK_GE(size_in_bytes, sizeof(T));  // NOLINT
     Init(T::kCmdId, ComputeNumEntries(size_in_bytes));
+  }
+
+  static CommandHeader FromVolatile(const volatile CommandHeader& other) {
+    // const_cast is safe because the copy constructor is trivial.
+    return const_cast<const CommandHeader&>(other);
   }
 };
 
@@ -368,9 +373,7 @@ struct SetBucketDataImmediate {
   static const cmd::ArgFlags kArgFlags = cmd::kAtLeastN;
   static const uint8_t cmd_flags = CMD_FLAG_SET_TRACE_LEVEL(3);
 
-  void SetHeader(uint32_t size) {
-    header.SetCmdBySize<ValueType>(size);
-  }
+  void SetHeader(uint32_t _size) { header.SetCmdBySize<ValueType>(_size); }
 
   void Init(uint32_t _bucket_id,
             uint32_t _offset,
@@ -556,4 +559,3 @@ static_assert(offsetof(GetBucketData, shared_memory_offset) == 20,
 }  // namespace gpu
 
 #endif  // GPU_COMMAND_BUFFER_COMMON_CMD_BUFFER_COMMON_H_
-

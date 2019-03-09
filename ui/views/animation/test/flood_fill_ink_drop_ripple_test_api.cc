@@ -23,7 +23,7 @@ FloodFillInkDropRippleTestApi::FloodFillInkDropRippleTestApi(
 FloodFillInkDropRippleTestApi::~FloodFillInkDropRippleTestApi() {}
 
 void FloodFillInkDropRippleTestApi::TransformPoint(float radius,
-                                                   gfx::Point* point) {
+                                                   gfx::Point3F* point) {
   ink_drop_ripple()->CalculateTransform(radius).TransformPoint(point);
 }
 
@@ -35,6 +35,10 @@ gfx::Point FloodFillInkDropRippleTestApi::GetDrawnCenterPoint() const {
 float FloodFillInkDropRippleTestApi::MaxDistanceToCorners(
     const gfx::Point& point) const {
   return ink_drop_ripple()->MaxDistanceToCorners(point);
+}
+
+gfx::Transform FloodFillInkDropRippleTestApi::GetPaintedLayerTransform() const {
+  return ink_drop_ripple()->painted_layer_.transform();
 }
 
 float FloodFillInkDropRippleTestApi::GetCurrentOpacity() const {

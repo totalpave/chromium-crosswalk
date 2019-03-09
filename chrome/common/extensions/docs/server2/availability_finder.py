@@ -7,7 +7,7 @@ import posixpath
 from api_models import GetNodeCategories
 from api_schema_graph import APISchemaGraph
 from branch_utility import BranchUtility, ChannelInfo
-from compiled_file_system import CompiledFileSystem, SingleFile, Unicode
+from compiled_file_system import Cache, CompiledFileSystem, SingleFile, Unicode
 from extensions_paths import API_PATHS, JSON_TEMPLATES
 from features_bundle import FeaturesBundle
 from file_system import FileNotFoundError
@@ -34,8 +34,11 @@ def _GetChannelFromFeatures(api_name, features):
   Returns None if channel information for the API cannot be located.
   '''
   feature = features.Get().get(api_name)
-  return feature.get('channel') if feature else None
+  channel = feature.get('channel') if feature else None
 
+  # Change "trunk" to "master". Extension features use "trunk" while the
+  # Docserver uses "master".
+  return "master" if channel == "trunk" else channel
 
 def _GetChannelFromAPIFeatures(api_name, features_bundle):
   return _GetChannelFromFeatures(api_name, features_bundle.GetAPIFeatures())
@@ -144,11 +147,14 @@ class AvailabilityFinder(object):
         JSON_TEMPLATES + 'api_availabilities.json').Get().get(node_name)
     if node_info is None:
       return None
+
+    channel_info = None
     if node_info['channel'] == 'stable':
-      return AvailabilityInfo(
-          self._branch_utility.GetStableChannelInfo(node_info['version']))
-    return AvailabilityInfo(
-        self._branch_utility.GetChannelInfo(node_info['channel']))
+      channel_info = self._branch_utility.GetStableChannelInfo(
+          node_info['version'])
+    else:
+      channel_info = self._branch_utility.GetChannelInfo(node_info['channel'])
+    return AvailabilityInfo(channel_info) if channel_info else None
 
   @memoize
   def _CreateAPISchemaFileSystem(self, file_system):
@@ -157,10 +163,11 @@ class AvailabilityFinder(object):
     '''
     def process_schema(path, data):
       return self._schema_processor.Process(path, data)
-    return self._compiled_fs_factory.Create(file_system,
-                                            SingleFile(Unicode(process_schema)),
-                                            CompiledFileSystem,
-                                            category='api-schema')
+    return self._compiled_fs_factory.Create(
+        file_system,
+        Cache(SingleFile(Unicode(process_schema))),
+        CompiledFileSystem,
+        category='api-schema')
 
   def _GetAPISchema(self, api_name, file_system, version):
     '''Searches |file_system| for |api_name|'s API schema data, and processes

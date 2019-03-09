@@ -11,6 +11,7 @@
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chrome/test/views/chrome_test_views_delegate.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "content/public/test/test_browser_thread_bundle.h"
@@ -20,8 +21,6 @@
 
 using base::ASCIIToUTF16;
 using base::UTF8ToUTF16;
-using base::Time;
-using base::TimeDelta;
 using bookmarks::BookmarkModel;
 using bookmarks::BookmarkNode;
 
@@ -35,7 +34,7 @@ class BookmarkEditorViewTest : public testing::Test {
     profile_.reset(new TestingProfile());
     profile_->CreateBookmarkModel(true);
 
-    model_ = BookmarkModelFactory::GetForProfile(profile_.get());
+    model_ = BookmarkModelFactory::GetForBrowserContext(profile_.get());
     bookmarks::test::WaitForBookmarkModelToLoad(model_);
 
     AddTestData();
@@ -71,6 +70,13 @@ class BookmarkEditorViewTest : public testing::Test {
   void SetURLText(const base::string16& text) {
     if (editor_->details_.type != BookmarkEditor::EditDetails::NEW_FOLDER)
       editor_->url_tf_->SetText(text);
+  }
+
+  base::string16 GetURLText() const {
+    if (editor_->details_.type != BookmarkEditor::EditDetails::NEW_FOLDER)
+      return editor_->url_tf_->text();
+
+    return base::string16();
   }
 
   void ApplyEdits() {
@@ -138,6 +144,8 @@ class BookmarkEditorViewTest : public testing::Test {
     model_->AddURL(of1, 0, ASCIIToUTF16("of1a"), GURL(test_base + "of1a"));
   }
 
+  ChromeTestViewsDelegate views_delegate_;
+
   std::unique_ptr<BookmarkEditorView> editor_;
 };
 
@@ -189,7 +197,7 @@ TEST_F(BookmarkEditorViewTest, EditTitleKeepsPosition) {
 
 // Changes the url and makes sure parent/visual order doesn't change.
 TEST_F(BookmarkEditorViewTest, EditURLKeepsPosition) {
-  Time node_time = Time::Now() + TimeDelta::FromDays(2);
+  base::Time node_time = base::Time::Now() + base::TimeDelta::FromDays(2);
   GetMutableNode("a")->set_date_added(node_time);
   CreateEditor(profile_.get(), NULL,
                BookmarkEditor::EditDetails::EditNode(GetNode("a")),
@@ -221,7 +229,7 @@ TEST_F(BookmarkEditorViewTest, ChangeParent) {
 
 // Moves 'a' to be a child of the other node and changes its url to new_a.
 TEST_F(BookmarkEditorViewTest, ChangeParentAndURL) {
-  Time node_time = Time::Now() + TimeDelta::FromDays(2);
+  base::Time node_time = base::Time::Now() + base::TimeDelta::FromDays(2);
   GetMutableNode("a")->set_date_added(node_time);
   CreateEditor(profile_.get(), NULL,
                BookmarkEditor::EditDetails::EditNode(GetNode("a")),
@@ -330,6 +338,34 @@ TEST_F(BookmarkEditorViewTest, ChangeTitleNoTree) {
   const BookmarkNode* new_node = other_node->GetChild(0);
 
   EXPECT_EQ(ASCIIToUTF16("new_a"), new_node->GetTitle());
+}
+
+// Edits the bookmark and ensures resulting URL keeps the same scheme, even
+// when userinfo is present in the URL
+TEST_F(BookmarkEditorViewTest, EditKeepsScheme) {
+  const BookmarkNode* kBBNode = model_->bookmark_bar_node();
+
+  const GURL kUrl = GURL("http://javascript:scripttext@example.com/");
+
+  CreateEditor(profile_.get(), kBBNode,
+               BookmarkEditor::EditDetails::AddNodeInFolder(kBBNode, 1, kUrl,
+                                                            base::string16()),
+               BookmarkEditorView::SHOW_TREE);
+
+  // We expect only the trailing / to be trimmed when userinfo is present
+  EXPECT_EQ(ASCIIToUTF16(kUrl.spec()), GetURLText() + ASCIIToUTF16("/"));
+
+  const base::string16& kTitle = ASCIIToUTF16("EditingKeepsScheme");
+  SetTitleText(kTitle);
+
+  ApplyEdits(editor_tree_model()->GetRoot()->GetChild(0));
+
+  ASSERT_EQ(4, kBBNode->child_count());
+
+  const BookmarkNode* kNewNode = kBBNode->GetChild(1);
+
+  EXPECT_EQ(kTitle, kNewNode->GetTitle());
+  EXPECT_EQ(kUrl, kNewNode->url());
 }
 
 // Creates a new folder.

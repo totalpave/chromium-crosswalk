@@ -12,12 +12,12 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
-#include "ui/events/platform/platform_event_types.h"
+#include "ui/events/platform_event.h"
 #include "ui/gfx/x/x11_types.h"
 
 namespace ui {
 class ScopedEventDispatcher;
-class X11AtomCache;
+class XScopedEventSelector;
 }
 
 namespace views {
@@ -47,18 +47,15 @@ class X11PropertyChangeWaiter : public ui::PlatformEventDispatcher {
   XID x_window_;
   const char* property_;
 
+  std::unique_ptr<ui::XScopedEventSelector> x_window_events_;
+
   // Whether Wait() should block.
   bool wait_;
 
   // Ends the run loop.
   base::Closure quit_closure_;
 
-  // The event mask to be restored upon X11PropertyChangeWaiter's destruction.
-  long old_event_mask_;
-
   std::unique_ptr<ui::ScopedEventDispatcher> dispatcher_;
-
-  std::unique_ptr<ui::X11AtomCache> atom_cache_;
 
   DISALLOW_COPY_AND_ASSIGN(X11PropertyChangeWaiter);
 };

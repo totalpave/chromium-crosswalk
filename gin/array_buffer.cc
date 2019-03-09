@@ -2,12 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "gin/array_buffer.h"
+
 #include <stddef.h>
 #include <stdlib.h>
 
+#include "base/allocator/partition_allocator/page_allocator.h"
 #include "base/logging.h"
-#include "gin/array_buffer.h"
+#include "base/partition_alloc_buildflags.h"
+#include "build/build_config.h"
 #include "gin/per_isolate_data.h"
+
+#if defined(OS_POSIX)
+#include <sys/mman.h>
+
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+#endif  // defined(OS_POSIX)
 
 namespace gin {
 
@@ -23,6 +35,7 @@ static_assert(V8_ARRAY_BUFFER_INTERNAL_FIELD_COUNT == 2,
 // ArrayBufferAllocator -------------------------------------------------------
 
 void* ArrayBufferAllocator::Allocate(size_t length) {
+  // TODO(bbudge) Use partition allocator for malloc/calloc allocations.
   return calloc(1, length);
 }
 
@@ -70,6 +83,7 @@ class ArrayBuffer::Private : public base::RefCounted<ArrayBuffer::Private> {
 
  private:
   friend class base::RefCounted<Private>;
+  using DataDeleter = void (*)(void* data, size_t length, void* info);
 
   Private(v8::Isolate* isolate, v8::Local<v8::ArrayBuffer> array);
   ~Private();
@@ -82,6 +96,8 @@ class ArrayBuffer::Private : public base::RefCounted<ArrayBuffer::Private> {
   v8::Isolate* isolate_;
   void* buffer_;
   size_t length_;
+  DataDeleter deleter_;
+  void* deleter_data_;
 };
 
 scoped_refptr<ArrayBuffer::Private> ArrayBuffer::Private::From(
@@ -90,10 +106,10 @@ scoped_refptr<ArrayBuffer::Private> ArrayBuffer::Private::From(
     CHECK_EQ(WrapperInfo::From(v8::Local<v8::Object>::Cast(array)),
              &g_array_buffer_wrapper_info)
         << "Cannot mix blink and gin ArrayBuffers";
-    return make_scoped_refptr(static_cast<Private*>(
+    return base::WrapRefCounted(static_cast<Private*>(
         array->GetAlignedPointerFromInternalField(kEncodedValueIndex)));
   }
-  return make_scoped_refptr(new Private(isolate, array));
+  return base::WrapRefCounted(new Private(isolate, array));
 }
 
 ArrayBuffer::Private::Private(v8::Isolate* isolate,
@@ -104,6 +120,8 @@ ArrayBuffer::Private::Private(v8::Isolate* isolate,
   v8::ArrayBuffer::Contents contents = array->Externalize();
   buffer_ = contents.Data();
   length_ = contents.ByteLength();
+  deleter_ = contents.Deleter();
+  deleter_data_ = contents.DeleterData();
 
   array->SetAlignedPointerInInternalField(kWrapperInfoIndex,
                                           &g_array_buffer_wrapper_info);
@@ -115,7 +133,7 @@ ArrayBuffer::Private::Private(v8::Isolate* isolate,
 }
 
 ArrayBuffer::Private::~Private() {
-  PerIsolateData::From(isolate_)->allocator()->Free(buffer_, length_);
+  deleter_(buffer_, length_, deleter_data_);
 }
 
 void ArrayBuffer::Private::FirstWeakCallback(
@@ -145,15 +163,9 @@ ArrayBuffer::ArrayBuffer(v8::Isolate* isolate,
   num_bytes_ = private_->length();
 }
 
-ArrayBuffer::~ArrayBuffer() {
-}
+ArrayBuffer::~ArrayBuffer() = default;
 
-ArrayBuffer& ArrayBuffer::operator=(const ArrayBuffer& other) {
-  private_ = other.private_;
-  bytes_ = other.bytes_;
-  num_bytes_ = other.num_bytes_;
-  return *this;
-}
+ArrayBuffer& ArrayBuffer::operator=(const ArrayBuffer& other) = default;
 
 // Converter<ArrayBuffer> -----------------------------------------------------
 
@@ -180,16 +192,10 @@ ArrayBufferView::ArrayBufferView(v8::Isolate* isolate,
       num_bytes_(view->ByteLength()) {
 }
 
-ArrayBufferView::~ArrayBufferView() {
-}
+ArrayBufferView::~ArrayBufferView() = default;
 
-ArrayBufferView& ArrayBufferView::operator=(const ArrayBufferView& other) {
-  array_buffer_ = other.array_buffer_;
-  offset_ = other.offset_;
-  num_bytes_ = other.num_bytes_;
-  return *this;
-}
-
+ArrayBufferView& ArrayBufferView::operator=(const ArrayBufferView& other) =
+    default;
 
 // Converter<ArrayBufferView> -------------------------------------------------
 

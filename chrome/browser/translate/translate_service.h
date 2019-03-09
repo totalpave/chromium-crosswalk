@@ -10,11 +10,15 @@
 class GURL;
 class PrefService;
 
+namespace language {
+class LanguageModel;
+}  // namespace language
+
 // Singleton managing the resources required for Translate.
 class TranslateService
     : public web_resource::ResourceRequestAllowedNotifier::Observer {
  public:
-   // Must be called before the Translate feature can be used.
+  // Must be called before the Translate feature can be used.
   static void Initialize();
 
   // Must be called to shut down the Translate feature.
@@ -23,7 +27,7 @@ class TranslateService
   // Initializes the TranslateService in a way that it can be initialized
   // multiple times in a unit test suite (once for each test). Should be paired
   // with ShutdownForTesting at the end of the test.
-  static void InitializeForTesting();
+  static void InitializeForTesting(network::mojom::ConnectionType type);
 
   // Shuts down the TranslateService at the end of a test in a way that the next
   // test can initialize and use the service.
@@ -32,20 +36,20 @@ class TranslateService
   // Returns true if the new translate bubble is enabled.
   static bool IsTranslateBubbleEnabled();
 
-  // Returns the language to translate to. The language returned is the
-  // first language found in the following list that is supported by the
-  // translation service:
-  //     the UI language
-  //     the accept-language list
-  // If no language is found then an empty string is returned.
-  static std::string GetTargetLanguage(PrefService* prefs);
+  // Returns the language to translate to. For more details, see
+  // TranslateManager::GetTargetLanguage.
+  static std::string GetTargetLanguage(PrefService* prefs,
+                                       language::LanguageModel* language_model);
 
   // Returns true if the URL can be translated.
   static bool IsTranslatableURL(const GURL& url);
 
+  // Returns true if the service is available and enabled by user preferences.
+  static bool IsAvailable(PrefService* prefs);
+
  private:
   TranslateService();
-  ~TranslateService();
+  ~TranslateService() override;
 
   // ResourceRequestAllowedNotifier::Observer methods.
   void OnResourceRequestsAllowed() override;

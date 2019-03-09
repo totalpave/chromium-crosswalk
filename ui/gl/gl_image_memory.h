@@ -18,16 +18,19 @@ namespace gl {
 
 class GL_EXPORT GLImageMemory : public GLImage {
  public:
-  GLImageMemory(const gfx::Size& size, unsigned internalformat);
+  explicit GLImageMemory(const gfx::Size& size);
 
   bool Initialize(const unsigned char* memory,
                   gfx::BufferFormat format,
                   size_t stride);
 
+  // Safe downcast. Returns |nullptr| on failure.
+  static GLImageMemory* FromGLImage(GLImage* image);
+
   // Overridden from GLImage:
-  void Destroy(bool have_context) override;
   gfx::Size GetSize() override;
   unsigned GetInternalFormat() override;
+  BindOrCopy ShouldBindOrCopy() override;
   bool BindTexImage(unsigned target) override;
   void ReleaseTexImage(unsigned target) override {}
   bool CopyTexImage(unsigned target) override;
@@ -38,19 +41,23 @@ class GL_EXPORT GLImageMemory : public GLImage {
                             int z_order,
                             gfx::OverlayTransform transform,
                             const gfx::Rect& bounds_rect,
-                            const gfx::RectF& crop_rect) override;
+                            const gfx::RectF& crop_rect,
+                            bool enable_blend,
+                            std::unique_ptr<gfx::GpuFence> gpu_fence) override;
+  void Flush() override {}
+  Type GetType() const override;
 
-  static unsigned GetInternalFormatForTesting(gfx::BufferFormat format);
+  const unsigned char* memory() { return memory_; }
+  size_t stride() const { return stride_; }
+  gfx::BufferFormat format() const { return format_; }
 
  protected:
   ~GLImageMemory() override;
 
-  gfx::BufferFormat format() const { return format_; }
-  size_t stride() const { return stride_; }
-
  private:
+  static bool ValidFormat(gfx::BufferFormat format);
+
   const gfx::Size size_;
-  const unsigned internalformat_;
   const unsigned char* memory_;
   gfx::BufferFormat format_;
   size_t stride_;

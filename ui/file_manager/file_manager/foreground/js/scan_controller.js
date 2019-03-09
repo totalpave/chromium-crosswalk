@@ -69,13 +69,6 @@ function ScanController(
   this.scanUpdatedTimer_ = 0;
 
   /**
-   * Last value of hosted files disabled.
-   * @type {?boolean}
-   * @private
-   */
-  this.lastHostedFilesDisabled_ = null;
-
-  /**
    * @type {?function()}
    * @private
    */
@@ -93,20 +86,19 @@ function ScanController(
       'scan-updated', this.onScanUpdated_.bind(this));
   this.directoryModel_.addEventListener(
       'rescan-completed', this.onRescanCompleted_.bind(this));
-  chrome.fileManagerPrivate.onPreferencesChanged.addListener(
-      this.onPreferencesChanged_.bind(this));
-  this.onPreferencesChanged_();
 }
 
 /**
  * @private
  */
 ScanController.prototype.onScanStarted_ = function() {
-  if (this.scanInProgress_)
+  if (this.scanInProgress_) {
     this.listContainer_.endBatchUpdates();
+  }
 
-  if (this.commandHandler_)
+  if (this.commandHandler_) {
     this.commandHandler_.updateAvailability();
+  }
 
   this.listContainer_.startBatchUpdates();
   this.scanInProgress_ = true;
@@ -130,9 +122,6 @@ ScanController.prototype.onScanCompleted_ = function() {
     return;
   }
 
-  if (this.commandHandler_)
-    this.commandHandler_.updateAvailability();
-
   this.hideSpinner_();
 
   if (this.scanUpdatedTimer_) {
@@ -142,6 +131,10 @@ ScanController.prototype.onScanCompleted_ = function() {
 
   this.scanInProgress_ = false;
   this.listContainer_.endBatchUpdates();
+
+  if (this.commandHandler_) {
+    this.commandHandler_.updateAvailability();
+  }
 };
 
 /**
@@ -153,12 +146,13 @@ ScanController.prototype.onScanUpdated_ = function() {
     return;
   }
 
-  if (this.scanUpdatedTimer_)
+  if (this.scanUpdatedTimer_) {
     return;
+  }
 
   // Show contents incrementally by finishing batch updated, but only after
   // 200ms elapsed, to avoid flickering when it is not necessary.
-  this.scanUpdatedTimer_ = setTimeout(function() {
+  this.scanUpdatedTimer_ = setTimeout(() => {
     this.hideSpinner_();
 
     // Update the UI.
@@ -167,7 +161,7 @@ ScanController.prototype.onScanUpdated_ = function() {
       this.listContainer_.startBatchUpdates();
     }
     this.scanUpdatedTimer_ = 0;
-  }.bind(this), 200);
+  }, 200);
 };
 
 /**
@@ -179,9 +173,6 @@ ScanController.prototype.onScanCancelled_ = function() {
     return;
   }
 
-  if (this.commandHandler_)
-    this.commandHandler_.updateAvailability();
-
   this.hideSpinner_();
 
   if (this.scanUpdatedTimer_) {
@@ -191,6 +182,10 @@ ScanController.prototype.onScanCancelled_ = function() {
 
   this.scanInProgress_ = false;
   this.listContainer_.endBatchUpdates();
+
+  if (this.commandHandler_) {
+    this.commandHandler_.updateAvailability();
+  }
 };
 
 /**
@@ -199,25 +194,6 @@ ScanController.prototype.onScanCancelled_ = function() {
  */
 ScanController.prototype.onRescanCompleted_ = function() {
   this.selectionHandler_.onFileSelectionChanged();
-};
-
-/**
- * Handles preferences change and starts rescan if needed.
- * @private
- */
-ScanController.prototype.onPreferencesChanged_ = function() {
-  chrome.fileManagerPrivate.getPreferences(function(prefs) {
-    if (chrome.runtime.lastError) {
-      console.error(chrome.runtime.lastError.name);
-      return;
-    }
-    if (this.lastHostedFilesDisabled_ !== null &&
-        this.lastHostedFilesDisabled_ !== prefs.hostedFilesDisabled &&
-        this.directoryModel_.isOnDrive()) {
-      this.directoryModel_.rescan(false);
-    }
-    this.lastHostedFilesDisabled_ = prefs.hostedFilesDisabled;
-  }.bind(this));
 };
 
 /**

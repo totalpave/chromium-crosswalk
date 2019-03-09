@@ -14,13 +14,21 @@
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/url_database.h"
 #include "components/keyed_service/core/service_access_type.h"
+#include "components/sync_bookmarks/bookmark_sync_service.h"
 #include "ios/chrome/browser/favicon/favicon_service_factory.h"
 #include "ios/chrome/browser/history/history_service_factory.h"
 
-BookmarkClientImpl::BookmarkClientImpl(ios::ChromeBrowserState* browser_state)
-    : browser_state_(browser_state) {}
+BookmarkClientImpl::BookmarkClientImpl(
+    ios::ChromeBrowserState* browser_state,
+    sync_bookmarks::BookmarkSyncService* bookmark_sync_service)
+    : browser_state_(browser_state),
+      bookmark_sync_service_(bookmark_sync_service) {}
 
 BookmarkClientImpl::~BookmarkClientImpl() {}
+
+void BookmarkClientImpl::Init(bookmarks::BookmarkModel* model) {
+  model_ = model;
+}
 
 bool BookmarkClientImpl::PreferTouchIcon() {
   return true;
@@ -38,29 +46,28 @@ BookmarkClientImpl::GetFaviconImageForPageURL(
       page_url, type, callback, tracker);
 }
 
-bool BookmarkClientImpl::SupportsTypedCountForNodes() {
+bool BookmarkClientImpl::SupportsTypedCountForUrls() {
   return true;
 }
 
-void BookmarkClientImpl::GetTypedCountForNodes(
-    const NodeSet& nodes,
-    NodeTypedCountPairs* node_typed_count_pairs) {
+void BookmarkClientImpl::GetTypedCountForUrls(
+    UrlTypedCountMap* url_typed_count_map) {
   history::HistoryService* history_service =
       ios::HistoryServiceFactory::GetForBrowserState(
           browser_state_, ServiceAccessType::EXPLICIT_ACCESS);
   history::URLDatabase* url_db =
       history_service ? history_service->InMemoryDatabase() : nullptr;
-  for (const auto& node : nodes) {
+  for (auto& url_typed_count_pair : *url_typed_count_map) {
     // If |url_db| is the InMemoryDatabase, it might not cache all URLRows, but
     // it guarantees to contain those with |typed_count| > 0. Thus, if fetching
     // the URLRow fails, it is safe to assume that its |typed_count| is 0.
     int typed_count = 0;
-    history::URLRow url;
-    if (url_db && url_db->GetRowForURL(node->url(), &url))
-      typed_count = url.typed_count();
+    history::URLRow url_row;
+    const GURL* url = url_typed_count_pair.first;
+    if (url_db && url && url_db->GetRowForURL(*url, &url_row))
+      typed_count = url_row.typed_count();
 
-    NodeTypedCountPair pair(node, typed_count);
-    node_typed_count_pairs->push_back(pair);
+    url_typed_count_pair.second = typed_count;
   }
 }
 
@@ -89,4 +96,15 @@ bool BookmarkClientImpl::CanSyncNode(const bookmarks::BookmarkNode* node) {
 bool BookmarkClientImpl::CanBeEditedByUser(
     const bookmarks::BookmarkNode* node) {
   return true;
+}
+
+std::string BookmarkClientImpl::EncodeBookmarkSyncMetadata() {
+  return bookmark_sync_service_->EncodeBookmarkSyncMetadata();
+}
+
+void BookmarkClientImpl::DecodeBookmarkSyncMetadata(
+    const std::string& metadata_str,
+    const base::RepeatingClosure& schedule_save_closure) {
+  bookmark_sync_service_->DecodeBookmarkSyncMetadata(
+      metadata_str, schedule_save_closure, model_);
 }

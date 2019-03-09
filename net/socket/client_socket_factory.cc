@@ -8,11 +8,10 @@
 
 #include "base/lazy_instance.h"
 #include "build/build_config.h"
-#include "net/cert/cert_database.h"
-#include "net/socket/client_socket_handle.h"
+#include "net/http/http_proxy_client_socket.h"
 #include "net/socket/ssl_client_socket_impl.h"
 #include "net/socket/tcp_client_socket.h"
-#include "net/udp/udp_client_socket.h"
+#include "net/socket/udp_client_socket.h"
 
 namespace net {
 
@@ -20,58 +19,56 @@ class X509Certificate;
 
 namespace {
 
-class DefaultClientSocketFactory : public ClientSocketFactory,
-                                   public CertDatabase::Observer {
+class DefaultClientSocketFactory : public ClientSocketFactory {
  public:
-  DefaultClientSocketFactory() {
-    CertDatabase::GetInstance()->AddObserver(this);
-  }
+  DefaultClientSocketFactory() {}
 
-  ~DefaultClientSocketFactory() override {
-    // Note: This code never runs, as the factory is defined as a Leaky
-    // singleton.
-    CertDatabase::GetInstance()->RemoveObserver(this);
-  }
-
-  void OnCertAdded(const X509Certificate* cert) override {
-    ClearSSLSessionCache();
-  }
-
-  void OnCACertChanged(const X509Certificate* cert) override {
-    // Per wtc, we actually only need to flush when trust is reduced.
-    // Always flush now because OnCACertChanged does not tell us this.
-    // See comments in ClientSocketPoolManager::OnCACertChanged.
-    ClearSSLSessionCache();
-  }
+  // Note: This code never runs, as the factory is defined as a Leaky singleton.
+  ~DefaultClientSocketFactory() override {}
 
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType bind_type,
-      const RandIntCallback& rand_int_cb,
       NetLog* net_log,
-      const NetLog::Source& source) override {
+      const NetLogSource& source) override {
     return std::unique_ptr<DatagramClientSocket>(
-        new UDPClientSocket(bind_type, rand_int_cb, net_log, source));
+        new UDPClientSocket(bind_type, net_log, source));
   }
 
-  std::unique_ptr<StreamSocket> CreateTransportClientSocket(
+  std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList& addresses,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       NetLog* net_log,
-      const NetLog::Source& source) override {
-    return std::unique_ptr<StreamSocket>(new TCPClientSocket(
-        addresses, std::move(socket_performance_watcher), net_log, source));
+      const NetLogSource& source) override {
+    return std::make_unique<TCPClientSocket>(
+        addresses, std::move(socket_performance_watcher), net_log, source);
   }
 
   std::unique_ptr<SSLClientSocket> CreateSSLClientSocket(
-      std::unique_ptr<ClientSocketHandle> transport_socket,
+      std::unique_ptr<StreamSocket> stream_socket,
       const HostPortPair& host_and_port,
       const SSLConfig& ssl_config,
       const SSLClientSocketContext& context) override {
-    return std::unique_ptr<SSLClientSocket>(new SSLClientSocketImpl(
-        std::move(transport_socket), host_and_port, ssl_config, context));
+    return std::make_unique<SSLClientSocketImpl>(
+        std::move(stream_socket), host_and_port, ssl_config, context);
   }
 
-  void ClearSSLSessionCache() override { SSLClientSocket::ClearSessionCache(); }
+  std::unique_ptr<ProxyClientSocket> CreateProxyClientSocket(
+      std::unique_ptr<StreamSocket> stream_socket,
+      const std::string& user_agent,
+      const HostPortPair& endpoint,
+      const ProxyServer& proxy_server,
+      HttpAuthController* http_auth_controller,
+      bool tunnel,
+      bool using_spdy,
+      NextProto negotiated_protocol,
+      ProxyDelegate* proxy_delegate,
+      bool is_https_proxy,
+      const NetworkTrafficAnnotationTag& traffic_annotation) override {
+    return std::make_unique<HttpProxyClientSocket>(
+        std::move(stream_socket), user_agent, endpoint, proxy_server,
+        http_auth_controller, tunnel, using_spdy, negotiated_protocol,
+        proxy_delegate, is_https_proxy, traffic_annotation);
+  }
 };
 
 static base::LazyInstance<DefaultClientSocketFactory>::Leaky

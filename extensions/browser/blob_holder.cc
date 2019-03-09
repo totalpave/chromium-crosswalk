@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "content/public/browser/blob_handle.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
@@ -33,7 +34,8 @@ BlobHolder* BlobHolder::FromRenderProcessHost(
     return existing;
 
   BlobHolder* new_instance = new BlobHolder(render_process_host);
-  render_process_host->SetUserData(&kBlobHolderUserDataKey, new_instance);
+  render_process_host->SetUserData(&kBlobHolderUserDataKey,
+                                   base::WrapUnique(new_instance));
   return new_instance;
 }
 
@@ -46,7 +48,7 @@ void BlobHolder::HoldBlobReference(std::unique_ptr<content::BlobHandle> blob) {
   DCHECK(!ContainsBlobHandle(blob.get()));
 
   std::string uuid = blob->GetUUID();
-  held_blobs_.insert(make_pair(uuid, make_linked_ptr(blob.release())));
+  held_blobs_.insert(make_pair(uuid, std::move(blob)));
 }
 
 BlobHolder::BlobHolder(content::RenderProcessHost* render_process_host)
@@ -56,9 +58,7 @@ BlobHolder::BlobHolder(content::RenderProcessHost* render_process_host)
 
 bool BlobHolder::ContainsBlobHandle(content::BlobHandle* handle) const {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  for (BlobHandleMultimap::const_iterator it = held_blobs_.begin();
-       it != held_blobs_.end();
-       ++it) {
+  for (auto it = held_blobs_.cbegin(); it != held_blobs_.cend(); ++it) {
     if (it->second.get() == handle)
       return true;
   }
@@ -68,10 +68,9 @@ bool BlobHolder::ContainsBlobHandle(content::BlobHandle* handle) const {
 
 void BlobHolder::DropBlobs(const std::vector<std::string>& blob_uuids) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  for (std::vector<std::string>::const_iterator uuid_it = blob_uuids.begin();
-       uuid_it != blob_uuids.end();
+  for (auto uuid_it = blob_uuids.cbegin(); uuid_it != blob_uuids.cend();
        ++uuid_it) {
-    BlobHandleMultimap::iterator it = held_blobs_.find(*uuid_it);
+    auto it = held_blobs_.find(*uuid_it);
 
     if (it != held_blobs_.end()) {
       held_blobs_.erase(it);

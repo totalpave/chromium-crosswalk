@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 
-#include "components/web_contents_delegate_android/web_contents_delegate_android.h"
+#include "components/embedder_support/android/delegate/web_contents_delegate_android.h"
 
 // Stub WebContentsDelegateAndroid that is meant to be a temporary substitute
 // for a real WebContentsDelegate for the (expectedly short) period between when
@@ -28,12 +28,9 @@ class DocumentWebContentsDelegate
       const base::android::JavaParamRef<jobject>& obj,
       const base::android::JavaParamRef<jobject>& jweb_contents);
 
-  // Registers the JNI calls.
-  static bool Register(JNIEnv* env);
-
   // Overridden from WebContentsDelegate.
   void AddNewContents(content::WebContents* source,
-                      content::WebContents* new_contents,
+                      std::unique_ptr<content::WebContents> new_contents,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_pos,
                       bool user_gesture,
@@ -41,10 +38,13 @@ class DocumentWebContentsDelegate
   void CloseContents(content::WebContents* source) override;
   bool ShouldCreateWebContents(
       content::WebContents* web_contents,
+      content::RenderFrameHost* opener,
+      content::SiteInstance* source_site_instance,
       int32_t route_id,
       int32_t main_frame_route_id,
       int32_t main_frame_widget_route_id,
-      WindowContainerType window_container_type,
+      content::mojom::WindowContainerType window_container_type,
+      const GURL& opener_url,
       const std::string& frame_name,
       const GURL& target_url,
       const std::string& partition_id,

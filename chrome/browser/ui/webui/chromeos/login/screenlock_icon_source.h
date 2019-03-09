@@ -18,13 +18,13 @@ class ScreenlockIconSource : public content::URLDataSource {
  public:
   explicit ScreenlockIconSource(
       base::WeakPtr<ScreenlockIconProvider> icon_provider);
+  ~ScreenlockIconSource() override;
 
   // content::URLDataSource implementation.
   std::string GetSource() const override;
   void StartDataRequest(
       const std::string& path,
-      int render_process_id,
-      int render_frame_id,
+      const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
       const content::URLDataSource::GotDataCallback& callback) override;
 
   std::string GetMimeType(const std::string& path) const override;
@@ -33,8 +33,6 @@ class ScreenlockIconSource : public content::URLDataSource {
   static std::string GetIconURLForUser(const std::string& username);
 
  private:
-  ~ScreenlockIconSource() override;
-
   base::WeakPtr<ScreenlockIconProvider> icon_provider_;
 
   DISALLOW_COPY_AND_ASSIGN(ScreenlockIconSource);

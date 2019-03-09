@@ -4,34 +4,38 @@
 
 #include "chrome/browser/renderer_host/pepper/device_id_fetcher.h"
 
+#include "base/bind.h"
 #include "base/files/file_util.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/post_task.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
-#include "components/prefs/pref_service.h"
-#if defined(OS_CHROMEOS)
-#include "chromeos/cryptohome/system_salt_getter.h"
-#endif
 #include "components/pref_registry/pref_registry_syncable.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_ppapi_host.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
 #include "crypto/encryptor.h"
 #include "crypto/random.h"
 #include "crypto/sha2.h"
 #include "ppapi/c/pp_errors.h"
-#if defined(ENABLE_RLZ)
+#include "rlz/buildflags/buildflags.h"
+
+#if defined(OS_CHROMEOS)
+#include "chromeos/cryptohome/system_salt_getter.h"
+#endif
+
+#if BUILDFLAG(ENABLE_RLZ)
 #include "rlz/lib/machine_id.h"
 #endif
 
 using content::BrowserPpapiHost;
 using content::BrowserThread;
 using content::RenderProcessHost;
-
-namespace chrome {
 
 namespace {
 
@@ -41,7 +45,7 @@ const uint32_t kSaltLength = 32;
 
 void GetMachineIDAsync(
     const base::Callback<void(const std::string&)>& callback) {
-#if defined(OS_WIN) && defined(ENABLE_RLZ)
+#if defined(OS_WIN) && BUILDFLAG(ENABLE_RLZ)
   std::string result;
   rlz_lib::GetMachineId(&result);
   callback.Run(result);
@@ -72,10 +76,9 @@ bool DeviceIDFetcher::Start(const IDCallback& callback) {
   in_progress_ = true;
   callback_ = callback;
 
-  BrowserThread::PostTask(
-      BrowserThread::UI,
-      FROM_HERE,
-      base::Bind(&DeviceIDFetcher::CheckPrefsOnUIThread, this));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&DeviceIDFetcher::CheckPrefsOnUIThread, this));
   return true;
 }
 
@@ -113,21 +116,19 @@ void DeviceIDFetcher::CheckPrefsOnUIThread() {
   std::string salt = profile->GetPrefs()->GetString(prefs::kDRMSalt);
   if (salt.empty()) {
     uint8_t salt_bytes[kSaltLength];
-    crypto::RandBytes(salt_bytes, arraysize(salt_bytes));
+    crypto::RandBytes(salt_bytes, base::size(salt_bytes));
     // Since it will be stored in a string pref, convert it to hex.
-    salt = base::HexEncode(salt_bytes, arraysize(salt_bytes));
+    salt = base::HexEncode(salt_bytes, base::size(salt_bytes));
     profile->GetPrefs()->SetString(prefs::kDRMSalt, salt);
   }
 
 #if defined(OS_CHROMEOS)
   // Try the legacy path first for ChromeOS. We pass the new salt in as well
   // in case the legacy id doesn't exist.
-  BrowserThread::PostBlockingPoolTask(
-      FROM_HERE,
-      base::Bind(&DeviceIDFetcher::LegacyComputeOnBlockingPool,
-                 this,
-                 profile->GetPath(),
-                 salt));
+  base::PostTaskWithTraits(FROM_HERE,
+                           {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+                           base::BindOnce(&DeviceIDFetcher::LegacyComputeAsync,
+                                          this, profile->GetPath(), salt));
 #else
   // Get the machine ID and call ComputeOnUIThread with salt + machine_id.
   GetMachineIDAsync(
@@ -176,9 +177,8 @@ void DeviceIDFetcher::ComputeOnUIThread(const std::string& salt,
 // TODO(raymes): This is temporary code to migrate ChromeOS devices to the new
 // scheme for generating device IDs. Delete this once we are sure most ChromeOS
 // devices have been migrated.
-void DeviceIDFetcher::LegacyComputeOnBlockingPool(
-    const base::FilePath& profile_path,
-    const std::string& salt) {
+void DeviceIDFetcher::LegacyComputeAsync(const base::FilePath& profile_path,
+                                         const std::string& salt) {
   std::string id;
   // First check if the legacy device ID file exists on ChromeOS. If it does, we
   // should just return that.
@@ -191,24 +191,22 @@ void DeviceIDFetcher::LegacyComputeOnBlockingPool(
   }
   // If we didn't find an ID, get the machine ID and call the new code path to
   // generate an ID.
-  BrowserThread::PostTask(
-      BrowserThread::UI,
-      FROM_HERE,
-      base::Bind(&GetMachineIDAsync,
-                 base::Bind(&DeviceIDFetcher::ComputeOnUIThread, this, salt)));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(
+          &GetMachineIDAsync,
+          base::Bind(&DeviceIDFetcher::ComputeOnUIThread, this, salt)));
 }
 
 void DeviceIDFetcher::RunCallbackOnIOThread(const std::string& id,
                                             int32_t result) {
   if (!BrowserThread::CurrentlyOn(BrowserThread::IO)) {
-    BrowserThread::PostTask(
-        BrowserThread::IO,
-        FROM_HERE,
-        base::Bind(&DeviceIDFetcher::RunCallbackOnIOThread, this, id, result));
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::IO},
+        base::BindOnce(&DeviceIDFetcher::RunCallbackOnIOThread, this, id,
+                       result));
     return;
   }
   in_progress_ = false;
   callback_.Run(id, result);
 }
-
-}  // namespace chrome

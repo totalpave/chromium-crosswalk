@@ -6,309 +6,377 @@
 
 #include <stddef.h>
 #include <utility>
+#include <vector>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
+#include "base/lazy_instance.h"
 #include "base/memory/ref_counted.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "base/time/time.h"
-#include "build/build_config.h"
-#include "chrome/common/chrome_utility_messages.h"
-#include "chrome/common/safe_browsing/zip_analyzer.h"
-#include "chrome/common/safe_browsing/zip_analyzer_results.h"
-#include "chrome/utility/chrome_content_utility_ipc_whitelist.h"
-#include "chrome/utility/image_decoder_impl.h"
-#include "chrome/utility/utility_message_handler.h"
-#include "components/safe_json/utility/safe_json_parser_mojo_impl.h"
-#include "content/public/child/image_decoder_utils.h"
+#include "chrome/common/buildflags.h"
+#include "chrome/services/noop/noop_service.h"
+#include "chrome/services/noop/public/cpp/utils.h"
+#include "components/mirroring/mojom/constants.mojom.h"
+#include "components/mirroring/service/features.h"
+#include "components/mirroring/service/mirroring_service.h"
+#include "components/services/heap_profiling/heap_profiling_service.h"
+#include "components/services/heap_profiling/public/mojom/constants.mojom.h"
+#include "components/services/unzip/public/interfaces/constants.mojom.h"
+#include "components/services/unzip/unzip_service.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/service_manager_connection.h"
+#include "content/public/common/simple_connection_filter.h"
 #include "content/public/utility/utility_thread.h"
-#include "courgette/courgette.h"
-#include "courgette/third_party/bsdiff/bsdiff.h"
-#include "ipc/ipc_channel.h"
-#include "services/shell/public/cpp/interface_registry.h"
-#include "third_party/zlib/google/zip.h"
-#include "ui/gfx/geometry/size.h"
+#include "device/vr/buildflags/buildflags.h"
+#include "extensions/buildflags/buildflags.h"
+#include "services/network/public/cpp/features.h"
+#include "services/service_manager/public/cpp/binder_registry.h"
+#include "services/service_manager/sandbox/switches.h"
+#include "ui/base/buildflags.h"
 
 #if !defined(OS_ANDROID)
-#include "chrome/common/resource_usage_reporter.mojom.h"
-#include "chrome/utility/profile_import_handler.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
-#include "net/proxy/mojo_proxy_resolver_factory_impl.h"
-#include "net/proxy/proxy_resolver_v8.h"
-#endif
+#include "chrome/utility/importer/profile_import_impl.h"
+#include "chrome/utility/importer/profile_import_service.h"
+#include "components/services/patch/patch_service.h"  // nogncheck
+#include "components/services/patch/public/interfaces/constants.mojom.h"  // nogncheck
+#include "services/network/url_request_context_builder_mojo.h"
+#include "services/proxy_resolver/proxy_resolver_service.h"  // nogncheck
+#include "services/proxy_resolver/public/mojom/proxy_resolver.mojom.h"  // nogncheck
+#endif  // !defined(OS_ANDROID)
 
 #if defined(OS_WIN)
-#include "chrome/utility/shell_handler_win.h"
+#include "chrome/services/util_win/public/mojom/constants.mojom.h"
+#include "chrome/services/util_win/util_win_service.h"
 #endif
 
-#if defined(ENABLE_EXTENSIONS)
-#include "chrome/utility/extensions/extensions_handler.h"
-#include "chrome/utility/image_writer/image_writer_handler.h"
+#if BUILDFLAG(ENABLE_ISOLATED_XR_SERVICE)
+#include "chrome/services/isolated_xr_device/xr_device_service.h"
 #endif
 
-#if defined(ENABLE_PRINT_PREVIEW) || \
-    (defined(ENABLE_BASIC_PRINTING) && defined(OS_WIN))
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/services/removable_storage_writer/public/mojom/constants.mojom.h"
+#include "chrome/services/removable_storage_writer/removable_storage_writer_service.h"
+#if defined(OS_WIN)
+#include "chrome/services/wifi_util_win/public/mojom/constants.mojom.h"
+#include "chrome/services/wifi_util_win/wifi_util_win_service.h"
+#endif
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS) || defined(OS_ANDROID)
+#include "chrome/services/media_gallery_util/media_gallery_util_service.h"
+#include "chrome/services/media_gallery_util/public/mojom/constants.mojom.h"
+#endif
+
+#if defined(OS_CHROMEOS)
+#include "chrome/utility/mash_service_factory.h"
+#include "chromeos/assistant/buildflags.h"  // nogncheck
+#include "chromeos/services/ime/ime_service.h"
+#include "chromeos/services/ime/public/mojom/constants.mojom.h"
+
+#if BUILDFLAG(ENABLE_CROS_LIBASSISTANT)
+#include "chromeos/services/assistant/audio_decoder/assistant_audio_decoder_service.h"  // nogncheck
+#include "chromeos/services/assistant/public/mojom/constants.mojom.h"  // nogncheck
+#endif  // BUILDFLAG(ENABLE_CROS_LIBASSISTANT)
+#endif  // defined(OS_CHROMEOS)
+
+#if BUILDFLAG(ENABLE_PRINTING)
+#include "chrome/common/chrome_content_client.h"
+#include "components/services/pdf_compositor/public/cpp/pdf_compositor_service_factory.h"  // nogncheck
+#include "components/services/pdf_compositor/public/interfaces/pdf_compositor.mojom.h"  // nogncheck
+#endif
+
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW) || \
+    (BUILDFLAG(ENABLE_PRINTING) && defined(OS_WIN))
+#include "chrome/services/printing/printing_service.h"
+#include "chrome/services/printing/public/mojom/constants.mojom.h"
+#endif
+
+#if BUILDFLAG(ENABLE_PRINTING) && defined(OS_WIN)
+#include "chrome/services/printing/pdf_to_emf_converter_factory.h"
+#endif
+
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW) && defined(OS_WIN)
 #include "chrome/utility/printing_handler.h"
 #endif
 
-#if defined(OS_MACOSX) && defined(FULL_SAFE_BROWSING)
-#include "chrome/utility/safe_browsing/mac/dmg_analyzer.h"
+#if BUILDFLAG(ENABLE_PRINTING) && defined(OS_CHROMEOS)
+#include "chrome/services/cups_ipp_parser/cups_ipp_parser_service.h"  // nogncheck
+#include "chrome/services/cups_ipp_parser/public/mojom/constants.mojom.h"  // nogncheck
+#endif
+
+#if defined(FULL_SAFE_BROWSING) || defined(OS_CHROMEOS)
+#include "chrome/services/file_util/file_util_service.h"  // nogncheck
+#include "chrome/services/file_util/public/mojom/constants.mojom.h"  // nogncheck
+#endif
+
+#if BUILDFLAG(ENABLE_SIMPLE_BROWSER_SERVICE_OUT_OF_PROCESS)
+#include "services/content/simple_browser/public/mojom/constants.mojom.h"  // nogncheck
+#include "services/content/simple_browser/simple_browser_service.h"  // nogncheck
 #endif
 
 namespace {
 
-bool Send(IPC::Message* message) {
-  return content::UtilityThread::Get()->Send(message);
+base::LazyInstance<ChromeContentUtilityClient::NetworkBinderCreationCallback>::
+    Leaky g_network_binder_creation_callback = LAZY_INSTANCE_INITIALIZER;
+
+void RunServiceAsyncThenTerminateProcess(
+    std::unique_ptr<service_manager::Service> service) {
+  service_manager::Service::RunAsyncUntilTermination(
+      std::move(service),
+      base::BindOnce([] { content::UtilityThread::Get()->ReleaseProcess(); }));
 }
 
-void ReleaseProcessIfNeeded() {
-  content::UtilityThread::Get()->ReleaseProcessIfNeeded();
+std::unique_ptr<service_manager::Service> CreateHeapProfilingService(
+    service_manager::mojom::ServiceRequest request) {
+  return std::make_unique<heap_profiling::HeapProfilingService>(
+      std::move(request));
 }
 
 #if !defined(OS_ANDROID)
-void CreateProxyResolverFactory(
-    mojo::InterfaceRequest<net::interfaces::ProxyResolverFactory> request) {
-  // MojoProxyResolverFactoryImpl is strongly bound to the Mojo message pipe it
-  // is connected to. When that message pipe is closed, either explicitly on the
-  // other end (in the browser process), or by a connection error, this object
-  // will be destroyed.
-  new net::MojoProxyResolverFactoryImpl(std::move(request));
+std::unique_ptr<service_manager::Service> CreateProxyResolverService(
+    service_manager::mojom::ServiceRequest request) {
+  return std::make_unique<proxy_resolver::ProxyResolverService>(
+      std::move(request));
 }
+#endif
 
-class ResourceUsageReporterImpl : public mojom::ResourceUsageReporter {
- public:
-  explicit ResourceUsageReporterImpl(
-      mojo::InterfaceRequest<mojom::ResourceUsageReporter> req)
-      : binding_(this, std::move(req)) {}
-  ~ResourceUsageReporterImpl() override {}
-
- private:
-  void GetUsageData(const GetUsageDataCallback& callback) override {
-    mojom::ResourceUsageDataPtr data = mojom::ResourceUsageData::New();
-    size_t total_heap_size = net::ProxyResolverV8::GetTotalHeapSize();
-    if (total_heap_size) {
-      data->reports_v8_stats = true;
-      data->v8_bytes_allocated = total_heap_size;
-      data->v8_bytes_used = net::ProxyResolverV8::GetUsedHeapSize();
-    }
-    callback.Run(std::move(data));
-  }
-
-  mojo::StrongBinding<mojom::ResourceUsageReporter> binding_;
-};
-
-void CreateResourceUsageReporter(
-    mojo::InterfaceRequest<mojom::ResourceUsageReporter> request) {
-  new ResourceUsageReporterImpl(std::move(request));
-}
-#endif  // OS_ANDROID
-
-void CreateImageDecoder(mojo::InterfaceRequest<mojom::ImageDecoder> request) {
-  content::UtilityThread::Get()->EnsureBlinkInitialized();
-  new ImageDecoderImpl(std::move(request));
+using ServiceFactory =
+    base::OnceCallback<std::unique_ptr<service_manager::Service>()>;
+void RunServiceOnIOThread(ServiceFactory factory) {
+  base::OnceClosure terminate_process = base::BindOnce(
+      base::IgnoreResult(&base::SequencedTaskRunner::PostTask),
+      base::SequencedTaskRunnerHandle::Get(), FROM_HERE,
+      base::BindOnce([] { content::UtilityThread::Get()->ReleaseProcess(); }));
+  content::ChildThread::Get()->GetIOTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](ServiceFactory factory, base::OnceClosure terminate_process) {
+            service_manager::Service::RunAsyncUntilTermination(
+                std::move(factory).Run(), std::move(terminate_process));
+          },
+          std::move(factory), std::move(terminate_process)));
 }
 
 }  // namespace
 
 ChromeContentUtilityClient::ChromeContentUtilityClient()
-    : filter_messages_(false) {
-#if !defined(OS_ANDROID)
-  handlers_.push_back(new ProfileImportHandler());
+    : utility_process_running_elevated_(false) {
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW) && defined(OS_WIN)
+  printing_handler_ = std::make_unique<printing::PrintingHandler>();
 #endif
 
-#if defined(ENABLE_EXTENSIONS)
-  handlers_.push_back(new extensions::ExtensionsHandler(this));
-  handlers_.push_back(new image_writer::ImageWriterHandler());
-#endif
-
-#if defined(ENABLE_PRINT_PREVIEW) || \
-    (defined(ENABLE_BASIC_PRINTING) && defined(OS_WIN))
-  handlers_.push_back(new printing::PrintingHandler());
-#endif
-
-#if defined(OS_WIN)
-  handlers_.push_back(new ShellHandler());
+#if defined(OS_CHROMEOS)
+  mash_service_factory_ = std::make_unique<MashServiceFactory>();
 #endif
 }
 
-ChromeContentUtilityClient::~ChromeContentUtilityClient() {
-}
+ChromeContentUtilityClient::~ChromeContentUtilityClient() = default;
 
 void ChromeContentUtilityClient::UtilityThreadStarted() {
-#if defined(ENABLE_EXTENSIONS)
-  extensions::UtilityHandler::UtilityThreadStarted();
+#if defined(OS_WIN)
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  utility_process_running_elevated_ = command_line->HasSwitch(
+      service_manager::switches::kNoSandboxAndElevatedPrivileges);
 #endif
 
-  if (kMessageWhitelistSize > 0) {
-    base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-    if (command_line->HasSwitch(switches::kUtilityProcessRunningElevated)) {
-      message_id_whitelist_.insert(kMessageWhitelist,
-                                   kMessageWhitelist + kMessageWhitelistSize);
-      filter_messages_ = true;
-    }
+  content::ServiceManagerConnection* connection =
+      content::ChildThread::Get()->GetServiceManagerConnection();
+
+  // NOTE: Some utility process instances are not connected to the Service
+  // Manager. Nothing left to do in that case.
+  if (!connection)
+    return;
+
+  auto registry = std::make_unique<service_manager::BinderRegistry>();
+  // If our process runs with elevated privileges, only add elevated Mojo
+  // interfaces to the interface registry.
+  if (!utility_process_running_elevated_) {
+#if BUILDFLAG(ENABLE_PRINTING) && defined(OS_WIN)
+    // TODO(crbug.com/798782): remove when the Cloud print chrome/service is
+    // removed.
+    registry->AddInterface(
+        base::BindRepeating(printing::PdfToEmfConverterFactory::Create),
+        base::ThreadTaskRunnerHandle::Get());
+#endif
   }
+
+  connection->AddConnectionFilter(
+      std::make_unique<content::SimpleConnectionFilter>(std::move(registry)));
 }
 
 bool ChromeContentUtilityClient::OnMessageReceived(
     const IPC::Message& message) {
-  if (filter_messages_ && !ContainsKey(message_id_whitelist_, message.type()))
+  if (utility_process_running_elevated_)
     return false;
 
-  bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(ChromeContentUtilityClient, message)
-    IPC_MESSAGE_HANDLER(ChromeUtilityMsg_PatchFileBsdiff,
-                        OnPatchFileBsdiff)
-    IPC_MESSAGE_HANDLER(ChromeUtilityMsg_PatchFileCourgette,
-                        OnPatchFileCourgette)
-#if defined(FULL_SAFE_BROWSING)
-    IPC_MESSAGE_HANDLER(ChromeUtilityMsg_AnalyzeZipFileForDownloadProtection,
-                        OnAnalyzeZipFileForDownloadProtection)
-#if defined(OS_MACOSX)
-    IPC_MESSAGE_HANDLER(ChromeUtilityMsg_AnalyzeDmgFileForDownloadProtection,
-                        OnAnalyzeDmgFileForDownloadProtection)
-#endif  // defined(OS_MACOSX)
-#endif  // defined(FULL_SAFE_BROWSING)
-#if defined(OS_CHROMEOS)
-    IPC_MESSAGE_HANDLER(ChromeUtilityMsg_CreateZipFile, OnCreateZipFile)
-#endif
-    IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-
-  if (handled)
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW) && defined(OS_WIN)
+  if (printing_handler_->OnMessageReceived(message))
     return true;
+#endif
+  return false;
+}
 
-  for (const auto& handler : handlers_) {
-    // At least one of the utility process handlers adds a new handler to
-    // |handlers_| when it handles a message. This causes any iterator over
-    // |handlers_| to become invalid. Therefore, it is necessary to break the
-    // loop at this point instead of evaluating it as a loop condition (if the
-    // for loop was using iterators explicitly, as originally done).
-    if (handler->OnMessageReceived(message))
+bool ChromeContentUtilityClient::HandleServiceRequest(
+    const std::string& service_name,
+    service_manager::mojom::ServiceRequest request) {
+  if (utility_process_running_elevated_) {
+    // This process is running with elevated privileges. Only handle a limited
+    // set of service requests in this case.
+    auto service = MaybeCreateElevatedService(service_name, std::move(request));
+    if (service) {
+      RunServiceAsyncThenTerminateProcess(std::move(service));
       return true;
+    }
+
+    return false;
+  }
+
+  if (service_name == heap_profiling::mojom::kServiceName) {
+    RunServiceOnIOThread(
+        base::BindOnce(&CreateHeapProfilingService, std::move(request)));
+    return true;
+  }
+
+#if !defined(OS_ANDROID)
+  if (service_name == proxy_resolver::mojom::kProxyResolverServiceName) {
+    RunServiceOnIOThread(
+        base::BindOnce(&CreateProxyResolverService, std::move(request)));
+    return true;
+  }
+#endif  // !defined(OS_ANDROID)
+
+  auto service = MaybeCreateMainThreadService(service_name, std::move(request));
+  if (service) {
+    RunServiceAsyncThenTerminateProcess(std::move(service));
+    return true;
   }
 
   return false;
 }
 
-void ChromeContentUtilityClient::ExposeInterfacesToBrowser(
-    shell::InterfaceRegistry* registry) {
-  // When the utility process is running with elevated privileges, we need to
-  // filter messages so that only a whitelist of IPCs can run. In Mojo, there's
-  // no way of filtering individual messages. Instead, we can avoid adding
-  // non-whitelisted Mojo services to the shell::InterfaceRegistry.
-  // TODO(amistry): Use a whitelist once the whistlisted IPCs have been
-  // converted to Mojo.
-  if (filter_messages_)
-    return;
+std::unique_ptr<service_manager::Service>
+ChromeContentUtilityClient::MaybeCreateMainThreadService(
+    const std::string& service_name,
+    service_manager::mojom::ServiceRequest request) {
+  if (service_name == unzip::mojom::kServiceName)
+    return std::make_unique<unzip::UnzipService>(std::move(request));
+
+  if (service_name == chrome::mojom::kNoopServiceName &&
+      chrome::IsNoopServiceEnabled()) {
+    return std::make_unique<chrome::NoopService>(std::move(request));
+  }
+
+#if BUILDFLAG(ENABLE_PRINTING)
+  if (service_name == printing::mojom::kServiceName)
+    return printing::CreatePdfCompositorService(std::move(request));
+#endif
+
+#if BUILDFLAG(ENABLE_ISOLATED_XR_SERVICE)
+  if (service_name == device::mojom::kVrIsolatedServiceName)
+    return std::make_unique<device::XrDeviceService>(std::move(request));
+#endif
+
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW) || \
+    (BUILDFLAG(ENABLE_PRINTING) && defined(OS_WIN))
+  if (service_name == printing::mojom::kChromePrintingServiceName)
+    return std::make_unique<printing::PrintingService>(std::move(request));
+#endif
 
 #if !defined(OS_ANDROID)
-  registry->AddInterface<net::interfaces::ProxyResolverFactory>(
-      base::Bind(CreateProxyResolverFactory));
-  registry->AddInterface(base::Bind(CreateResourceUsageReporter));
+  if (service_name == patch::mojom::kServiceName)
+    return std::make_unique<patch::PatchService>(std::move(request));
+
+  if (service_name == chrome::mojom::kProfileImportServiceName)
+    return std::make_unique<ProfileImportService>(std::move(request));
+
+  if (base::FeatureList::IsEnabled(mirroring::features::kMirroringService) &&
+      base::FeatureList::IsEnabled(features::kAudioServiceAudioStreams) &&
+      base::FeatureList::IsEnabled(network::features::kNetworkService) &&
+      service_name == mirroring::mojom::kServiceName) {
+    return std::make_unique<mirroring::MirroringService>(
+        std::move(request), content::ChildThread::Get()->GetIOTaskRunner());
+  }
 #endif
-  registry->AddInterface(base::Bind(&CreateImageDecoder));
-  registry->AddInterface(
-      base::Bind(&safe_json::SafeJsonParserMojoImpl::Create));
+
+#if defined(OS_WIN)
+  if (service_name == chrome::mojom::kUtilWinServiceName)
+    return std::make_unique<UtilWinService>(std::move(request));
+#endif
+
+#if defined(FULL_SAFE_BROWSING) || defined(OS_CHROMEOS)
+  if (service_name == chrome::mojom::kFileUtilServiceName)
+    return std::make_unique<FileUtilService>(std::move(request));
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS) && !defined(OS_WIN)
+  // On Windows the service is running elevated.
+  if (service_name == chrome::mojom::kRemovableStorageWriterServiceName)
+    return std::make_unique<RemovableStorageWriterService>(std::move(request));
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS) && !defined(OS_WIN)
+
+#if BUILDFLAG(ENABLE_EXTENSIONS) || defined(OS_ANDROID)
+  if (service_name == chrome::mojom::kMediaGalleryUtilServiceName)
+    return std::make_unique<MediaGalleryUtilService>(std::move(request));
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS) || defined(OS_ANDROID)
+
+#if BUILDFLAG(ENABLE_SIMPLE_BROWSER_SERVICE_OUT_OF_PROCESS)
+  if (service_name == simple_browser::mojom::kServiceName) {
+    return std::make_unique<simple_browser::SimpleBrowserService>(
+        std::move(request), simple_browser::SimpleBrowserService::
+                                UIInitializationMode::kInitializeUI);
+  }
+#endif
+
+#if defined(OS_CHROMEOS)
+  if (service_name == chromeos::ime::mojom::kServiceName)
+    return std::make_unique<chromeos::ime::ImeService>(std::move(request));
+
+#if BUILDFLAG(ENABLE_PRINTING)
+  if (service_name == chrome::mojom::kCupsIppParserServiceName)
+    return std::make_unique<CupsIppParserService>(std::move(request));
+#endif
+
+#if BUILDFLAG(ENABLE_CROS_LIBASSISTANT)
+  if (service_name == chromeos::assistant::mojom::kAudioDecoderServiceName) {
+    return std::make_unique<chromeos::assistant::AssistantAudioDecoderService>(
+        std::move(request));
+  }
+#endif
+
+  return mash_service_factory_->HandleServiceRequest(service_name,
+                                                     std::move(request));
+#else   // defined(OS_CHROMEOS)
+  return nullptr;
+#endif  // defined(OS_CHROMEOS)
 }
 
-void ChromeContentUtilityClient::AddHandler(
-    std::unique_ptr<UtilityMessageHandler> handler) {
-  handlers_.push_back(std::move(handler));
+std::unique_ptr<service_manager::Service>
+ChromeContentUtilityClient::MaybeCreateElevatedService(
+    const std::string& service_name,
+    service_manager::mojom::ServiceRequest request) {
+  DCHECK(utility_process_running_elevated_);
+#if defined(OS_WIN) && BUILDFLAG(ENABLE_EXTENSIONS)
+  if (service_name == chrome::mojom::kWifiUtilWinServiceName)
+    return std::make_unique<WifiUtilWinService>(std::move(request));
+
+  if (service_name == chrome::mojom::kRemovableStorageWriterServiceName)
+    return std::make_unique<RemovableStorageWriterService>(std::move(request));
+#endif
+
+  return nullptr;
+}
+
+void ChromeContentUtilityClient::RegisterNetworkBinders(
+    service_manager::BinderRegistry* registry) {
+  if (g_network_binder_creation_callback.Get())
+    g_network_binder_creation_callback.Get().Run(registry);
 }
 
 // static
-void ChromeContentUtilityClient::PreSandboxStartup() {
-#if defined(ENABLE_EXTENSIONS)
-  extensions::ExtensionsHandler::PreSandboxStartup();
-#endif
+void ChromeContentUtilityClient::SetNetworkBinderCreationCallback(
+    const NetworkBinderCreationCallback& callback) {
+  g_network_binder_creation_callback.Get() = callback;
 }
-
-#if defined(OS_CHROMEOS)
-void ChromeContentUtilityClient::OnCreateZipFile(
-    const base::FilePath& src_dir,
-    const std::vector<base::FilePath>& src_relative_paths,
-    const base::FileDescriptor& dest_fd) {
-  // dest_fd should be closed in the function. See ipc/ipc_message_util.h for
-  // details.
-  base::ScopedFD fd_closer(dest_fd.fd);
-  bool succeeded = true;
-
-  // Check sanity of source relative paths. Reject if path is absolute or
-  // contains any attempt to reference a parent directory ("../" tricks).
-  for (std::vector<base::FilePath>::const_iterator iter =
-           src_relative_paths.begin(); iter != src_relative_paths.end();
-       ++iter) {
-    if (iter->IsAbsolute() || iter->ReferencesParent()) {
-      succeeded = false;
-      break;
-    }
-  }
-
-  if (succeeded)
-    succeeded = zip::ZipFiles(src_dir, src_relative_paths, dest_fd.fd);
-
-  if (succeeded)
-    Send(new ChromeUtilityHostMsg_CreateZipFile_Succeeded());
-  else
-    Send(new ChromeUtilityHostMsg_CreateZipFile_Failed());
-  ReleaseProcessIfNeeded();
-}
-#endif  // defined(OS_CHROMEOS)
-
-void ChromeContentUtilityClient::OnPatchFileBsdiff(
-    const base::FilePath& input_file,
-    const base::FilePath& patch_file,
-    const base::FilePath& output_file) {
-  if (input_file.empty() || patch_file.empty() || output_file.empty()) {
-    Send(new ChromeUtilityHostMsg_PatchFile_Finished(-1));
-  } else {
-    const int patch_status = courgette::ApplyBinaryPatch(input_file,
-                                                         patch_file,
-                                                         output_file);
-    Send(new ChromeUtilityHostMsg_PatchFile_Finished(patch_status));
-  }
-  ReleaseProcessIfNeeded();
-}
-
-void ChromeContentUtilityClient::OnPatchFileCourgette(
-    const base::FilePath& input_file,
-    const base::FilePath& patch_file,
-    const base::FilePath& output_file) {
-  if (input_file.empty() || patch_file.empty() || output_file.empty()) {
-    Send(new ChromeUtilityHostMsg_PatchFile_Finished(-1));
-  } else {
-    const int patch_status = courgette::ApplyEnsemblePatch(
-        input_file.value().c_str(),
-        patch_file.value().c_str(),
-        output_file.value().c_str());
-    Send(new ChromeUtilityHostMsg_PatchFile_Finished(patch_status));
-  }
-  ReleaseProcessIfNeeded();
-}
-
-#if defined(FULL_SAFE_BROWSING)
-void ChromeContentUtilityClient::OnAnalyzeZipFileForDownloadProtection(
-    const IPC::PlatformFileForTransit& zip_file,
-    const IPC::PlatformFileForTransit& temp_file) {
-  safe_browsing::zip_analyzer::Results results;
-  safe_browsing::zip_analyzer::AnalyzeZipFile(
-      IPC::PlatformFileForTransitToFile(zip_file),
-      IPC::PlatformFileForTransitToFile(temp_file), &results);
-  Send(new ChromeUtilityHostMsg_AnalyzeZipFileForDownloadProtection_Finished(
-      results));
-  ReleaseProcessIfNeeded();
-}
-
-#if defined(OS_MACOSX)
-void ChromeContentUtilityClient::OnAnalyzeDmgFileForDownloadProtection(
-    const IPC::PlatformFileForTransit& dmg_file) {
-  safe_browsing::zip_analyzer::Results results;
-  safe_browsing::dmg::AnalyzeDMGFile(
-      IPC::PlatformFileForTransitToFile(dmg_file), &results);
-  Send(new ChromeUtilityHostMsg_AnalyzeDmgFileForDownloadProtection_Finished(
-      results));
-  ReleaseProcessIfNeeded();
-}
-#endif  // defined(OS_MACOSX)
-
-#endif  // defined(FULL_SAFE_BROWSING)

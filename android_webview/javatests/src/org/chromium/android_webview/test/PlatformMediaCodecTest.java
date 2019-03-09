@@ -4,52 +4,58 @@
 
 package org.chromium.android_webview.test;
 
-import org.chromium.base.test.util.DisabledTest;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.test.util.DOMUtils;
-import org.chromium.content_public.browser.WebContents;
+import android.support.test.filters.MediumTest;
 
-import java.util.concurrent.Callable;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.DisabledTest;
+import org.chromium.base.test.util.Feature;
+import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.test.util.DOMUtils;
 
 /**
  * Test that a page with a non-Chrome media codec can playback correctly; this
  * test is *NOT* exhaustive, but merely spot checks a single instance.
  */
-public class PlatformMediaCodecTest extends AwTestBase {
+@RunWith(AwJUnit4ClassRunner.class)
+public class PlatformMediaCodecTest {
+    @Rule
+    public AwActivityTestRule mActivityTestRule = new AwActivityTestRule();
+
     private TestAwContentsClient mContentsClient;
     private AwTestContainerView mTestContainerView;
-    private ContentViewCore mContentViewCore;
+    private WebContents mWebContents;
 
-    protected void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUp() throws Exception {
         mContentsClient = new TestAwContentsClient();
-        mTestContainerView = createAwTestContainerViewOnMainSync(mContentsClient);
-        mContentViewCore = mTestContainerView.getContentViewCore();
-        enableJavaScriptOnUiThread(mTestContainerView.getAwContents());
+        mTestContainerView = mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
+        mWebContents = mTestContainerView.getWebContents();
+        AwActivityTestRule.enableJavaScriptOnUiThread(mTestContainerView.getAwContents());
     }
 
-    /*
+    @Test
     @MediumTest
     @Feature({"AndroidWebView"})
-    */
     @DisabledTest(message = "crbug.com/620890")
     public void testCanPlayPlatformMediaCodecs() throws Throwable {
-        loadUrlSync(mTestContainerView.getAwContents(), mContentsClient.getOnPageFinishedHelper(),
+        mActivityTestRule.loadUrlSync(mTestContainerView.getAwContents(),
+                mContentsClient.getOnPageFinishedHelper(),
                 "file:///android_asset/platform-media-codec-test.html");
-        DOMUtils.clickNode(this, mContentViewCore, "playButton");
+        DOMUtils.clickNode(mWebContents, "playButton");
         DOMUtils.waitForMediaPlay(getWebContentsOnUiThread(), "videoTag");
     }
 
     private WebContents getWebContentsOnUiThread() {
         try {
-            return runTestOnUiThreadAndGetResult(new Callable<WebContents>() {
-                @Override
-                public WebContents call() throws Exception {
-                    return mContentViewCore.getWebContents();
-                }
-            });
+            return ThreadUtils.runOnUiThreadBlocking(() -> mWebContents);
         } catch (Exception e) {
-            fail(e.getMessage());
+            Assert.fail(e.getMessage());
             return null;
         }
     }

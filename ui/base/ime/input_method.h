@@ -7,14 +7,16 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
-#include "base/event_types.h"
-#include "base/memory/scoped_vector.h"
 #include "build/build_config.h"
 #include "ui/base/ime/text_input_mode.h"
 #include "ui/base/ime/text_input_type.h"
+#include "ui/events/event_dispatcher.h"
+#include "ui/events/platform_event.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace extensions {
 class InputImeApiTest;
@@ -26,6 +28,7 @@ namespace internal {
 class InputMethodDelegate;
 }  // namespace internal
 
+class InputMethodKeyboardController;
 class InputMethodObserver;
 class KeyEvent;
 class TextInputClient;
@@ -74,12 +77,13 @@ class InputMethod {
   // Called when the top-level system window loses keyboard focus.
   virtual void OnBlur() = 0;
 
+#if defined(OS_WIN)
   // Called when the focused window receives native IME messages that are not
   // translated into other predefined event callbacks. Currently this method is
   // used only for IME functionalities specific to Windows.
-  // TODO(ime): Break down these messages into platform-neutral methods.
-  virtual bool OnUntranslatedIMEMessage(const base::NativeEvent& event,
+  virtual bool OnUntranslatedIMEMessage(const MSG event,
                                         NativeEventResult* result) = 0;
+#endif
 
   // Sets the text input client which receives text input events such as
   // SetCompositionText(). |client| can be NULL. A gfx::NativeWindow which
@@ -100,7 +104,8 @@ class InputMethod {
   // dispatched back to the caller via
   // ui::InputMethodDelegate::DispatchKeyEventPostIME(), once it's processed by
   // the input method. It should only be called by a message dispatcher.
-  virtual void DispatchKeyEvent(ui::KeyEvent* event) = 0;
+  virtual ui::EventDispatchDetails DispatchKeyEvent(ui::KeyEvent* event)
+      WARN_UNUSED_RESULT = 0;
 
   // Called by the focused client whenever its text input type is changed.
   // Before calling this method, the focused client must confirm or clear
@@ -125,9 +130,9 @@ class InputMethod {
   // TODO(ime): Consider to take a parameter of TextInputClient.
   virtual void OnInputLocaleChanged() = 0;
 
-  // Returns the locale of current keyboard layout or input method, as a BCP-47
-  // tag, or an empty string if the input method cannot provide it.
-  virtual std::string GetInputLocale() = 0;
+  // Returns whether the system input locale is in CJK languages.
+  // This is only used in Windows platforms.
+  virtual bool IsInputLocaleCJK() const = 0;
 
   // TODO(yoichio): Following 3 methods(GetTextInputType, GetTextInputMode and
   // CanComposeInline) calls client's same method and returns its value. It is
@@ -153,12 +158,22 @@ class InputMethod {
   // of IME popups is not supported.
   virtual bool IsCandidatePopupOpen() const = 0;
 
+  // Check whether text entered into the focused text input client should be
+  // used to improve typing suggestions for the user.
+  virtual bool GetClientShouldDoLearning() = 0;
+
   // Displays an on screen keyboard if enabled.
-  virtual void ShowImeIfNeeded() = 0;
+  virtual void ShowVirtualKeyboardIfEnabled() = 0;
 
   // Management of the observer list.
   virtual void AddObserver(InputMethodObserver* observer) = 0;
   virtual void RemoveObserver(InputMethodObserver* observer) = 0;
+
+  // Set screen bounds of a on-screen keyboard.
+  virtual void SetOnScreenKeyboardBounds(const gfx::Rect& new_bounds) {}
+
+  // Return the keyboard controller; used only on Windows.
+  virtual InputMethodKeyboardController* GetInputMethodKeyboardController() = 0;
 
  protected:
   friend class extensions::InputImeApiTest;

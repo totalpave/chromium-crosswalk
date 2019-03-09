@@ -9,14 +9,16 @@
 Polymer({
   is: 'settings-search-page',
 
+  behaviors: [I18nBehavior],
+
   properties: {
-    /**
-     * The current active route.
-     */
-    currentRoute: {
-      type: Object,
-      notify: true,
-    },
+    prefs: Object,
+
+    // <if expr="chromeos">
+    arcEnabled: Boolean,
+
+    voiceInteractionValuePropAccepted: Boolean,
+    // </if>
 
     /**
      * List of default search engines available.
@@ -24,12 +26,45 @@ Polymer({
      */
     searchEngines_: {
       type: Array,
-      value: function() { return []; }
+      value: function() {
+        return [];
+      }
     },
 
-    /** @private {!settings.SearchEnginesBrowserProxy} */
-    browserProxy_: Object,
+    /** @private Filter applied to search engines. */
+    searchEnginesFilter_: String,
+
+    /** @type {?Map<string, string>} */
+    focusConfig_: Object,
+
+    // <if expr="chromeos">
+    /** @private */
+    voiceInteractionFeatureEnabled_: {
+      type: Boolean,
+      value: function() {
+        return loadTimeData.getBoolean('enableVoiceInteraction');
+      },
+    },
+
+    /** @private */
+    assistantFeatureEnabled_: {
+      type: Boolean,
+      value: function() {
+        return loadTimeData.getBoolean('enableAssistant');
+      },
+    },
+
+    /** @private */
+    assistantOn_: {
+      type: Boolean,
+      computed: 'isAssistantTurnedOn_(arcEnabled, ' +
+          'voiceInteractionValuePropAccepted, assistantFeatureEnabled_)',
+    }
+    // </if>
   },
+
+  /** @private {?settings.SearchEnginesBrowserProxy} */
+  browserProxy_: null,
 
   /** @override */
   created: function() {
@@ -38,40 +73,110 @@ Polymer({
 
   /** @override */
   ready: function() {
-    var updateSearchEngines = function(searchEngines) {
+    // Omnibox search engine
+    const updateSearchEngines = searchEngines => {
       this.set('searchEngines_', searchEngines.defaults);
-    }.bind(this);
+    };
     this.browserProxy_.getSearchEnginesList().then(updateSearchEngines);
     cr.addWebUIListener('search-engines-changed', updateSearchEngines);
+
+    this.focusConfig_ = new Map();
+    if (settings.routes.SEARCH_ENGINES) {
+      this.focusConfig_.set(
+          settings.routes.SEARCH_ENGINES.path,
+          '#engines-subpage-trigger');
+    }
+    // <if expr="chromeos">
+    if (settings.routes.GOOGLE_ASSISTANT) {
+      this.focusConfig_.set(
+          settings.routes.GOOGLE_ASSISTANT.path,
+          '#assistant-subpage-trigger .subpage-arrow button');
+    }
+    // </if>
+  },
+
+  /** @private */
+  onChange_: function() {
+    const select = /** @type {!HTMLSelectElement} */ (this.$$('select'));
+    const searchEngine = this.searchEngines_[select.selectedIndex];
+    this.browserProxy_.setDefaultSearchEngine(searchEngine.modelIndex);
+  },
+
+  /** @private */
+  onDisableExtension_: function() {
+    this.fire('refresh-pref', 'default_search_provider.enabled');
   },
 
   /** @private */
   onManageSearchEnginesTap_: function() {
-    this.$.pages.setSubpageChain(['search-engines']);
+    settings.navigateTo(settings.routes.SEARCH_ENGINES);
   },
 
+  // <if expr="chromeos">
   /** @private */
-  onIronSelect_: function() {
-    var searchEngine = this.searchEngines_[this.$$('paper-listbox').selected];
-    if (searchEngine.default) {
-      // If the selected search engine is already marked as the default one,
-      // this change originated in some other tab, and nothing should be done
-      // here.
+  onGoogleAssistantTap_: function() {
+    assert(this.voiceInteractionFeatureEnabled_);
+
+    if (!this.assistantOn_) {
       return;
     }
 
-    // Otherwise, this change originated by an explicit user action in this tab.
-    // Submit the default search engine change.
-    this.browserProxy_.setDefaultSearchEngine(searchEngine.modelIndex);
+    settings.navigateTo(settings.routes.GOOGLE_ASSISTANT);
+  },
+
+  /** @private */
+  onAssistantTurnOnTap_: function(event) {
+    this.browserProxy_.turnOnGoogleAssistant();
+  },
+  // </if>
+
+  // <if expr="chromeos">
+  /**
+   * @param {boolean} toggleValue
+   * @return {string}
+   * @private
+   */
+  getAssistantEnabledDisabledLabel_: function(toggleValue) {
+    return this.i18n(
+        toggleValue ? 'searchGoogleAssistantEnabled' :
+                      'searchGoogleAssistantDisabled');
+  },
+
+  /** @private
+   *  @param {boolean} arcEnabled
+   *  @param {boolean} valuePropAccepted
+   *  @param {boolean} assistantFeatureEnabled
+   *  @return {boolean}
+   */
+  isAssistantTurnedOn_: function(
+      arcEnabled, valuePropAccepted, assistantFeatureEnabled) {
+    return (arcEnabled && valuePropAccepted) || assistantFeatureEnabled;
+  },
+  // </if>
+
+  /**
+   * @param {!Event} event
+   * @private
+   */
+  doNothing_: function(event) {
+    event.stopPropagation();
   },
 
   /**
-   * @return {number}
+   * @param {!chrome.settingsPrivate.PrefObject} pref
+   * @return {boolean}
    * @private
    */
-  getSelectedSearchEngineIndex_: function() {
-    return this.searchEngines_.findIndex(function(searchEngine) {
-      return searchEngine.default;
-    });
+  isDefaultSearchControlledByPolicy_: function(pref) {
+    return pref.controlledBy == chrome.settingsPrivate.ControlledBy.USER_POLICY;
+  },
+
+  /**
+   * @param {!chrome.settingsPrivate.PrefObject} pref
+   * @return {boolean}
+   * @private
+   */
+  isDefaultSearchEngineEnforced_: function(pref) {
+    return pref.enforcement == chrome.settingsPrivate.Enforcement.ENFORCED;
   },
 });

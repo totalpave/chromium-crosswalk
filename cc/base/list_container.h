@@ -11,7 +11,6 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
-#include "cc/base/cc_export.h"
 #include "cc/base/list_container_helper.h"
 
 namespace cc {
@@ -27,28 +26,15 @@ namespace cc {
 template <class BaseElementType>
 class ListContainer {
  public:
-  ListContainer(ListContainer&& other) : helper_(sizeof(BaseElementType)) {
-    helper_.data_.swap(other.helper_.data_);
-  }
-
-  // BaseElementType is the type of raw pointers this class hands out; however,
-  // its derived classes might require different memory sizes.
-  // max_size_for_derived_class the largest memory size required for all the
-  // derived classes to use for allocation.
-  explicit ListContainer(size_t max_size_for_derived_class)
-      : helper_(max_size_for_derived_class) {}
-
-  // This constructor omits input variable for max_size_for_derived_class. This
-  // is used when there is no derived classes from BaseElementType we need to
-  // worry about, and allocation size is just sizeof(BaseElementType).
-  ListContainer() : helper_(sizeof(BaseElementType)) {}
-
   // This constructor reserves the requested memory up front so only single
   // allocation is needed. When num_of_elements_to_reserve_for is zero, use the
   // default size.
-  ListContainer(size_t max_size_for_derived_class,
+  ListContainer(size_t max_alignment,
+                size_t max_size_for_derived_class,
                 size_t num_of_elements_to_reserve_for)
-      : helper_(max_size_for_derived_class, num_of_elements_to_reserve_for) {}
+      : helper_(max_alignment,
+                max_size_for_derived_class,
+                num_of_elements_to_reserve_for) {}
 
   ~ListContainer() {
     for (Iterator i = begin(); i != end(); ++i) {
@@ -115,7 +101,8 @@ class ListContainer {
   // Allocate().
   template <typename DerivedElementType>
   DerivedElementType* AllocateAndConstruct() {
-    return new (helper_.Allocate(sizeof(DerivedElementType)))
+    return new (helper_.Allocate(alignof(DerivedElementType),
+                                 sizeof(DerivedElementType)))
         DerivedElementType;
   }
 
@@ -123,7 +110,8 @@ class ListContainer {
   // Allocate().
   template <typename DerivedElementType>
   DerivedElementType* AllocateAndCopyFrom(const DerivedElementType* source) {
-    return new (helper_.Allocate(sizeof(DerivedElementType)))
+    return new (helper_.Allocate(alignof(DerivedElementType),
+                                 sizeof(DerivedElementType)))
         DerivedElementType(*source);
   }
 
@@ -148,6 +136,16 @@ class ListContainer {
     return result;
   }
 
+  // Insert |count| new elements of |DerivedElementType| after |at|. If |at| is
+  // end() elements will be inserted to the empty list. This will invalidate all
+  // outstanding pointers and iterators. Return a valid iterator for the
+  // beginning of the newly inserted segment.
+  template <typename DerivedElementType>
+  Iterator InsertAfterAndInvalidateAllPointers(Iterator at, size_t count) {
+    return InsertBeforeAndInvalidateAllPointers<DerivedElementType>(
+        at != end() ? ++at : at, count);
+  }
+
   ListContainer& operator=(ListContainer&& other) {
     helper_.data_.swap(other.helper_.data_);
     return *this;
@@ -156,21 +154,6 @@ class ListContainer {
   template <typename DerivedElementType>
   void swap(ListContainer<DerivedElementType>& other) {
     helper_.data_.swap(other.helper_.data_);
-  }
-
-  // Appends a new item without copying. The original item will not be
-  // destructed and will be replaced with a new DerivedElementType. The
-  // DerivedElementType does not have to match the moved type as a full block
-  // of memory will be moved (up to MaxSizeForDerivedClass()). A pointer to
-  // the moved element is returned.
-  template <typename DerivedElementType>
-  DerivedElementType* AppendByMoving(DerivedElementType* item) {
-    size_t max_size_for_derived_class = helper_.MaxSizeForDerivedClass();
-    void* new_item = helper_.Allocate(max_size_for_derived_class);
-    memcpy(new_item, static_cast<void*>(item), max_size_for_derived_class);
-    // Construct a new element in-place so it can be destructed safely.
-    new (item) DerivedElementType;
-    return static_cast<DerivedElementType*>(new_item);
   }
 
   size_t size() const { return helper_.size(); }
@@ -219,6 +202,13 @@ class ListContainer {
       return *this;
     }
 
+    // STL compatibility.
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = BaseElementType*;
+    using reference = value_type&;
+    using pointer = value_type*;
+    using difference_type = ptrdiff_t;
+
    private:
     explicit Iterator(const ListContainerHelper::Iterator& base_iterator)
         : ListContainerHelper::Iterator(base_iterator) {}
@@ -259,6 +249,13 @@ class ListContainer {
       return *this;
     }
 
+    // STL compatibility.
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = const BaseElementType*;
+    using reference = value_type&;
+    using pointer = value_type*;
+    using difference_type = ptrdiff_t;
+
    private:
     explicit ConstIterator(
         const ListContainerHelper::ConstIterator& base_iterator)
@@ -298,6 +295,13 @@ class ListContainer {
       return *this;
     }
 
+    // STL compatibility.
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = BaseElementType*;
+    using reference = value_type&;
+    using pointer = value_type*;
+    using difference_type = ptrdiff_t;
+
    private:
     explicit ReverseIterator(ListContainerHelper::ReverseIterator base_iterator)
         : ListContainerHelper::ReverseIterator(base_iterator) {}
@@ -336,6 +340,13 @@ class ListContainer {
       ++index_;
       return *this;
     }
+
+    // STL compatibility.
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = const BaseElementType*;
+    using reference = value_type&;
+    using pointer = value_type*;
+    using difference_type = ptrdiff_t;
 
    private:
     explicit ConstReverseIterator(

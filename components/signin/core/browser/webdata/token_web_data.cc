@@ -4,9 +4,10 @@
 
 #include "components/signin/core/browser/webdata/token_web_data.h"
 
+#include <memory>
+
 #include "base/bind.h"
-#include "base/memory/ptr_util.h"
-#include "base/memory/ref_counted_delete_on_message_loop.h"
+#include "base/memory/ref_counted_delete_on_sequence.h"
 #include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
 #include "components/signin/core/browser/webdata/token_service_table.h"
@@ -16,11 +17,11 @@ using base::Bind;
 using base::Time;
 
 class TokenWebDataBackend
-    : public base::RefCountedDeleteOnMessageLoop<TokenWebDataBackend> {
-
+    : public base::RefCountedDeleteOnSequence<TokenWebDataBackend> {
  public:
-  TokenWebDataBackend(scoped_refptr<base::SingleThreadTaskRunner> db_thread)
-      : base::RefCountedDeleteOnMessageLoop<TokenWebDataBackend>(db_thread) {}
+  TokenWebDataBackend(
+      scoped_refptr<base::SingleThreadTaskRunner> db_task_runner)
+      : base::RefCountedDeleteOnSequence<TokenWebDataBackend>(db_task_runner) {}
 
   WebDatabase::State RemoveAllTokens(WebDatabase* db) {
     if (TokenServiceTable::FromWebDatabase(db)->RemoveAllTokens()) {
@@ -48,10 +49,10 @@ class TokenWebDataBackend
   }
 
   std::unique_ptr<WDTypedResult> GetAllTokens(WebDatabase* db) {
-    std::map<std::string, std::string> map;
-    TokenServiceTable::FromWebDatabase(db)->GetAllTokens(&map);
-    return base::WrapUnique(
-        new WDResult<std::map<std::string, std::string>>(TOKEN_RESULT, map));
+    TokenResult result;
+    result.db_result =
+        TokenServiceTable::FromWebDatabase(db)->GetAllTokens(&result.tokens);
+    return std::make_unique<WDResult<TokenResult>>(TOKEN_RESULT, result);
   }
 
  protected:
@@ -59,18 +60,22 @@ class TokenWebDataBackend
   }
 
  private:
-  friend class base::RefCountedDeleteOnMessageLoop<TokenWebDataBackend>;
+  friend class base::RefCountedDeleteOnSequence<TokenWebDataBackend>;
   friend class base::DeleteHelper<TokenWebDataBackend>;
 };
 
+TokenResult::TokenResult()
+    : db_result(TokenServiceTable::TOKEN_DB_RESULT_SQL_INVALID_STATEMENT) {}
+TokenResult::TokenResult(const TokenResult& other) = default;
+TokenResult::~TokenResult() {}
+
 TokenWebData::TokenWebData(
     scoped_refptr<WebDatabaseService> wdbs,
-    scoped_refptr<base::SingleThreadTaskRunner> ui_thread,
-    scoped_refptr<base::SingleThreadTaskRunner> db_thread,
+    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
+    scoped_refptr<base::SingleThreadTaskRunner> db_task_runner,
     const ProfileErrorCallback& callback)
-    : WebDataServiceBase(wdbs, callback, ui_thread),
-      token_backend_(new TokenWebDataBackend(db_thread)) {
-}
+    : WebDataServiceBase(wdbs, callback, ui_task_runner),
+      token_backend_(new TokenWebDataBackend(db_task_runner)) {}
 
 void TokenWebData::SetTokenForService(const std::string& service,
                                       const std::string& token) {
@@ -98,11 +103,10 @@ WebDataServiceBase::Handle TokenWebData::GetAllTokens(
 }
 
 TokenWebData::TokenWebData(
-    scoped_refptr<base::SingleThreadTaskRunner> ui_thread,
-    scoped_refptr<base::SingleThreadTaskRunner> db_thread)
-    : WebDataServiceBase(NULL, ProfileErrorCallback(), ui_thread),
-      token_backend_(new TokenWebDataBackend(db_thread)) {
-}
+    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
+    scoped_refptr<base::SingleThreadTaskRunner> db_task_runner)
+    : WebDataServiceBase(nullptr, ProfileErrorCallback(), ui_task_runner),
+      token_backend_(new TokenWebDataBackend(db_task_runner)) {}
 
 TokenWebData::~TokenWebData() {
 }

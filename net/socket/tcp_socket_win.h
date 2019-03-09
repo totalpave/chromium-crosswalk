@@ -13,53 +13,66 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/threading/thread_checker.h"
 #include "base/win/object_watcher.h"
 #include "net/base/address_family.h"
-#include "net/base/completion_callback.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/net_export.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_with_source.h"
+#include "net/socket/socket_descriptor.h"
 #include "net/socket/socket_performance_watcher.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace net {
 
 class AddressList;
 class IOBuffer;
 class IPEndPoint;
+class NetLog;
+struct NetLogSource;
+class SocketTag;
 
-class NET_EXPORT TCPSocketWin : NON_EXPORTED_BASE(public base::NonThreadSafe),
-                                public base::win::ObjectWatcher::Delegate  {
+class NET_EXPORT TCPSocketWin : public base::win::ObjectWatcher::Delegate {
  public:
   TCPSocketWin(
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       NetLog* net_log,
-      const NetLog::Source& source);
+      const NetLogSource& source);
   ~TCPSocketWin() override;
 
   int Open(AddressFamily family);
 
-  // Both AdoptConnectedSocket and AdoptListenSocket take ownership of an
-  // existing socket. AdoptConnectedSocket takes an already connected
-  // socket. AdoptListenSocket takes a socket that is intended to accept
-  // connection. In some sense, AdoptListenSocket is more similar to Open.
-  int AdoptConnectedSocket(SOCKET socket, const IPEndPoint& peer_address);
-  int AdoptListenSocket(SOCKET socket);
+  // Takes ownership of |socket|, which is known to already be connected to the
+  // given peer address. However, peer address may be the empty address, for
+  // compatibility. The given peer address will be returned by GetPeerAddress.
+  int AdoptConnectedSocket(SocketDescriptor socket,
+                           const IPEndPoint& peer_address);
+  // Takes ownership of |socket|, which may or may not be open, bound, or
+  // listening. The caller must determine the state of the socket based on its
+  // provenance and act accordingly. The socket may have connections waiting
+  // to be accepted, but must not be actually connected.
+  int AdoptUnconnectedSocket(SocketDescriptor socket);
 
   int Bind(const IPEndPoint& address);
 
   int Listen(int backlog);
   int Accept(std::unique_ptr<TCPSocketWin>* socket,
              IPEndPoint* address,
-             const CompletionCallback& callback);
+             CompletionOnceCallback callback);
 
-  int Connect(const IPEndPoint& address, const CompletionCallback& callback);
+  int Connect(const IPEndPoint& address, CompletionOnceCallback callback);
   bool IsConnected() const;
   bool IsConnectedAndIdle() const;
 
   // Multiple outstanding requests are not supported.
   // Full duplex mode (reading and writing at the same time) is supported.
-  int Read(IOBuffer* buf, int buf_len, const CompletionCallback& callback);
-  int Write(IOBuffer* buf, int buf_len, const CompletionCallback& callback);
+  int Read(IOBuffer* buf, int buf_len, CompletionOnceCallback callback);
+  int ReadIfReady(IOBuffer* buf, int buf_len, CompletionOnceCallback callback);
+  int CancelReadIfReady();
+  int Write(IOBuffer* buf,
+            int buf_len,
+            CompletionOnceCallback callback,
+            const NetworkTrafficAnnotationTag& traffic_annotation);
 
   int GetLocalAddress(IPEndPoint* address) const;
   int GetPeerAddress(IPEndPoint* address) const;
@@ -85,9 +98,6 @@ class NET_EXPORT TCPSocketWin : NON_EXPORTED_BASE(public base::NonThreadSafe),
 
   void Close();
 
-  // NOOP since TCP FastOpen is not implemented in Windows.
-  void EnableTCPFastOpenIfSupported() {}
-
   bool IsValid() const { return socket_ != INVALID_SOCKET; }
 
   // Detachs from the current thread, to allow the socket to be transferred to
@@ -99,16 +109,33 @@ class NET_EXPORT TCPSocketWin : NON_EXPORTED_BASE(public base::NonThreadSafe),
   //
   // TCPClientSocket may attempt to connect to multiple addresses until it
   // succeeds in establishing a connection. The corresponding log will have
-  // multiple NetLog::TYPE_TCP_CONNECT_ATTEMPT entries nested within a
-  // NetLog::TYPE_TCP_CONNECT. These methods set the start/end of
-  // NetLog::TYPE_TCP_CONNECT.
+  // multiple NetLogEventType::TCP_CONNECT_ATTEMPT entries nested within a
+  // NetLogEventType::TCP_CONNECT. These methods set the start/end of
+  // NetLogEventType::TCP_CONNECT.
   //
   // TODO(yzshen): Change logging format and let TCPClientSocket log the
   // start/end of a series of connect attempts itself.
   void StartLoggingMultipleConnectAttempts(const AddressList& addresses);
   void EndLoggingMultipleConnectAttempts(int net_error);
 
-  const BoundNetLog& net_log() const { return net_log_; }
+  const NetLogWithSource& net_log() const { return net_log_; }
+
+  // Return the underlying SocketDescriptor and clean up this object, which may
+  // no longer be used. This method should be used only for testing. No read,
+  // write, or accept operations should be pending.
+  SocketDescriptor ReleaseSocketDescriptorForTesting();
+
+  // Exposes the underlying socket descriptor for testing its state. Does not
+  // release ownership of the descriptor.
+  SocketDescriptor SocketDescriptorForTesting() const;
+
+  // Apply |tag| to this socket.
+  void ApplySocketTag(const SocketTag& tag);
+
+  // May return nullptr.
+  SocketPerformanceWatcher* socket_performance_watcher() const {
+    return socket_performance_watcher_.get();
+  }
 
  private:
   class Core;
@@ -125,7 +152,7 @@ class NET_EXPORT TCPSocketWin : NON_EXPORTED_BASE(public base::NonThreadSafe),
   void LogConnectBegin(const AddressList& addresses);
   void LogConnectEnd(int net_error);
 
-  int DoRead(IOBuffer* buf, int buf_len, const CompletionCallback& callback);
+  void RetryRead(int rv);
   void DidCompleteConnect();
   void DidCompleteWrite();
   void DidSignalRead();
@@ -140,7 +167,7 @@ class NET_EXPORT TCPSocketWin : NON_EXPORTED_BASE(public base::NonThreadSafe),
 
   std::unique_ptr<TCPSocketWin>* accept_socket_;
   IPEndPoint* accept_address_;
-  CompletionCallback accept_callback_;
+  CompletionOnceCallback accept_callback_;
 
   // The various states that the socket could be in.
   bool waiting_connect_;
@@ -153,10 +180,15 @@ class NET_EXPORT TCPSocketWin : NON_EXPORTED_BASE(public base::NonThreadSafe),
   scoped_refptr<Core> core_;
 
   // External callback; called when connect or read is complete.
-  CompletionCallback read_callback_;
+  CompletionOnceCallback read_callback_;
+
+  // Non-null if a ReadIfReady() is to be completed asynchronously. This is an
+  // external callback if user used ReadIfReady() instead of Read(), but a
+  // wrapped callback on top of RetryRead() if Read() is used.
+  CompletionOnceCallback read_if_ready_callback_;
 
   // External callback; called when write is complete.
-  CompletionCallback write_callback_;
+  CompletionOnceCallback write_callback_;
 
   std::unique_ptr<IPEndPoint> peer_address_;
   // The OS error that a connect attempt last completed with.
@@ -164,7 +196,9 @@ class NET_EXPORT TCPSocketWin : NON_EXPORTED_BASE(public base::NonThreadSafe),
 
   bool logging_multiple_connect_attempts_;
 
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
+
+  THREAD_CHECKER(thread_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(TCPSocketWin);
 };

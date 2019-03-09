@@ -2,22 +2,41 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef CONTENT_BROWSER_WEB_CONTENTS_WEB_DRAG_DEST_MAC_H_
+#define CONTENT_BROWSER_WEB_CONTENTS_WEB_DRAG_DEST_MAC_H_
+
 #import <Cocoa/Cocoa.h>
 
 #include <memory>
 
 #include "base/strings/string16.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/common/drop_data.h"
+#include "ui/gfx/geometry/point_f.h"
 
 namespace content {
 class RenderViewHost;
+class RenderWidgetHostImpl;
 class WebContentsImpl;
 class WebDragDestDelegate;
-}
+namespace mojom {
+class DraggingInfo;
+}  // namespace mojom
+}  // namespace content
 
 // A typedef for a RenderViewHost used for comparison purposes only.
 typedef content::RenderViewHost* RenderViewHostIdentifier;
+
+namespace content {
+
+// Given |data|, which should not be nil, fill it in using the contents of the
+// given pasteboard. The types handled by this method should be kept in sync
+// with [WebContentsViewCocoa registerDragTypes].
+void CONTENT_EXPORT PopulateDropDataFromPasteboard(content::DropData* data,
+                                                   NSPasteboard* pboard);
+
+}  // namespace content
 
 // A class that handles tracking and event processing for a drag and drop
 // over the content area. Assumes something else initiates the drag, this is
@@ -35,12 +54,28 @@ CONTENT_EXPORT
   // allow the drop.
   NSDragOperation currentOperation_;
 
+  // Tracks the current RenderWidgetHost we're dragging over.
+  base::WeakPtr<content::RenderWidgetHostImpl> currentRWHForDrag_;
+
   // Keep track of the render view host we're dragging over.  If it changes
   // during a drag, we need to re-send the DragEnter message.
   RenderViewHostIdentifier currentRVH_;
 
-  // The data for the current drag, or NULL if none is in progress.
-  std::unique_ptr<content::DropData> dropData_;
+  // Tracks the IDs of the source RenderProcessHost and RenderViewHost from
+  // which the current drag originated. These are set in
+  // -setDragStartTrackersForProcess:, and are used to ensure that drag events
+  // do not fire over a cross-site frame (with respect to the source frame) in
+  // the same page (see crbug.com/666858). See
+  // WebContentsViewAura::drag_start_process_id_ for additional information.
+  int dragStartProcessID_;
+  content::GlobalRoutingID dragStartViewID_;
+
+  // The unfiltered data for the current drag, or nullptr if none is in
+  // progress.
+  std::unique_ptr<content::DropData> dropDataUnfiltered_;
+
+  // The data for the current drag, filtered by |currentRWHForDrag_|.
+  std::unique_ptr<content::DropData> dropDataFiltered_;
 
   // True if the drag has been canceled.
   bool canceled_;
@@ -62,22 +97,29 @@ CONTENT_EXPORT
 
 // Messages to send during the tracking of a drag, ususally upon receiving
 // calls from the view system. Communicates the drag messages to WebCore.
-- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)info
-                              view:(NSView*)view;
-- (void)draggingExited:(id<NSDraggingInfo>)info;
-- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)info
-                              view:(NSView*)view;
-- (BOOL)performDragOperation:(id<NSDraggingInfo>)info
-                              view:(NSView*)view;
+- (void)setDropData:(const content::DropData&)dropData;
+- (NSDragOperation)draggingEntered:(const content::mojom::DraggingInfo*)info;
+- (void)draggingExited;
+- (NSDragOperation)draggingUpdated:(const content::mojom::DraggingInfo*)info;
+- (BOOL)performDragOperation:(const content::mojom::DraggingInfo*)info;
+
+// Helper to call WebWidgetHostInputEventRouter::GetRenderWidgetHostAtPoint().
+- (content::RenderWidgetHostImpl*)
+    GetRenderWidgetHostAtPoint:(const gfx::PointF&)viewPoint
+                 transformedPt:(gfx::PointF*)transformedPt;
+
+// Sets |dragStartProcessID_| and |dragStartViewID_|.
+- (void)setDragStartTrackersForProcess:(int)processID;
+
+// Returns whether |targetRWH| is a valid RenderWidgetHost to be dragging
+// over. This enforces that same-page, cross-site drags are not allowed. See
+// crbug.com/666858.
+- (bool)isValidDragTarget:(content::RenderWidgetHostImpl*)targetRWH;
 
 @end
 
 // Public use only for unit tests.
 @interface WebDragDest(Testing)
-// Given |data|, which should not be nil, fill it in using the contents of the
-// given pasteboard.
-- (void)populateDropData:(content::DropData*)data
-             fromPasteboard:(NSPasteboard*)pboard;
 // Given a point in window coordinates and a view in that window, return a
 // flipped point in the coordinate system of |view|.
 - (NSPoint)flipWindowPointToView:(const NSPoint&)windowPoint
@@ -87,3 +129,5 @@ CONTENT_EXPORT
 - (NSPoint)flipWindowPointToScreen:(const NSPoint&)windowPoint
                               view:(NSView*)view;
 @end
+
+#endif  // CONTENT_BROWSER_WEB_CONTENTS_WEB_DRAG_DEST_MAC_H_

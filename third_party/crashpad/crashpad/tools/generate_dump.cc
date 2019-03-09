@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <fcntl.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,12 +26,16 @@
 #include "minidump/minidump_file_writer.h"
 #include "tools/tool_support.h"
 #include "util/file/file_writer.h"
-#include "util/posix/drop_privileges.h"
 #include "util/stdlib/string_number_conversion.h"
+
+#if defined(OS_POSIX)
+#include <unistd.h>
+
+#include "util/posix/drop_privileges.h"
+#endif
 
 #if defined(OS_MACOSX)
 #include <mach/mach.h>
-#include <unistd.h>
 
 #include "base/mac/scoped_mach_port.h"
 #include "snapshot/mac/process_snapshot_mac.h"
@@ -43,16 +46,18 @@
 #include "snapshot/win/process_snapshot_win.h"
 #include "util/win/scoped_process_suspend.h"
 #include "util/win/xp_compat.h"
+#elif defined(OS_FUCHSIA)
+#include <lib/zx/process.h>
+
+#include "snapshot/fuchsia/process_snapshot_fuchsia.h"
+#include "util/fuchsia/koid_utilities.h"
+#include "util/fuchsia/scoped_task_suspend.h"
+#elif defined(OS_LINUX) || defined(OS_ANDROID)
+#include "snapshot/linux/process_snapshot_linux.h"
 #endif  // OS_MACOSX
 
 namespace crashpad {
 namespace {
-
-struct Options {
-  std::string dump_path;
-  pid_t pid;
-  bool suspend;
-};
 
 void Usage(const base::FilePath& me) {
   fprintf(stderr,
@@ -85,10 +90,14 @@ int GenerateDumpMain(int argc, char* argv[]) {
     kOptionVersion = -3,
   };
 
-  Options options = {};
+  struct {
+    std::string dump_path;
+    pid_t pid;
+    bool suspend;
+  } options = {};
   options.suspend = true;
 
-  const option long_options[] = {
+  static constexpr option long_options[] = {
       {"no-suspend", no_argument, nullptr, kOptionNoSuspend},
       {"output", required_argument, nullptr, kOptionOutput},
       {"help", no_argument, nullptr, kOptionHelp},
@@ -157,6 +166,12 @@ int GenerateDumpMain(int argc, char* argv[]) {
     PLOG(ERROR) << "could not open process " << options.pid;
     return EXIT_FAILURE;
   }
+#elif defined(OS_FUCHSIA)
+  zx::process process = GetProcessFromKoid(options.pid);
+  if (!process.is_valid()) {
+    LOG(ERROR) << "could not open process " << options.pid;
+    return EXIT_FAILURE;
+  }
 #endif  // OS_MACOSX
 
   if (options.dump_path.empty()) {
@@ -174,6 +189,11 @@ int GenerateDumpMain(int argc, char* argv[]) {
     if (options.suspend) {
       suspend.reset(new ScopedProcessSuspend(process.get()));
     }
+#elif defined(OS_FUCHSIA)
+    std::unique_ptr<ScopedTaskSuspend> suspend;
+    if (options.suspend) {
+      suspend.reset(new ScopedTaskSuspend(process));
+    }
 #endif  // OS_MACOSX
 
 #if defined(OS_MACOSX)
@@ -189,6 +209,17 @@ int GenerateDumpMain(int argc, char* argv[]) {
                                          : ProcessSuspensionState::kRunning,
                                      0,
                                      0)) {
+      return EXIT_FAILURE;
+    }
+#elif defined(OS_FUCHSIA)
+    ProcessSnapshotFuchsia process_snapshot;
+    if (!process_snapshot.Initialize(process)) {
+      return EXIT_FAILURE;
+    }
+#elif defined(OS_LINUX) || defined(OS_ANDROID)
+    // TODO(jperaza): https://crashpad.chromium.org/bug/30.
+    ProcessSnapshotLinux process_snapshot;
+    if (!process_snapshot.Initialize(nullptr)) {
       return EXIT_FAILURE;
     }
 #endif  // OS_MACOSX

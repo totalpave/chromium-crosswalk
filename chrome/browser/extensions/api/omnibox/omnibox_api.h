@@ -25,10 +25,6 @@ class Profile;
 class TemplateURL;
 class TemplateURLService;
 
-namespace base {
-class ListValue;
-}
-
 namespace content {
 class BrowserContext;
 class WebContents;
@@ -69,11 +65,16 @@ class ExtensionOmniboxEventRouter {
   static void OnInputCancelled(
       Profile* profile, const std::string& extension_id);
 
+  // The user has deleted an extension omnibox suggestion result.
+  static void OnDeleteSuggestion(Profile* profile,
+                                 const std::string& extension_id,
+                                 const std::string& suggestion_text);
+
  private:
   DISALLOW_COPY_AND_ASSIGN(ExtensionOmniboxEventRouter);
 };
 
-class OmniboxSendSuggestionsFunction : public ChromeSyncExtensionFunction {
+class OmniboxSendSuggestionsFunction : public UIThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("omnibox.sendSuggestions", OMNIBOX_SENDSUGGESTIONS)
 
@@ -81,7 +82,7 @@ class OmniboxSendSuggestionsFunction : public ChromeSyncExtensionFunction {
   ~OmniboxSendSuggestionsFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class OmniboxAPI : public BrowserContextKeyedAPI,
@@ -99,12 +100,9 @@ class OmniboxAPI : public BrowserContextKeyedAPI,
   // KeyedService implementation.
   void Shutdown() override;
 
-  // Returns the icon to display in the omnibox for the given extension.
+  // Returns the icon to display in the location bar or omnibox popup for the
+  // given extension.
   gfx::Image GetOmniboxIcon(const std::string& extension_id);
-
-  // Returns the icon to display in the omnibox popup window for the given
-  // extension.
-  gfx::Image GetOmniboxPopupIcon(const std::string& extension_id);
 
  private:
   friend class BrowserContextKeyedAPIFactory<OmniboxAPI>;
@@ -118,7 +116,7 @@ class OmniboxAPI : public BrowserContextKeyedAPI,
                          const Extension* extension) override;
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
 
   // BrowserContextKeyedAPI implementation.
   static const char* service_name() {
@@ -140,7 +138,6 @@ class OmniboxAPI : public BrowserContextKeyedAPI,
 
   // Keeps track of favicon-sized omnibox icons for extensions.
   ExtensionIconManager omnibox_icon_manager_;
-  ExtensionIconManager omnibox_popup_icon_manager_;
 
   std::unique_ptr<TemplateURLService::Subscription> template_url_sub_;
 
@@ -150,7 +147,7 @@ class OmniboxAPI : public BrowserContextKeyedAPI,
 template <>
 void BrowserContextKeyedAPIFactory<OmniboxAPI>::DeclareFactoryDependencies();
 
-class OmniboxSetDefaultSuggestionFunction : public ChromeSyncExtensionFunction {
+class OmniboxSetDefaultSuggestionFunction : public UIThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("omnibox.setDefaultSuggestion",
                              OMNIBOX_SETDEFAULTSUGGESTION)
@@ -159,7 +156,7 @@ class OmniboxSetDefaultSuggestionFunction : public ChromeSyncExtensionFunction {
   ~OmniboxSetDefaultSuggestionFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 // If the extension has set a custom default suggestion via

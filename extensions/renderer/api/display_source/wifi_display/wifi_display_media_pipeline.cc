@@ -4,6 +4,7 @@
 
 #include "extensions/renderer/api/display_source/wifi_display/wifi_display_media_pipeline.h"
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "content/public/renderer/render_thread.h"
 #include "content/public/renderer/video_encode_accelerator.h"
@@ -133,7 +134,7 @@ void WiFiDisplayMediaPipeline::OnInitialize(
       break;
     case InitializationStep::MEDIA_SERVICE:
       service_callback_.Run(
-          mojo::GetProxy(&media_service_),
+          mojo::MakeRequest(&media_service_),
           base::Bind(&WiFiDisplayMediaPipeline::OnMediaServiceRegistered,
                      weak_factory_.GetWeakPtr(), callback));
       break;
@@ -235,7 +236,10 @@ void WiFiDisplayMediaPipeline::OnEncodedVideoFrame(
 bool WiFiDisplayMediaPipeline::OnPacketizedMediaDatagramPacket(
     WiFiDisplayMediaDatagramPacket media_datagram_packet) {
   DCHECK(media_service_);
-  media_service_->SendMediaPacket(std::move(media_datagram_packet));
+  mojom::WiFiDisplayMediaPacketPtr packet =
+      mojom::WiFiDisplayMediaPacket::New();
+  packet->data = std::move(media_datagram_packet);
+  media_service_->SendMediaPacket(std::move(packet));
   return true;
 }
 

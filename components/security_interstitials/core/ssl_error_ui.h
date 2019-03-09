@@ -44,11 +44,18 @@ class SSLErrorUI {
              const net::SSLInfo& ssl_info,
              int display_options,  // Bitmask of SSLErrorOptionsMask values.
              const base::Time& time_triggered,
+             const GURL& support_url,
              ControllerClient* controller);
-  ~SSLErrorUI();
+  virtual ~SSLErrorUI();
 
-  void PopulateStringsForHTML(base::DictionaryValue* load_time_data);
-  void HandleCommand(SecurityInterstitialCommands command);
+  virtual void PopulateStringsForHTML(base::DictionaryValue* load_time_data);
+  virtual void HandleCommand(SecurityInterstitialCommand command);
+
+ protected:
+  const net::SSLInfo& ssl_info() const;
+  const base::Time& time_triggered() const;
+  ControllerClient* controller() const;
+  int cert_error() const;
 
  private:
   void PopulateOverridableStrings(base::DictionaryValue* load_time_data);
@@ -58,11 +65,12 @@ class SSLErrorUI {
   const int cert_error_;
   const net::SSLInfo ssl_info_;
   const base::Time time_triggered_;
+  const GURL support_url_;
 
   // Set by the |display_options|.
   const bool requested_strict_enforcement_;
   const bool soft_override_enabled_;  // UI provides a button to dismiss error.
-  const bool hard_override_enabled_;  // Dismissing allowed, but no button.
+  const bool hard_override_enabled_;  // Dismissing allowed without button.
 
   ControllerClient* controller_;
   bool user_made_decision_;  // Whether the user made a choice in the UI.

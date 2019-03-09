@@ -10,7 +10,7 @@
 #***********************************************************************
 #
 # This test script checks malloc failures in WHERE clause analysis.
-# 
+#
 # $Id: mallocK.test,v 1.3 2009/01/08 21:00:03 drh Exp $
 
 set testdir [file dirname $argv0]
@@ -121,17 +121,18 @@ do_execsql_test 6.0 {
 ifcapable stat4 {
   do_eqp_test 6.1 {
     SELECT DISTINCT c FROM t3 WHERE b BETWEEN '.xx..' AND '.xxxx';
-  } {
-    0 0 0 {SEARCH TABLE t3 USING INDEX i3 (ANY(a) AND b>? AND b<?)} 
-    0 0 0 {USE TEMP B-TREE FOR DISTINCT}
-  }
+  } [string map {"\n  " \n} {
+    QUERY PLAN
+    |--SEARCH TABLE t3 USING INDEX i3 (ANY(a) AND b>? AND b<?)
+    `--USE TEMP B-TREE FOR DISTINCT
+  }]
 }
 
 do_faultsim_test 6 -faults oom* -body {
   db cache flush
   db eval { SELECT DISTINCT c FROM t3 WHERE b BETWEEN '.xx..' AND '.xxxx' }
 } -test {
-  faultsim_test_result {0 {12 13 14 15}} 
+  faultsim_test_result {0 {12 13 14 15}}
 }
 
 do_execsql_test 7.1 {
@@ -172,4 +173,3 @@ do_faultsim_test 8 -faults oom* -body {
 
 
 finish_test
-

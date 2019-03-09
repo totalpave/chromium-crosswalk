@@ -2,12 +2,16 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-component("webview") {
+import("//build/config/jumbo.gni")
+
+jumbo_component("webview") {
   sources = [
     "unhandled_keyboard_event_handler.cc",
     "unhandled_keyboard_event_handler.h",
     "unhandled_keyboard_event_handler_mac.mm",
     "unhandled_keyboard_event_handler_win.cc",
+    "web_contents_set_background_color.cc",
+    "web_contents_set_background_color.h",
     "web_dialog_view.cc",
     "web_dialog_view.h",
     "webview.cc",
@@ -44,7 +48,7 @@ component("webview") {
   }
 }
 
-source_set("test_support") {
+static_library("test_support") {
   testonly = true
   sources = [
     "../../test/webview_test_helper.cc",

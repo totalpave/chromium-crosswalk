@@ -23,7 +23,7 @@ namespace {
 // test executable.
 void GetChromeBundlePath(base::FilePath* chrome_bundle) {
   base::FilePath path;
-  PathService::Get(base::DIR_MODULE, &path);
+  base::PathService::Get(base::DIR_MODULE, &path);
   path = path.Append(chrome::kBrowserProcessExecutableName);
   path = path.ReplaceExtension(base::FilePath::StringType("app"));
   *chrome_bundle = path;
@@ -50,10 +50,8 @@ TEST(ChromeLocatorTest, GetNonExistentBundleInfo) {
   base::FilePath executable_path;
   base::FilePath version_path;
   base::FilePath framework_path;
-  EXPECT_FALSE(app_mode::GetChromeBundleInfo(temp_dir.path(),
-                                             std::string(),
-                                             &executable_path,
-                                             &version_path,
+  EXPECT_FALSE(app_mode::GetChromeBundleInfo(temp_dir.GetPath(), std::string(),
+                                             &executable_path, &version_path,
                                              &framework_path));
 }
 

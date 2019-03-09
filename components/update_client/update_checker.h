@@ -10,46 +10,53 @@
 #include <vector>
 
 #include "base/callback.h"
+#include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "components/update_client/update_response.h"
+#include "base/optional.h"
+#include "components/update_client/component.h"
+#include "components/update_client/protocol_parser.h"
 #include "url/gurl.h"
-
-class GURL;
 
 namespace update_client {
 
-class PersistedData;
 class Configurator;
-struct CrxUpdateItem;
+class PersistedData;
 
 class UpdateChecker {
  public:
-  using UpdateCheckCallback =
-      base::Callback<void(int error,
-                          const UpdateResponse::Results& results,
-                          int retry_after_sec)>;
+  using UpdateCheckCallback = base::OnceCallback<void(
+      const base::Optional<ProtocolParser::Results>& results,
+      ErrorCategory error_category,
+      int error,
+      int retry_after_sec)>;
 
-  using Factory = std::unique_ptr<UpdateChecker> (*)(
-      const scoped_refptr<Configurator>& config,
-      PersistedData* persistent);
+  using Factory =
+      std::unique_ptr<UpdateChecker> (*)(scoped_refptr<Configurator> config,
+                                         PersistedData* persistent);
 
-  virtual ~UpdateChecker() {}
+  virtual ~UpdateChecker() = default;
 
-  // Initiates an update check for the |items_to_check|. |additional_attributes|
-  // provides a way to customize the <request> element. This value is inserted
-  // as-is, therefore it must be well-formed as an XML attribute string.
-  virtual bool CheckForUpdates(
-      const std::vector<CrxUpdateItem*>& items_to_check,
-      const std::string& additional_attributes,
-      const UpdateCheckCallback& update_check_callback) = 0;
+  // Initiates an update check for the components specified by their ids.
+  // |additional_attributes| provides a way to customize the <request> element.
+  // |is_foreground| controls the value of "X-Goog-Update-Interactivity"
+  // header which is sent with the update check.
+  // On completion, the state of |components| is mutated as required by the
+  // server response received.
+  virtual void CheckForUpdates(
+      const std::string& session_id,
+      const std::vector<std::string>& ids_to_check,
+      const IdToComponentPtrMap& components,
+      const base::flat_map<std::string, std::string>& additional_attributes,
+      bool enabled_component_updates,
+      UpdateCheckCallback update_check_callback) = 0;
 
   static std::unique_ptr<UpdateChecker> Create(
-      const scoped_refptr<Configurator>& config,
+      scoped_refptr<Configurator> config,
       PersistedData* persistent);
 
  protected:
-  UpdateChecker() {}
+  UpdateChecker() = default;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(UpdateChecker);

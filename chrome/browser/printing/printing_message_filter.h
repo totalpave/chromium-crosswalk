@@ -10,32 +10,22 @@
 #include <memory>
 #include <string>
 
-#include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/values.h"
 #include "build/build_config.h"
+#include "components/keyed_service/core/keyed_service_shutdown_notifier.h"
 #include "components/prefs/pref_member.h"
 #include "content/public/browser/browser_message_filter.h"
+#include "content/public/browser/browser_thread.h"
+#include "printing/buildflags/buildflags.h"
 
-#if defined(OS_WIN)
-#include "base/memory/shared_memory.h"
-#endif
-
+struct PrintHostMsg_PreviewIds;
 struct PrintHostMsg_ScriptedPrint_Params;
+struct PrintMsg_Print_Params;
 class Profile;
-class ProfileIOData;
-
-namespace base {
-class DictionaryValue;
-class FilePath;
-}
-
-namespace content {
-class WebContents;
-}
 
 namespace printing {
 
-class PrintJobManager;
 class PrintQueriesQueue;
 class PrinterQuery;
 
@@ -43,39 +33,24 @@ class PrinterQuery;
 // renderer process on the IPC thread.
 class PrintingMessageFilter : public content::BrowserMessageFilter {
  public:
+  // Sets a global override for print params in OnUpdatePrintSettingsReply().
+  static void SetTestUpdatePrintSettingsReply(
+      const PrintMsg_Print_Params& print_params);
+
   PrintingMessageFilter(int render_process_id, Profile* profile);
 
-  // content::BrowserMessageFilter methods.
-  void OverrideThreadForMessage(const IPC::Message& message,
-                                content::BrowserThread::ID* thread) override;
+  // content::BrowserMessageFilter:
   bool OnMessageReceived(const IPC::Message& message) override;
 
  private:
+  friend class base::DeleteHelper<PrintingMessageFilter>;
+  friend class content::BrowserThread;
+
   ~PrintingMessageFilter() override;
 
-#if defined(OS_CHROMEOS) || defined(OS_ANDROID)
-  // Used to ask the browser allocate a temporary file for the renderer
-  // to fill in resulting PDF in renderer.
-  void OnAllocateTempFileForPrinting(int render_view_id,
-                                     base::FileDescriptor* temp_file_fd,
-                                     int* sequence_number);
-  void OnTempFileForPrintingWritten(int render_view_id, int sequence_number);
-#endif
+  void OnDestruct() const override;
 
-#if defined(OS_ANDROID)
-  // Updates the file descriptor for the PrintViewManagerBasic of a given
-  // render_view_id.
-  void UpdateFileDescriptor(int render_view_id, int fd);
-#endif
-
-  // GetPrintSettingsForRenderView must be called via PostTask and
-  // base::Bind.  Collapse the settings-specific params into a
-  // struct to avoid running into issues with too many params
-  // to base::Bind.
-  struct GetPrintSettingsForRenderViewParams;
-
-  // Checks if printing is enabled.
-  void OnIsPrintingEnabled(bool* is_enabled);
+  void ShutdownOnUIThread();
 
   // Get the default print setting.
   void OnGetDefaultPrintSettings(IPC::Message* reply_msg);
@@ -94,20 +69,23 @@ class PrintingMessageFilter : public content::BrowserMessageFilter {
   // handled by the print worker thread and the UI thread. The reply occurs on
   // the IO thread.
   void OnUpdatePrintSettings(int document_cookie,
-                             const base::DictionaryValue& job_settings,
+                             base::Value job_settings,
                              IPC::Message* reply_msg);
   void OnUpdatePrintSettingsReply(scoped_refptr<PrinterQuery> printer_query,
                                   IPC::Message* reply_msg);
 
-#if defined(ENABLE_PRINT_PREVIEW)
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
   // Check to see if print preview has been cancelled.
-  void OnCheckForCancel(int32_t preview_ui_id,
-                        int preview_request_id,
-                        bool* cancel);
+  void OnCheckForCancel(const PrintHostMsg_PreviewIds& ids, bool* cancel);
+#if defined(OS_WIN)
+  void NotifySystemDialogCancelled(int routing_id);
+#endif
 #endif
 
-  std::unique_ptr<BooleanPrefMember, content::BrowserThread::DeleteOnUIThread>
-      is_printing_enabled_;
+  std::unique_ptr<KeyedServiceShutdownNotifier::Subscription>
+      printing_shutdown_notifier_;
+
+  BooleanPrefMember is_printing_enabled_;
 
   const int render_process_id_;
 

@@ -15,38 +15,30 @@
 #include "base/callback.h"
 #include "base/files/scoped_file.h"
 #include "base/macros.h"
-#include "base/threading/thread_checker.h"
+#include "base/sequence_checker.h"
 #include "build/build_config.h"
+#include "device/usb/scoped_libusb_device_ref.h"
 #include "device/usb/usb_descriptors.h"
 #include "device/usb/usb_device.h"
-#include "device/usb/webusb_descriptors.h"
 
-struct libusb_device;
 struct libusb_device_descriptor;
-struct libusb_device_handle;
-struct libusb_config_descriptor;
 
 namespace base {
 class SequencedTaskRunner;
 }
 
-namespace dbus {
-class FileDescriptor;
-}
-
 namespace device {
 
+class ScopedLibusbDeviceHandle;
 class UsbDeviceHandleImpl;
-class UsbContext;
-
-typedef struct libusb_device* PlatformUsbDevice;
-typedef struct libusb_config_descriptor* PlatformUsbConfigDescriptor;
-typedef struct libusb_device_handle* PlatformUsbDeviceHandle;
 
 class UsbDeviceImpl : public UsbDevice {
  public:
+  UsbDeviceImpl(ScopedLibusbDeviceRef platform_device,
+                const libusb_device_descriptor& descriptor);
+
   // UsbDevice implementation:
-  void Open(const OpenCallback& callback) override;
+  void Open(OpenCallback callback) override;
 
   // These functions are used during enumeration only. The values must not
   // change during the object's lifetime.
@@ -59,23 +51,13 @@ class UsbDeviceImpl : public UsbDevice {
   void set_serial_number(const base::string16& value) {
     serial_number_ = value;
   }
-  void set_webusb_allowed_origins(
-      std::unique_ptr<WebUsbAllowedOrigins> allowed_origins) {
-    webusb_allowed_origins_ = std::move(allowed_origins);
-  }
   void set_webusb_landing_page(const GURL& url) { webusb_landing_page_ = url; }
 
-  PlatformUsbDevice platform_device() const { return platform_device_; }
+  libusb_device* platform_device() const { return platform_device_.get(); }
 
  protected:
   friend class UsbServiceImpl;
   friend class UsbDeviceHandleImpl;
-
-  // Called by UsbServiceImpl only;
-  UsbDeviceImpl(scoped_refptr<UsbContext> context,
-                PlatformUsbDevice platform_device,
-                const libusb_device_descriptor& descriptor,
-                scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
 
   ~UsbDeviceImpl() override;
 
@@ -88,19 +70,18 @@ class UsbDeviceImpl : public UsbDevice {
 
  private:
   void GetAllConfigurations();
-  void OpenOnBlockingThread(const OpenCallback& callback);
-  void Opened(PlatformUsbDeviceHandle platform_handle,
-              const OpenCallback& callback);
+  void OpenOnBlockingThread(
+      OpenCallback callback,
+      scoped_refptr<base::TaskRunner> task_runner,
+      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
+  void Opened(ScopedLibusbDeviceHandle platform_handle,
+              OpenCallback callback,
+              scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
 
-  base::ThreadChecker thread_checker_;
-  PlatformUsbDevice platform_device_;
+  SEQUENCE_CHECKER(sequence_checker_);
   bool visited_ = false;
 
-  // Retain the context so that it will not be released before UsbDevice.
-  scoped_refptr<UsbContext> context_;
-
-  scoped_refptr<base::SequencedTaskRunner> task_runner_;
-  scoped_refptr<base::SequencedTaskRunner> blocking_task_runner_;
+  const ScopedLibusbDeviceRef platform_device_;
 
   DISALLOW_COPY_AND_ASSIGN(UsbDeviceImpl);
 };

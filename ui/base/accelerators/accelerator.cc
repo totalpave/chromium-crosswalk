@@ -5,14 +5,17 @@
 #include "ui/base/accelerators/accelerator.h"
 
 #include <stdint.h>
+#include <tuple>
 
 #include "base/i18n/rtl.h"
 #include "base/logging.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event.h"
+#include "ui/events/keycodes/keyboard_code_conversion.h"
 #include "ui/strings/grit/ui_strings.h"
 
 #if defined(OS_WIN)
@@ -27,39 +30,49 @@ namespace ui {
 
 namespace {
 
-const int kEventFlagsMask = ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN |
-                            ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN;
+const int kModifierMask = EF_SHIFT_DOWN | EF_CONTROL_DOWN | EF_ALT_DOWN |
+                          EF_COMMAND_DOWN | EF_ALTGR_DOWN;
+
+const int kInterestingFlagsMask =
+    kModifierMask | EF_IS_SYNTHESIZED | EF_IS_REPEAT;
+
+base::string16 ApplyModifierToAcceleratorString(
+    const base::string16& accelerator,
+    int modifier_message_id) {
+  return l10n_util::GetStringFUTF16(
+      IDS_APP_ACCELERATOR_WITH_MODIFIER,
+      l10n_util::GetStringUTF16(modifier_message_id), accelerator);
+}
 
 }  // namespace
 
-Accelerator::Accelerator()
-    : key_code_(ui::VKEY_UNKNOWN),
-      type_(ui::ET_KEY_PRESSED),
-      modifiers_(0),
-      is_repeat_(false) {
-}
+Accelerator::Accelerator() : Accelerator(VKEY_UNKNOWN, EF_NONE) {}
 
-Accelerator::Accelerator(KeyboardCode keycode, int modifiers)
-    : key_code_(keycode),
-      type_(ui::ET_KEY_PRESSED),
-      modifiers_(modifiers),
-      is_repeat_(false) {
-}
+Accelerator::Accelerator(KeyboardCode key_code,
+                         int modifiers,
+                         KeyState key_state,
+                         base::TimeTicks time_stamp)
+    : key_code_(key_code),
+      key_state_(key_state),
+      modifiers_(modifiers & kInterestingFlagsMask),
+      time_stamp_(time_stamp),
+      interrupted_by_mouse_event_(false) {}
 
 Accelerator::Accelerator(const KeyEvent& key_event)
     : key_code_(key_event.key_code()),
-      type_(key_event.type()),
-      modifiers_(MaskOutKeyEventFlags(key_event.flags())),
-      is_repeat_(key_event.is_repeat()) {
-}
+      key_state_(key_event.type() == ET_KEY_PRESSED ? KeyState::PRESSED
+                                                    : KeyState::RELEASED),
+      // |modifiers_| may include the repeat flag.
+      modifiers_(key_event.flags() & kInterestingFlagsMask),
+      time_stamp_(key_event.time_stamp()),
+      interrupted_by_mouse_event_(false) {}
 
 Accelerator::Accelerator(const Accelerator& accelerator) {
   key_code_ = accelerator.key_code_;
-  type_ = accelerator.type_;
+  key_state_ = accelerator.key_state_;
   modifiers_ = accelerator.modifiers_;
-  is_repeat_ = accelerator.is_repeat_;
-  if (accelerator.platform_accelerator_.get())
-    platform_accelerator_ = accelerator.platform_accelerator_->CreateCopy();
+  time_stamp_ = accelerator.time_stamp_;
+  interrupted_by_mouse_event_ = accelerator.interrupted_by_mouse_event_;
 }
 
 Accelerator::~Accelerator() {
@@ -67,41 +80,39 @@ Accelerator::~Accelerator() {
 
 // static
 int Accelerator::MaskOutKeyEventFlags(int flags) {
-  return flags & kEventFlagsMask;
+  return flags & kModifierMask;
+}
+
+KeyEvent Accelerator::ToKeyEvent() const {
+  return KeyEvent(key_state() == Accelerator::KeyState::PRESSED
+                      ? ET_KEY_PRESSED
+                      : ET_KEY_RELEASED,
+                  key_code(), modifiers(), time_stamp());
 }
 
 Accelerator& Accelerator::operator=(const Accelerator& accelerator) {
   if (this != &accelerator) {
     key_code_ = accelerator.key_code_;
-    type_ = accelerator.type_;
+    key_state_ = accelerator.key_state_;
     modifiers_ = accelerator.modifiers_;
-    is_repeat_ = accelerator.is_repeat_;
-    if (accelerator.platform_accelerator_.get())
-      platform_accelerator_ = accelerator.platform_accelerator_->CreateCopy();
-    else
-      platform_accelerator_.reset();
+    time_stamp_ = accelerator.time_stamp_;
+    interrupted_by_mouse_event_ = accelerator.interrupted_by_mouse_event_;
   }
   return *this;
 }
 
 bool Accelerator::operator <(const Accelerator& rhs) const {
-  if (key_code_ != rhs.key_code_)
-    return key_code_ < rhs.key_code_;
-  if (type_ != rhs.type_)
-    return type_ < rhs.type_;
-  return modifiers_ < rhs.modifiers_;
+  const int modifiers_with_mask = MaskOutKeyEventFlags(modifiers_);
+  const int rhs_modifiers_with_mask = MaskOutKeyEventFlags(rhs.modifiers_);
+  return std::tie(key_code_, key_state_, modifiers_with_mask) <
+         std::tie(rhs.key_code_, rhs.key_state_, rhs_modifiers_with_mask);
 }
 
 bool Accelerator::operator ==(const Accelerator& rhs) const {
-  if ((key_code_ == rhs.key_code_) && (type_ == rhs.type_) &&
-      (modifiers_ == rhs.modifiers_))
-    return true;
-
-  bool platform_equal =
-      platform_accelerator_.get() && rhs.platform_accelerator_.get() &&
-      platform_accelerator_.get() == rhs.platform_accelerator_.get();
-
-  return platform_equal;
+  return (key_code_ == rhs.key_code_) && (key_state_ == rhs.key_state_) &&
+         (MaskOutKeyEventFlags(modifiers_) ==
+          MaskOutKeyEventFlags(rhs.modifiers_)) &&
+         interrupted_by_mouse_event_ == rhs.interrupted_by_mouse_event_;
 }
 
 bool Accelerator::operator !=(const Accelerator& rhs) const {
@@ -125,87 +136,19 @@ bool Accelerator::IsCmdDown() const {
 }
 
 bool Accelerator::IsRepeat() const {
-  return is_repeat_;
+  return (modifiers_ & EF_IS_REPEAT) != 0;
 }
 
 base::string16 Accelerator::GetShortcutText() const {
-  int string_id = 0;
-  switch (key_code_) {
-    case ui::VKEY_TAB:
-      string_id = IDS_APP_TAB_KEY;
-      break;
-    case ui::VKEY_RETURN:
-      string_id = IDS_APP_ENTER_KEY;
-      break;
-    case ui::VKEY_ESCAPE:
-      string_id = IDS_APP_ESC_KEY;
-      break;
-    case ui::VKEY_SPACE:
-      string_id = IDS_APP_SPACE_KEY;
-      break;
-    case ui::VKEY_PRIOR:
-      string_id = IDS_APP_PAGEUP_KEY;
-      break;
-    case ui::VKEY_NEXT:
-      string_id = IDS_APP_PAGEDOWN_KEY;
-      break;
-    case ui::VKEY_END:
-      string_id = IDS_APP_END_KEY;
-      break;
-    case ui::VKEY_HOME:
-      string_id = IDS_APP_HOME_KEY;
-      break;
-    case ui::VKEY_INSERT:
-      string_id = IDS_APP_INSERT_KEY;
-      break;
-    case ui::VKEY_DELETE:
-      string_id = IDS_APP_DELETE_KEY;
-      break;
-    case ui::VKEY_LEFT:
-      string_id = IDS_APP_LEFT_ARROW_KEY;
-      break;
-    case ui::VKEY_RIGHT:
-      string_id = IDS_APP_RIGHT_ARROW_KEY;
-      break;
-    case ui::VKEY_UP:
-      string_id = IDS_APP_UP_ARROW_KEY;
-      break;
-    case ui::VKEY_DOWN:
-      string_id = IDS_APP_DOWN_ARROW_KEY;
-      break;
-    case ui::VKEY_BACK:
-      string_id = IDS_APP_BACKSPACE_KEY;
-      break;
-    case ui::VKEY_F1:
-      string_id = IDS_APP_F1_KEY;
-      break;
-    case ui::VKEY_F11:
-      string_id = IDS_APP_F11_KEY;
-      break;
-    case ui::VKEY_OEM_COMMA:
-      string_id = IDS_APP_COMMA_KEY;
-      break;
-    case ui::VKEY_OEM_PERIOD:
-      string_id = IDS_APP_PERIOD_KEY;
-      break;
-    case ui::VKEY_MEDIA_NEXT_TRACK:
-      string_id = IDS_APP_MEDIA_NEXT_TRACK_KEY;
-      break;
-    case ui::VKEY_MEDIA_PLAY_PAUSE:
-      string_id = IDS_APP_MEDIA_PLAY_PAUSE_KEY;
-      break;
-    case ui::VKEY_MEDIA_PREV_TRACK:
-      string_id = IDS_APP_MEDIA_PREV_TRACK_KEY;
-      break;
-    case ui::VKEY_MEDIA_STOP:
-      string_id = IDS_APP_MEDIA_STOP_KEY;
-      break;
-    default:
-      break;
-  }
-
   base::string16 shortcut;
-  if (!string_id) {
+
+#if defined(OS_MACOSX)
+  shortcut = KeyCodeToMacSymbol(key_code_);
+#else
+  shortcut = KeyCodeToName(key_code_);
+#endif
+
+  if (shortcut.empty()) {
 #if defined(OS_WIN)
     // Our fallback is to try translate the key code to a regular character
     // unless it is one of digits (VK_0 to VK_9). Some keyboard
@@ -218,16 +161,17 @@ base::string16 Accelerator::GetShortcutText() const {
       key = static_cast<wchar_t>(key_code_);
     else
       key = LOWORD(::MapVirtualKeyW(key_code_, MAPVK_VK_TO_CHAR));
-    shortcut += key;
-#elif defined(USE_AURA) || defined(OS_MACOSX)
+    // If there is no translation for the given |key_code_| (e.g.
+    // VKEY_UNKNOWN), |::MapVirtualKeyW| returns 0.
+    if (key != 0)
+      shortcut += key;
+#elif defined(USE_AURA) || defined(OS_MACOSX) || defined(OS_ANDROID)
     const uint16_t c = DomCodeToUsLayoutCharacter(
         UsLayoutKeyboardCodeToDomCode(key_code_), false);
     if (c != 0)
       shortcut +=
           static_cast<base::string16::value_type>(base::ToUpperASCII(c));
 #endif
-  } else {
-    shortcut = l10n_util::GetStringUTF16(string_id);
   }
 
   // Checking whether the character used for the accelerator is alphanumeric.
@@ -242,26 +186,11 @@ base::string16 Accelerator::GetShortcutText() const {
     shortcut_rtl.assign(shortcut);
   }
 
-  if (IsShiftDown())
-    shortcut = l10n_util::GetStringFUTF16(IDS_APP_SHIFT_MODIFIER, shortcut);
-
-  // Note that we use 'else-if' in order to avoid using Ctrl+Alt as a shortcut.
-  // See http://blogs.msdn.com/oldnewthing/archive/2004/03/29/101121.aspx for
-  // more information.
-  if (IsCtrlDown())
-    shortcut = l10n_util::GetStringFUTF16(IDS_APP_CONTROL_MODIFIER, shortcut);
-  else if (IsAltDown())
-    shortcut = l10n_util::GetStringFUTF16(IDS_APP_ALT_MODIFIER, shortcut);
-
-  if (IsCmdDown()) {
 #if defined(OS_MACOSX)
-    shortcut = l10n_util::GetStringFUTF16(IDS_APP_COMMAND_MODIFIER, shortcut);
-#elif defined(OS_CHROMEOS)
-    shortcut = l10n_util::GetStringFUTF16(IDS_APP_SEARCH_MODIFIER, shortcut);
+  shortcut = ApplyShortFormModifiers(shortcut);
 #else
-    NOTREACHED();
+  shortcut = ApplyLongFormModifiers(shortcut);
 #endif
-  }
 
   // For some reason, menus in Windows ignore standard Unicode directionality
   // marks (such as LRE, PDF, etc.). On RTL locales, we use RTL menus and
@@ -294,6 +223,170 @@ base::string16 Accelerator::GetShortcutText() const {
   }
 
   return shortcut;
+}
+
+base::string16 Accelerator::ApplyLongFormModifiers(
+    base::string16 shortcut) const {
+  if (IsShiftDown())
+    shortcut = ApplyModifierToAcceleratorString(shortcut, IDS_APP_SHIFT_KEY);
+
+  // Note that we use 'else-if' in order to avoid using Ctrl+Alt as a shortcut.
+  // See http://blogs.msdn.com/oldnewthing/archive/2004/03/29/101121.aspx for
+  // more information.
+  if (IsCtrlDown())
+    shortcut = ApplyModifierToAcceleratorString(shortcut, IDS_APP_CTRL_KEY);
+  else if (IsAltDown())
+    shortcut = ApplyModifierToAcceleratorString(shortcut, IDS_APP_ALT_KEY);
+
+  if (IsCmdDown()) {
+#if defined(OS_MACOSX)
+    shortcut = ApplyModifierToAcceleratorString(shortcut, IDS_APP_COMMAND_KEY);
+#elif defined(OS_CHROMEOS)
+    shortcut = ApplyModifierToAcceleratorString(shortcut, IDS_APP_SEARCH_KEY);
+#elif defined(OS_WIN)
+    shortcut = ApplyModifierToAcceleratorString(shortcut, IDS_APP_WINDOWS_KEY);
+#else
+    NOTREACHED();
+#endif
+  }
+
+  return shortcut;
+}
+
+base::string16 Accelerator::ApplyShortFormModifiers(
+    base::string16 shortcut) const {
+  const base::char16 kCommandSymbol[] = {0x2318, 0};
+  const base::char16 kCtrlSymbol[] = {0x2303, 0};
+  const base::char16 kShiftSymbol[] = {0x21e7, 0};
+  const base::char16 kOptionSymbol[] = {0x2325, 0};
+  const base::char16 kNoSymbol[] = {0};
+
+  std::vector<base::string16> parts;
+  parts.push_back(base::string16(IsCtrlDown() ? kCtrlSymbol : kNoSymbol));
+  parts.push_back(base::string16(IsAltDown() ? kOptionSymbol : kNoSymbol));
+  parts.push_back(base::string16(IsShiftDown() ? kShiftSymbol : kNoSymbol));
+  parts.push_back(base::string16(IsCmdDown() ? kCommandSymbol : kNoSymbol));
+  parts.push_back(shortcut);
+  return base::StrCat(parts);
+}
+
+#if defined(OS_MACOSX)
+base::string16 Accelerator::KeyCodeToMacSymbol(KeyboardCode key_code) const {
+  switch (key_code) {
+    case VKEY_CAPITAL:
+      return base::string16({0x21ea, 0});
+    case VKEY_RETURN:
+      return base::string16({0x2324, 0});
+    case VKEY_BACK:
+      return base::string16({0x232b, 0});
+    case VKEY_ESCAPE:
+      return base::string16({0x238b, 0});
+    case VKEY_RIGHT:
+      return base::string16({0x2192, 0});
+    case VKEY_LEFT:
+      return base::string16({0x2190, 0});
+    case VKEY_UP:
+      return base::string16({0x2191, 0});
+    case VKEY_DOWN:
+      return base::string16({0x2193, 0});
+    case VKEY_PRIOR:
+      return base::string16({0x21de, 0});
+    case VKEY_NEXT:
+      return base::string16({0x21df, 0});
+    case VKEY_HOME:
+      return base::string16({0x2196, 0});
+    case VKEY_END:
+      return base::string16({0x2198, 0});
+    case VKEY_TAB:
+      return base::string16({0x21e5, 0});
+    // Mac has a shift-tab icon (0x21e4) but we don't use it.
+    // "Space" and some other keys are written out; fall back to KeyCodeToName()
+    // for those (and any other unhandled keys).
+    default:
+      return KeyCodeToName(key_code);
+  }
+}
+#endif  // OS_MACOSX
+
+base::string16 Accelerator::KeyCodeToName(KeyboardCode key_code) const {
+  int string_id = 0;
+  switch (key_code_) {
+    case VKEY_TAB:
+      string_id = IDS_APP_TAB_KEY;
+      break;
+    case VKEY_RETURN:
+      string_id = IDS_APP_ENTER_KEY;
+      break;
+    case VKEY_SPACE:
+      string_id = IDS_APP_SPACE_KEY;
+      break;
+    case VKEY_PRIOR:
+      string_id = IDS_APP_PAGEUP_KEY;
+      break;
+    case VKEY_NEXT:
+      string_id = IDS_APP_PAGEDOWN_KEY;
+      break;
+    case VKEY_END:
+      string_id = IDS_APP_END_KEY;
+      break;
+    case VKEY_HOME:
+      string_id = IDS_APP_HOME_KEY;
+      break;
+    case VKEY_INSERT:
+      string_id = IDS_APP_INSERT_KEY;
+      break;
+    case VKEY_DELETE:
+      string_id = IDS_APP_DELETE_KEY;
+      break;
+    case VKEY_LEFT:
+      string_id = IDS_APP_LEFT_ARROW_KEY;
+      break;
+    case VKEY_RIGHT:
+      string_id = IDS_APP_RIGHT_ARROW_KEY;
+      break;
+    case VKEY_UP:
+      string_id = IDS_APP_UP_ARROW_KEY;
+      break;
+    case VKEY_DOWN:
+      string_id = IDS_APP_DOWN_ARROW_KEY;
+      break;
+    case VKEY_ESCAPE:
+      string_id = IDS_APP_ESC_KEY;
+      break;
+    case VKEY_BACK:
+      string_id = IDS_APP_BACKSPACE_KEY;
+      break;
+    case VKEY_F1:
+      string_id = IDS_APP_F1_KEY;
+      break;
+    case VKEY_F11:
+      string_id = IDS_APP_F11_KEY;
+      break;
+#if !defined(OS_MACOSX)
+    // On Mac, commas and periods are used literally in accelerator text.
+    case VKEY_OEM_COMMA:
+      string_id = IDS_APP_COMMA_KEY;
+      break;
+    case VKEY_OEM_PERIOD:
+      string_id = IDS_APP_PERIOD_KEY;
+      break;
+#endif
+    case VKEY_MEDIA_NEXT_TRACK:
+      string_id = IDS_APP_MEDIA_NEXT_TRACK_KEY;
+      break;
+    case VKEY_MEDIA_PLAY_PAUSE:
+      string_id = IDS_APP_MEDIA_PLAY_PAUSE_KEY;
+      break;
+    case VKEY_MEDIA_PREV_TRACK:
+      string_id = IDS_APP_MEDIA_PREV_TRACK_KEY;
+      break;
+    case VKEY_MEDIA_STOP:
+      string_id = IDS_APP_MEDIA_STOP_KEY;
+      break;
+    default:
+      break;
+  }
+  return string_id ? l10n_util::GetStringUTF16(string_id) : base::string16();
 }
 
 }  // namespace ui

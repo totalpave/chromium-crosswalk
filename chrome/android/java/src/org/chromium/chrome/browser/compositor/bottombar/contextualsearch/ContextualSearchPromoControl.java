@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.compositor.bottombar.contextualsearch;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
 import android.os.Handler;
 import android.text.method.LinkMovementMethod;
@@ -13,10 +15,10 @@ import android.widget.Button;
 import android.widget.TextView;
 
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.compositor.animation.CompositorAnimator;
 import org.chromium.chrome.browser.compositor.bottombar.OverlayPanel;
 import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelAnimation;
 import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelInflater;
-import org.chromium.chrome.browser.compositor.layouts.ChromeAnimation;
 import org.chromium.chrome.browser.preferences.PrefServiceBridge;
 import org.chromium.chrome.browser.preferences.PreferencesLauncher;
 import org.chromium.chrome.browser.preferences.privacy.ContextualSearchPreferenceFragment;
@@ -29,16 +31,7 @@ import org.chromium.ui.text.SpanApplier;
 /**
  * Controls the Search Promo.
  */
-public class ContextualSearchPromoControl extends OverlayPanelInflater
-        implements ChromeAnimation.Animatable<ContextualSearchPromoControl.AnimationType> {
-
-    /**
-     * Animation types.
-     */
-    protected enum AnimationType {
-        COLLAPSE
-    }
-
+public class ContextualSearchPromoControl extends OverlayPanelInflater {
     /**
      * The pixel density.
      */
@@ -287,28 +280,26 @@ public class ContextualSearchPromoControl extends OverlayPanelInflater
     // Promo Acceptance Animation
     // ============================================================================================
 
-    @Override
-    public void setProperty(AnimationType type, float value) {
-        if (type == AnimationType.COLLAPSE) {
-            updateAppearance(value);
-        }
-    }
-
-    @Override
-    public void onPropertyAnimationFinished(AnimationType type) {
-        if (type == AnimationType.COLLAPSE) {
-            hide();
-        }
-    }
-
     /**
      * Collapses the Promo in an animated fashion.
      */
     public void collapse() {
         hidePromoView();
 
-        mOverlayPanel.addToAnimation(this, AnimationType.COLLAPSE, 1.f, 0.f,
-                OverlayPanelAnimation.BASE_ANIMATION_DURATION_MS, 0);
+        CompositorAnimator collapse =
+                CompositorAnimator.ofFloat(mOverlayPanel.getAnimationHandler(), 1.f, 0.f,
+                        OverlayPanelAnimation.BASE_ANIMATION_DURATION_MS, null);
+
+        collapse.addUpdateListener(animator -> updateAppearance(animator.getAnimatedValue()));
+
+        collapse.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                hide();
+            }
+        });
+
+        collapse.start();
     }
 
     /**
@@ -357,31 +348,19 @@ public class ContextualSearchPromoControl extends OverlayPanelInflater
 
         // "Allow" button.
         Button allowButton = (Button) view.findViewById(R.id.contextual_search_allow_button);
-        allowButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                ContextualSearchPromoControl.this.handlePromoChoice(true);
-            }
-        });
+        allowButton.setOnClickListener(
+                v -> ContextualSearchPromoControl.this.handlePromoChoice(true));
 
         // "No thanks" button.
         Button noThanksButton = (Button) view.findViewById(R.id.contextual_search_no_thanks_button);
-        noThanksButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                ContextualSearchPromoControl.this.handlePromoChoice(false);
-            }
-        });
+        noThanksButton.setOnClickListener(
+                v -> ContextualSearchPromoControl.this.handlePromoChoice(false));
 
         // Fill in text with link to Settings.
         TextView promoText = (TextView) view.findViewById(R.id.contextual_search_promo_text);
 
-        NoUnderlineClickableSpan settingsLink = new NoUnderlineClickableSpan() {
-            @Override
-            public void onClick(View view) {
-                ContextualSearchPromoControl.this.handleClickSettingsLink();
-            }
-        };
+        NoUnderlineClickableSpan settingsLink = new NoUnderlineClickableSpan(view.getResources(),
+                (View ignored) -> ContextualSearchPromoControl.this.handleClickSettingsLink());
 
         promoText.setText(SpanApplier.applySpans(
                 view.getResources().getString(R.string.contextual_search_short_description),
@@ -418,8 +397,8 @@ public class ContextualSearchPromoControl extends OverlayPanelInflater
         new Handler().post(new Runnable() {
             @Override
             public void run() {
-                PreferencesLauncher.launchSettingsPage(getContext(),
-                        ContextualSearchPreferenceFragment.class.getName());
+                PreferencesLauncher.launchSettingsPage(
+                        getContext(), ContextualSearchPreferenceFragment.class);
             }
         });
     }

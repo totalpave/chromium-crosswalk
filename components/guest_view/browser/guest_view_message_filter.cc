@@ -4,12 +4,13 @@
 
 #include "components/guest_view/browser/guest_view_message_filter.h"
 
-#include "base/memory/ptr_util.h"
+#include <memory>
+
+#include "components/guest_view/browser/bad_message.h"
 #include "components/guest_view/browser/guest_view_base.h"
 #include "components/guest_view/browser/guest_view_manager.h"
 #include "components/guest_view/browser/guest_view_manager_delegate.h"
 #include "components/guest_view/common/guest_view_messages.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
@@ -49,11 +50,19 @@ GuestViewMessageFilter::~GuestViewMessageFilter() {
 }
 
 GuestViewManager* GuestViewMessageFilter::GetOrCreateGuestViewManager() {
-  auto manager = GuestViewManager::FromBrowserContext(browser_context_);
+  auto* manager = GuestViewManager::FromBrowserContext(browser_context_);
   if (!manager) {
     manager = GuestViewManager::CreateWithDelegate(
-        browser_context_, base::WrapUnique(
-                              new GuestViewManagerDelegate()));
+        browser_context_, std::make_unique<GuestViewManagerDelegate>());
+  }
+  return manager;
+}
+
+GuestViewManager* GuestViewMessageFilter::GetGuestViewManagerOrKill() {
+  auto* manager = GuestViewManager::FromBrowserContext(browser_context_);
+  if (!manager) {
+    bad_message::ReceivedBadMessage(
+        this, bad_message::GVMF_UNEXPECTED_MESSAGE_BEFORE_GVM_CREATION);
   }
   return manager;
 }
@@ -103,9 +112,9 @@ void GuestViewMessageFilter::OnAttachGuest(
     int guest_instance_id,
     const base::DictionaryValue& params) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  auto manager = GuestViewManager::FromBrowserContext(browser_context_);
   // We should have a GuestViewManager at this point. If we don't then the
   // embedder is misbehaving.
+  auto* manager = GetGuestViewManagerOrKill();
   if (!manager)
     return;
 
@@ -120,8 +129,12 @@ void GuestViewMessageFilter::OnAttachToEmbedderFrame(
     int element_instance_id,
     int guest_instance_id,
     const base::DictionaryValue& params) {
-  auto* manager = GuestViewManager::FromBrowserContext(browser_context_);
-  DCHECK(manager);
+  // We should have a GuestViewManager at this point. If we don't then the
+  // embedder is misbehaving.
+  auto* manager = GetGuestViewManagerOrKill();
+  if (!manager)
+    return;
+
   content::WebContents* guest_web_contents =
       manager->GetGuestByInstanceIDSafely(guest_instance_id,
                                           render_process_id_);
@@ -134,28 +147,14 @@ void GuestViewMessageFilter::OnAttachToEmbedderFrame(
   auto* embedder_frame = RenderFrameHost::FromID(
       render_process_id_, embedder_local_render_frame_id);
 
-  // Attach this inner WebContents |guest_web_contents| to the outer
-  // WebContents |owner_web_contents|. The outer WebContents's
-  // frame |embedder_frame| hosts the inner WebContents.
-  guest_web_contents->AttachToOuterWebContentsFrame(owner_web_contents,
-                                                    embedder_frame);
-
   // Update the guest manager about the attachment.
   // This sets up the embedder and guest pairing information inside
   // the manager.
   manager->AttachGuest(render_process_id_, element_instance_id,
                        guest_instance_id, params);
 
-  owner_web_contents->GetMainFrame()->Send(
-      new GuestViewMsg_AttachToEmbedderFrame_ACK(element_instance_id));
-
-  guest->WillAttach(
-      owner_web_contents, element_instance_id, false,
-      base::Bind(&GuestViewMessageFilter::WillAttachCallback, this, guest));
-}
-
-void GuestViewMessageFilter::WillAttachCallback(GuestViewBase* guest) {
-  guest->DidAttach(MSG_ROUTING_NONE);
+  guest->AttachToOuterWebContentsFrame(embedder_frame, element_instance_id,
+                                       false /* is_full_page_plugin */);
 }
 
 }  // namespace guest_view

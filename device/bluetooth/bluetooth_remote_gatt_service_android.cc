@@ -8,12 +8,15 @@
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
+#include "base/stl_util.h"
 #include "device/bluetooth/bluetooth_adapter_android.h"
 #include "device/bluetooth/bluetooth_device_android.h"
 #include "device/bluetooth/bluetooth_remote_gatt_characteristic_android.h"
 #include "jni/ChromeBluetoothRemoteGattService_jni.h"
 
 using base::android::AttachCurrentThread;
+using base::android::JavaParamRef;
+using base::android::JavaRef;
 
 namespace device {
 
@@ -22,9 +25,10 @@ std::unique_ptr<BluetoothRemoteGattServiceAndroid>
 BluetoothRemoteGattServiceAndroid::Create(
     BluetoothAdapterAndroid* adapter,
     BluetoothDeviceAndroid* device,
-    jobject /* BluetoothGattServiceWrapper */ bluetooth_gatt_service_wrapper,
+    const JavaRef<jobject>&
+        bluetooth_gatt_service_wrapper,  // BluetoothGattServiceWrapper
     const std::string& instance_id,
-    jobject /* ChromeBluetoothDevice */ chrome_bluetooth_device) {
+    const JavaRef<jobject>& chrome_bluetooth_device) {  // ChromeBluetoothDevice
   std::unique_ptr<BluetoothRemoteGattServiceAndroid> service(
       new BluetoothRemoteGattServiceAndroid(adapter, device, instance_id));
 
@@ -32,7 +36,7 @@ BluetoothRemoteGattServiceAndroid::Create(
   service->j_service_.Reset(Java_ChromeBluetoothRemoteGattService_create(
       env, reinterpret_cast<intptr_t>(service.get()),
       bluetooth_gatt_service_wrapper,
-      base::android::ConvertUTF8ToJavaString(env, instance_id).obj(),
+      base::android::ConvertUTF8ToJavaString(env, instance_id),
       chrome_bluetooth_device));
 
   return service;
@@ -40,13 +44,7 @@ BluetoothRemoteGattServiceAndroid::Create(
 
 BluetoothRemoteGattServiceAndroid::~BluetoothRemoteGattServiceAndroid() {
   Java_ChromeBluetoothRemoteGattService_onBluetoothRemoteGattServiceAndroidDestruction(
-      AttachCurrentThread(), j_service_.obj());
-}
-
-// static
-bool BluetoothRemoteGattServiceAndroid::RegisterJNI(JNIEnv* env) {
-  return RegisterNativesImpl(
-      env);  // Generated in ChromeBluetoothRemoteGattService_jni.h
+      AttachCurrentThread(), j_service_);
 }
 
 base::android::ScopedJavaLocalRef<jobject>
@@ -115,7 +113,7 @@ std::string BluetoothRemoteGattServiceAndroid::GetIdentifier() const {
 device::BluetoothUUID BluetoothRemoteGattServiceAndroid::GetUUID() const {
   return device::BluetoothUUID(
       ConvertJavaStringToUTF8(Java_ChromeBluetoothRemoteGattService_getUUID(
-          AttachCurrentThread(), j_service_.obj())));
+          AttachCurrentThread(), j_service_)));
 }
 
 bool BluetoothRemoteGattServiceAndroid::IsPrimary() const {
@@ -130,10 +128,7 @@ device::BluetoothDevice* BluetoothRemoteGattServiceAndroid::GetDevice() const {
 std::vector<device::BluetoothRemoteGattCharacteristic*>
 BluetoothRemoteGattServiceAndroid::GetCharacteristics() const {
   EnsureCharacteristicsCreated();
-  std::vector<device::BluetoothRemoteGattCharacteristic*> characteristics;
-  for (const auto& map_iter : characteristics_)
-    characteristics.push_back(map_iter.second);
-  return characteristics;
+  return BluetoothRemoteGattService::GetCharacteristics();
 }
 
 std::vector<device::BluetoothRemoteGattService*>
@@ -146,10 +141,28 @@ device::BluetoothRemoteGattCharacteristic*
 BluetoothRemoteGattServiceAndroid::GetCharacteristic(
     const std::string& identifier) const {
   EnsureCharacteristicsCreated();
-  const auto& iter = characteristics_.find(identifier);
-  if (iter == characteristics_.end())
-    return nullptr;
-  return iter->second;
+  return BluetoothRemoteGattService::GetCharacteristic(identifier);
+}
+
+std::vector<BluetoothRemoteGattCharacteristic*>
+BluetoothRemoteGattServiceAndroid::GetCharacteristicsByUUID(
+    const BluetoothUUID& characteristic_uuid) const {
+  EnsureCharacteristicsCreated();
+  return BluetoothRemoteGattService::GetCharacteristicsByUUID(
+      characteristic_uuid);
+}
+
+bool BluetoothRemoteGattServiceAndroid::IsDiscoveryComplete() const {
+  // Not used on Android, because Android sends an event when service discovery
+  // is complete for the entire device.
+  NOTIMPLEMENTED();
+  return true;
+}
+
+void BluetoothRemoteGattServiceAndroid::SetDiscoveryComplete(bool complete) {
+  // Not used on Android, because Android sends an event when service discovery
+  // is complete for the entire device.
+  NOTIMPLEMENTED();
 }
 
 void BluetoothRemoteGattServiceAndroid::CreateGattRemoteCharacteristic(
@@ -163,13 +176,10 @@ void BluetoothRemoteGattServiceAndroid::CreateGattRemoteCharacteristic(
   std::string instance_id_string =
       base::android::ConvertJavaStringToUTF8(env, instance_id);
 
-  DCHECK(!characteristics_.contains(instance_id_string));
-
-  characteristics_.set(
-      instance_id_string,
-      BluetoothRemoteGattCharacteristicAndroid::Create(
-          adapter_, this, instance_id_string,
-          bluetooth_gatt_characteristic_wrapper, chrome_bluetooth_device));
+  DCHECK(!base::ContainsKey(characteristics_, instance_id_string));
+  AddCharacteristic(BluetoothRemoteGattCharacteristicAndroid::Create(
+      adapter_, this, instance_id_string, bluetooth_gatt_characteristic_wrapper,
+      chrome_bluetooth_device));
 }
 
 BluetoothRemoteGattServiceAndroid::BluetoothRemoteGattServiceAndroid(
@@ -184,7 +194,7 @@ void BluetoothRemoteGattServiceAndroid::EnsureCharacteristicsCreated() const {
 
   // Java call
   Java_ChromeBluetoothRemoteGattService_createCharacteristics(
-      AttachCurrentThread(), j_service_.obj());
+      AttachCurrentThread(), j_service_);
 }
 
 }  // namespace device

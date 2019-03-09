@@ -8,6 +8,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/base/network_delegate_impl.h"
 
 namespace extensions {
@@ -34,48 +35,21 @@ class ChromeExtensionsNetworkDelegate : public net::NetworkDelegateImpl {
     profile_ = profile;
   }
 
-  // If the |request| failed due to problems with a proxy, forward the error to
-  // the proxy extension API.
-  virtual void ForwardProxyErrors(net::URLRequest* request);
-
   // Notifies the extensions::ProcessManager for the associated RenderFrame, if
   // any, that a request has started or stopped.
   virtual void ForwardStartRequestStatus(net::URLRequest* request);
   virtual void ForwardDoneRequestStatus(net::URLRequest* request);
 
-  // NetworkDelegate implementation.
-  int OnBeforeURLRequest(net::URLRequest* request,
-                         const net::CompletionCallback& callback,
-                         GURL* new_url) override;
-  int OnBeforeStartTransaction(net::URLRequest* request,
-                               const net::CompletionCallback& callback,
-                               net::HttpRequestHeaders* headers) override;
-  void OnStartTransaction(net::URLRequest* request,
-                          const net::HttpRequestHeaders& headers) override;
-  int OnHeadersReceived(
-      net::URLRequest* request,
-      const net::CompletionCallback& callback,
-      const net::HttpResponseHeaders* original_response_headers,
-      scoped_refptr<net::HttpResponseHeaders>* override_response_headers,
-      GURL* allowed_unsafe_redirect_url) override;
-  void OnBeforeRedirect(net::URLRequest* request,
-                        const GURL& new_location) override;
-  void OnResponseStarted(net::URLRequest* request) override;
-  void OnCompleted(net::URLRequest* request, bool started) override;
-  void OnURLRequestDestroyed(net::URLRequest* request) override;
-  void OnPACScriptError(int line_number, const base::string16& error) override;
-  net::NetworkDelegate::AuthRequiredResponse OnAuthRequired(
-      net::URLRequest* request,
-      const net::AuthChallengeInfo& auth_info,
-      const AuthCallback& callback,
-      net::AuthCredentials* credentials) override;
+  // Leave the NetworkDelegate implementation at NetworkDelegateImpl's no-op
+  // defaults. The real implementation is in the
+  // ChromeExtensionsNetworkDelegateImpl subclass.
 
  protected:
   ChromeExtensionsNetworkDelegate();
 
   void* profile_;
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   scoped_refptr<extensions::InfoMap> extension_info_map_;
 #endif
 

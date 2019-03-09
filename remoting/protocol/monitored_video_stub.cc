@@ -27,17 +27,18 @@ MonitoredVideoStub::MonitoredVideoStub(VideoStub* video_stub,
 }
 
 MonitoredVideoStub::~MonitoredVideoStub() {
+  DCHECK(thread_checker_.CalledOnValidThread());
 }
 
 void MonitoredVideoStub::ProcessVideoPacket(std::unique_ptr<VideoPacket> packet,
-                                            const base::Closure& done) {
+                                            base::OnceClosure done) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   connectivity_check_timer_.Reset();
 
   NotifyChannelState(true);
 
-  video_stub_->ProcessVideoPacket(std::move(packet), done);
+  video_stub_->ProcessVideoPacket(std::move(packet), std::move(done));
 }
 
 void MonitoredVideoStub::OnConnectivityCheckTimeout() {

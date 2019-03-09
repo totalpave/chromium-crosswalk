@@ -8,17 +8,18 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "base/bind_helpers.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
-#include "base/threading/non_thread_safe.h"
-
-namespace base {
-class SequencedTaskRunner;
-}
+#include "base/sequence_checker.h"
+#include "base/sequenced_task_runner.h"
+#include "base/single_thread_task_runner.h"
+#include "base/task/task_traits.h"
 
 namespace device {
 
@@ -28,7 +29,7 @@ class UsbDevice;
 // used to manage and dispatch USB events. It is also responsible for device
 // discovery on the system, which allows it to re-use device handles to prevent
 // competition for the same USB device.
-class UsbService : public base::NonThreadSafe {
+class UsbService {
  public:
   using GetDevicesCallback =
       base::Callback<void(const std::vector<scoped_refptr<UsbDevice>>&)>;
@@ -49,10 +50,17 @@ class UsbService : public base::NonThreadSafe {
     virtual void WillDestroyUsbService();
   };
 
-  // The file task runner reference is used for blocking I/O operations.
+  // These task traits are to be used for posting blocking tasks to the task
+  // scheduler.
+  static constexpr base::TaskTraits kBlockingTaskTraits = {
+      base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+      base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN};
+
   // Returns nullptr when initialization fails.
-  static std::unique_ptr<UsbService> Create(
-      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
+  static std::unique_ptr<UsbService> Create();
+
+  // Creates a SequencedTaskRunner with kBlockingTaskTraits.
+  static scoped_refptr<base::SequencedTaskRunner> CreateBlockingTaskRunner();
 
   virtual ~UsbService();
 
@@ -64,32 +72,28 @@ class UsbService : public base::NonThreadSafe {
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
+  // Methods to add and remove devices for testing purposes. Only a device added
+  // by this method can be removed by RemoveDeviceForTesting().
+  void AddDeviceForTesting(scoped_refptr<UsbDevice> device);
+  void RemoveDeviceForTesting(const std::string& device_guid);
+  void GetTestDevices(std::vector<scoped_refptr<UsbDevice>>* devices);
+
  protected:
-  UsbService(scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-             scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
+  UsbService();
 
   void NotifyDeviceAdded(scoped_refptr<UsbDevice> device);
   void NotifyDeviceRemoved(scoped_refptr<UsbDevice> device);
-
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner() {
-    return task_runner_;
-  }
-
-  scoped_refptr<base::SequencedTaskRunner> blocking_task_runner() {
-    return blocking_task_runner_;
-  }
 
   std::unordered_map<std::string, scoped_refptr<UsbDevice>>& devices() {
     return devices_;
   }
 
- private:
-  friend void base::DeletePointer<UsbService>(UsbService* service);
+  SEQUENCE_CHECKER(sequence_checker_);
 
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
-  scoped_refptr<base::SequencedTaskRunner> blocking_task_runner_;
+ private:
   std::unordered_map<std::string, scoped_refptr<UsbDevice>> devices_;
-  base::ObserverList<Observer, true> observer_list_;
+  std::unordered_set<std::string> testing_devices_;
+  base::ObserverList<Observer, true>::Unchecked observer_list_;
 
   DISALLOW_COPY_AND_ASSIGN(UsbService);
 };

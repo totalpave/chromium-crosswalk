@@ -4,25 +4,28 @@
 
 #include "components/user_manager/fake_user_manager.h"
 
+#include <algorithm>
+#include <utility>
+
 #include "base/callback.h"
 #include "base/command_line.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "base/task_runner.h"
-#include "chromeos/chromeos_switches.h"
-#include "chromeos/login/user_names.h"
+#include "chromeos/constants/chromeos_switches.h"
+#include "components/user_manager/user_names.h"
 #include "components/user_manager/user_type.h"
 
 namespace {
 
 class FakeTaskRunner : public base::TaskRunner {
  public:
-  bool PostDelayedTask(const tracked_objects::Location& from_here,
-                       const base::Closure& task,
+  bool PostDelayedTask(const base::Location& from_here,
+                       base::OnceClosure task,
                        base::TimeDelta delay) override {
-    task.Run();
+    std::move(task).Run();
     return true;
   }
-  bool RunsTasksOnCurrentThread() const override { return true; }
+  bool RunsTasksInCurrentSequence() const override { return true; }
 
  protected:
   ~FakeTaskRunner() override {}
@@ -46,18 +49,19 @@ const user_manager::User* FakeUserManager::AddUser(
 const user_manager::User* FakeUserManager::AddUserWithAffiliation(
     const AccountId& account_id,
     bool is_affiliated) {
-  user_manager::User* user = user_manager::User::CreateRegularUser(account_id);
+  user_manager::User* user = user_manager::User::CreateRegularUser(
+      account_id, user_manager::USER_TYPE_REGULAR);
   user->SetAffiliation(is_affiliated);
   users_.push_back(user);
   return user;
 }
 
 void FakeUserManager::RemoveUserFromList(const AccountId& account_id) {
-  user_manager::UserList::iterator it = users_.begin();
-  // TODO (alemate): Chenge this to GetAccountId(), once a real AccountId is
-  // passed. crbug.com/546876
-  while (it != users_.end() && (*it)->GetEmail() != account_id.GetUserEmail())
-    ++it;
+  const user_manager::UserList::iterator it =
+      std::find_if(users_.begin(), users_.end(),
+                   [&account_id](const user_manager::User* user) {
+                     return user->GetAccountId() == account_id;
+                   });
   if (it != users_.end()) {
     if (primary_user_ == *it)
       primary_user_ = nullptr;
@@ -82,25 +86,27 @@ user_manager::UserList FakeUserManager::GetUsersAllowedForMultiProfile() const {
   return result;
 }
 
-const user_manager::UserList& FakeUserManager::GetLoggedInUsers() const {
-  return logged_in_users_;
-}
-
 void FakeUserManager::UserLoggedIn(const AccountId& account_id,
                                    const std::string& username_hash,
-                                   bool browser_restart) {
+                                   bool browser_restart,
+                                   bool is_child) {
   for (user_manager::UserList::const_iterator it = users_.begin();
        it != users_.end(); ++it) {
     if ((*it)->username_hash() == username_hash) {
       (*it)->set_is_logged_in(true);
-      (*it)->set_profile_is_created();
+      (*it)->SetProfileIsCreated();
       logged_in_users_.push_back(*it);
 
       if (!primary_user_)
         primary_user_ = *it;
+      if (!active_user_)
+        active_user_ = *it;
       break;
     }
   }
+
+  if (!active_user_ && AreEphemeralUsersEnabled())
+    RegularUserLoggedInAsEphemeral(account_id, USER_TYPE_REGULAR);
 }
 
 user_manager::User* FakeUserManager::GetActiveUserInternal() const {
@@ -134,9 +140,7 @@ void FakeUserManager::SaveUserDisplayName(const AccountId& account_id,
                                           const base::string16& display_name) {
   for (user_manager::UserList::iterator it = users_.begin(); it != users_.end();
        ++it) {
-    // TODO (alemate): Chenge this to GetAccountId(), once a real AccountId is
-    // passed. crbug.com/546876
-    if ((*it)->GetEmail() == account_id.GetUserEmail()) {
+    if ((*it)->GetAccountId() == account_id) {
       (*it)->set_display_name(display_name);
       return;
     }
@@ -176,14 +180,6 @@ const user_manager::User* FakeUserManager::FindUser(
 
 user_manager::User* FakeUserManager::FindUserAndModify(
     const AccountId& account_id) {
-  return nullptr;
-}
-
-const user_manager::User* FakeUserManager::GetLoggedInUser() const {
-  return nullptr;
-}
-
-user_manager::User* FakeUserManager::GetLoggedInUser() {
   return nullptr;
 }
 
@@ -244,11 +240,14 @@ bool FakeUserManager::IsLoggedInAsKioskApp() const {
              : false;
 }
 
-bool FakeUserManager::IsLoggedInAsStub() const {
-  return false;
+bool FakeUserManager::IsLoggedInAsArcKioskApp() const {
+  const user_manager::User* active_user = GetActiveUser();
+  return active_user
+             ? active_user->GetType() == user_manager::USER_TYPE_ARC_KIOSK_APP
+             : false;
 }
 
-bool FakeUserManager::IsSessionStarted() const {
+bool FakeUserManager::IsLoggedInAsStub() const {
   return false;
 }
 
@@ -261,8 +260,24 @@ bool FakeUserManager::AreSupervisedUsersAllowed() const {
   return true;
 }
 
+bool FakeUserManager::IsGuestSessionAllowed() const {
+  return true;
+}
+
+bool FakeUserManager::IsGaiaUserAllowed(const user_manager::User& user) const {
+  return true;
+}
+
+bool FakeUserManager::IsUserAllowed(const user_manager::User& user) const {
+  return true;
+}
+
 bool FakeUserManager::AreEphemeralUsersEnabled() const {
-  return false;
+  return GetEphemeralUsersEnabled();
+}
+
+void FakeUserManager::SetEphemeralUsersEnabled(bool enabled) {
+  UserManagerBase::SetEphemeralUsersEnabled(enabled);
 }
 
 const std::string& FakeUserManager::GetApplicationLocale() const {
@@ -279,7 +294,7 @@ bool FakeUserManager::IsEnterpriseManaged() const {
 }
 
 bool FakeUserManager::IsDemoApp(const AccountId& account_id) const {
-  return account_id == chromeos::login::DemoAccountId();
+  return account_id == DemoAccountId();
 }
 
 bool FakeUserManager::IsDeviceLocalAccountMarkedForRemoval(
@@ -294,20 +309,20 @@ void FakeUserManager::UpdateLoginState(const user_manager::User* active_user,
 bool FakeUserManager::GetPlatformKnownUserId(const std::string& user_email,
                                              const std::string& gaia_id,
                                              AccountId* out_account_id) const {
-  if (user_email == chromeos::login::kStubUser) {
-    *out_account_id = chromeos::login::StubAccountId();
+  if (user_email == kStubUserEmail) {
+    *out_account_id = StubAccountId();
     return true;
   }
 
-  if (user_email == chromeos::login::kGuestUserName) {
-    *out_account_id = chromeos::login::GuestAccountId();
+  if (user_email == kGuestUserName) {
+    *out_account_id = GuestAccountId();
     return true;
   }
   return false;
 }
 
 const AccountId& FakeUserManager::GetGuestAccountId() const {
-  return chromeos::login::GuestAccountId();
+  return GuestAccountId();
 }
 
 bool FakeUserManager::IsFirstExecAfterBoot() const {
@@ -320,11 +335,11 @@ void FakeUserManager::AsyncRemoveCryptohome(const AccountId& account_id) const {
 }
 
 bool FakeUserManager::IsGuestAccountId(const AccountId& account_id) const {
-  return account_id == chromeos::login::GuestAccountId();
+  return account_id == GuestAccountId();
 }
 
 bool FakeUserManager::IsStubAccountId(const AccountId& account_id) const {
-  return account_id == chromeos::login::StubAccountId();
+  return account_id == StubAccountId();
 }
 
 bool FakeUserManager::IsSupervisedAccountId(const AccountId& account_id) const {
@@ -348,7 +363,7 @@ base::string16 FakeUserManager::GetResourceStringUTF16(int string_id) const {
 
 void FakeUserManager::ScheduleResolveLocale(
     const std::string& locale,
-    const base::Closure& on_resolved_callback,
+    base::OnceClosure on_resolved_callback,
     std::string* out_resolved_locale) const {
   NOTIMPLEMENTED();
   return;

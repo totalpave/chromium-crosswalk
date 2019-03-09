@@ -4,8 +4,11 @@
 
 #include <stdint.h>
 
+#include "base/bind.h"
 #include "base/location.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/local_discovery/service_discovery_client_impl.h"
 #include "net/dns/mdns_client_impl.h"
@@ -84,13 +87,11 @@ class LocalDomainResolverTest : public testing::Test {
   }
 
   void RunFor(base::TimeDelta time_period) {
-    base::CancelableCallback<void()> callback(
-        base::Bind(&base::MessageLoop::QuitWhenIdle,
-                   base::Unretained(base::MessageLoop::current())));
+    base::RunLoop run_loop;
+    base::CancelableCallback<void()> callback(run_loop.QuitWhenIdleClosure());
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE, callback.callback(), time_period);
-
-    base::MessageLoop::current()->Run();
+    run_loop.Run();
     callback.Cancel();
   }
 
@@ -101,7 +102,7 @@ class LocalDomainResolverTest : public testing::Test {
 
   net::MockMDnsSocketFactory socket_factory_;
   net::MDnsClientImpl mdns_client_;
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
 };
 
 TEST_F(LocalDomainResolverTest, ResolveDomainA) {

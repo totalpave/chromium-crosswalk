@@ -6,15 +6,15 @@ package org.chromium.chrome.browser.externalnav;
 
 import android.annotation.SuppressLint;
 import android.content.Intent;
-import android.os.AsyncTask;
 
 import org.chromium.base.Log;
 import org.chromium.base.SecureRandomInitializer;
+import org.chromium.base.task.AsyncTask;
+import org.chromium.base.task.BackgroundOnlyAsyncTask;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.util.IntentUtils;
 
 import java.io.IOException;
-import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.concurrent.ExecutionException;
@@ -39,7 +39,7 @@ public class IntentWithGesturesHandler {
     private static final Object INSTANCE_LOCK = new Object();
     private static IntentWithGesturesHandler sIntentWithGesturesHandler;
     private SecureRandom mSecureRandom;
-    private AsyncTask<Void, Void, SecureRandom> mSecureRandomInitializer;
+    private AsyncTask<SecureRandom> mSecureRandomInitializer;
     private byte[] mIntentToken;
     private String mUri;
 
@@ -56,24 +56,22 @@ public class IntentWithGesturesHandler {
     }
 
     private IntentWithGesturesHandler() {
-        mSecureRandomInitializer = new AsyncTask<Void, Void, SecureRandom>() {
+        mSecureRandomInitializer = new BackgroundOnlyAsyncTask<SecureRandom>() {
             // SecureRandomInitializer addresses the bug in SecureRandom that "TrulyRandom"
             // warns about, so this lint warning can safely be suppressed.
             @SuppressLint("TrulyRandom")
             @Override
-            protected SecureRandom doInBackground(Void... params) {
+            protected SecureRandom doInBackground() {
                 SecureRandom secureRandom = null;
                 try {
-                    secureRandom = SecureRandom.getInstance("SHA1PRNG");
+                    secureRandom = new SecureRandom();
                     SecureRandomInitializer.initialize(secureRandom);
-                } catch (NoSuchAlgorithmException e) {
-                    Log.e(TAG, "Cannot create SecureRandom", e);
                 } catch (IOException ioe) {
                     Log.e(TAG, "Cannot initialize SecureRandom", ioe);
                 }
                 return secureRandom;
             }
-        }.execute();
+        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 
     /**

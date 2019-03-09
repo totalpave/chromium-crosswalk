@@ -2,8 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef PRINTING_BITMAP_TRANSFORM_SETTINGS_H_
-#define PRINTING_BITMAP_TRANSFORM_SETTINGS_H_
+#ifndef PRINTING_PWG_RASTER_SETTINGS_H_
+#define PRINTING_PWG_RASTER_SETTINGS_H_
+
+#include "printing/print_job_constants.h"
 
 namespace printing {
 
@@ -16,14 +18,17 @@ enum PwgRasterTransformType {
 };
 
 struct PwgRasterSettings {
+  DuplexMode duplex_mode;
   // How to transform odd-numbered pages.
   PwgRasterTransformType odd_page_transform;
   // Rotate all pages (on top of odd-numbered page transform).
   bool rotate_all_pages;
   // Rasterize pages in reverse order.
   bool reverse_page_order;
+  // Rasterize pages in color.
+  bool use_color;
 };
 
 }  // namespace printing
 
-#endif  // PRINTING_BITMAP_TRANSFORM_SETTINGS_H_
+#endif  // PRINTING_PWG_RASTER_SETTINGS_H_

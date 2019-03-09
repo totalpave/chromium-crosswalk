@@ -2,12 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef NET_BASE_IP_ADDRESS_NET_H_
-#define NET_BASE_IP_ADDRESS_NET_H_
+#ifndef NET_BASE_IP_ADDRESS_H_
+#define NET_BASE_IP_ADDRESS_H_
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,83 @@
 
 namespace net {
 
+// Helper class to represent the sequence of bytes in an IP address.
+// A vector<uint8_t> would be simpler but incurs heap allocation, so
+// IPAddressBytes uses a fixed size array.
+class NET_EXPORT IPAddressBytes {
+ public:
+  IPAddressBytes();
+  IPAddressBytes(const uint8_t* data, size_t data_len);
+  IPAddressBytes(const IPAddressBytes& other);
+  ~IPAddressBytes();
+
+  // Copies |data_len| elements from |data| into this object.
+  void Assign(const uint8_t* data, size_t data_len);
+
+  // Returns the number of elements in the underlying array.
+  size_t size() const { return size_; }
+
+  // Sets the size to be |size|. Does not actually change the size
+  // of the underlying array or zero-initialize the bytes.
+  void Resize(size_t size) {
+    DCHECK_LE(size, 16u);
+    size_ = static_cast<uint8_t>(size);
+  }
+
+  // Returns true if the underlying array is empty.
+  bool empty() const { return size_ == 0; }
+
+  // Returns a pointer to the underlying array of bytes.
+  const uint8_t* data() const { return bytes_.data(); }
+  uint8_t* data() { return bytes_.data(); }
+
+  // Returns a pointer to the first element.
+  const uint8_t* begin() const { return data(); }
+  uint8_t* begin() { return data(); }
+
+  // Returns a pointer past the last element.
+  const uint8_t* end() const { return data() + size_; }
+  uint8_t* end() { return data() + size_; }
+
+  // Returns a reference to the last element.
+  uint8_t& back() {
+    DCHECK(!empty());
+    return bytes_[size_ - 1];
+  }
+  const uint8_t& back() const {
+    DCHECK(!empty());
+    return bytes_[size_ - 1];
+  }
+
+  // Appends |val| to the end and increments the size.
+  void push_back(uint8_t val) {
+    DCHECK_GT(16, size_);
+    bytes_[size_++] = val;
+  }
+
+  // Returns a reference to the byte at index |pos|.
+  uint8_t& operator[](size_t pos) {
+    DCHECK_LT(pos, size_);
+    return bytes_[pos];
+  }
+  const uint8_t& operator[](size_t pos) const {
+    DCHECK_LT(pos, size_);
+    return bytes_[pos];
+  }
+
+  bool operator<(const IPAddressBytes& other) const;
+  bool operator!=(const IPAddressBytes& other) const;
+  bool operator==(const IPAddressBytes& other) const;
+
+ private:
+  // Underlying sequence of bytes
+  std::array<uint8_t, 16> bytes_;
+
+  // Number of elements in |bytes_|. Should be either kIPv4AddressSize
+  // or kIPv6AddressSize or 0.
+  uint8_t size_;
+};
+
 class NET_EXPORT IPAddress {
  public:
   enum : size_t { kIPv4AddressSize = 4, kIPv6AddressSize = 16 };
@@ -24,11 +102,10 @@ class NET_EXPORT IPAddress {
   // Creates a zero-sized, invalid address.
   IPAddress();
 
-  // Copies the input address to |ip_address_|. The input is expected to be in
-  // network byte order.
-  explicit IPAddress(const std::vector<uint8_t>& address);
-
   IPAddress(const IPAddress& other);
+
+  // Copies the input address to |ip_address_|.
+  explicit IPAddress(const IPAddressBytes& address);
 
   // Copies the input address to |ip_address_|. The input is expected to be in
   // network byte order.
@@ -75,16 +152,22 @@ class NET_EXPORT IPAddress {
   // only checks the address length.
   bool IsValid() const;
 
-  // Returns true if the IP is in a range reserved by the IANA.
-  // Works with both IPv4 and IPv6 addresses, and only compares against a given
-  // protocols's reserved ranges.
-  bool IsReserved() const;
+  // Returns true if the IP is not in a range reserved by the IANA for
+  // local networks. Works with both IPv4 and IPv6 addresses.
+  // IPv4-mapped-to-IPv6 addresses are considered publicly routable.
+  bool IsPubliclyRoutable() const;
 
   // Returns true if the IP is "zero" (e.g. the 0.0.0.0 IPv4 address).
   bool IsZero() const;
 
   // Returns true if |ip_address_| is an IPv4-mapped IPv6 address.
   bool IsIPv4MappedIPv6() const;
+
+  // Returns true if |ip_address_| is 127.0.0.1/8 or ::1/128
+  bool IsLoopback() const;
+
+  // Returns true if |ip_address_| is 169.254.0.0/16 or fe80::/10
+  bool IsLinkLocal() const;
 
   // The size in bytes of |ip_address_|.
   size_t size() const { return ip_address_.size(); }
@@ -99,11 +182,20 @@ class NET_EXPORT IPAddress {
 
   // Parses an IP address literal (either IPv4 or IPv6) to its numeric value.
   // Returns true on success and fills |ip_address_| with the numeric value.
+  //
+  // When parsing fails, the original value of |this| will be overwritten such
+  // that |this->empty()| and |!this->IsValid()|.
   bool AssignFromIPLiteral(const base::StringPiece& ip_literal)
       WARN_UNUSED_RESULT;
 
-  // Returns the underlying byte vector.
-  const std::vector<uint8_t>& bytes() const { return ip_address_; };
+  // Returns the underlying bytes.
+  const IPAddressBytes& bytes() const { return ip_address_; }
+
+  // Copies the bytes to a new vector. Generally callers should be using
+  // |bytes()| and the IPAddressBytes abstraction. This method is provided as a
+  // convenience for call sites that existed prior to the introduction of
+  // IPAddressBytes.
+  std::vector<uint8_t> CopyBytesToVector() const;
 
   // Returns an IPAddress instance representing the 127.0.0.1 address.
   static IPAddress IPv4Localhost();
@@ -125,9 +217,7 @@ class NET_EXPORT IPAddress {
   bool operator<(const IPAddress& that) const;
 
  private:
-  // IPv4 addresses will have length kIPv4AddressSize, whereas IPv6 address
-  // will have length kIPv6AddressSize.
-  std::vector<uint8_t> ip_address_;
+  IPAddressBytes ip_address_;
 
   // This class is copyable and assignable.
 };
@@ -167,7 +257,8 @@ NET_EXPORT bool IPAddressMatchesPrefix(const IPAddress& ip_address,
 // Parses an IP block specifier from CIDR notation to an
 // (IP address, prefix length) pair. Returns true on success and fills
 // |*ip_address| with the numeric value of the IP address and sets
-// |*prefix_length_in_bits| with the length of the prefix.
+// |*prefix_length_in_bits| with the length of the prefix. On failure,
+// |ip_address| will be cleared to an empty value.
 //
 // CIDR notation literals can use either IPv4 or IPv6 literals. Some examples:
 //
@@ -181,17 +272,17 @@ NET_EXPORT bool ParseCIDRBlock(const std::string& cidr_literal,
 // Parses a URL-safe IP literal (see RFC 3986, Sec 3.2.2) to its numeric value.
 // Returns true on success, and fills |ip_address| with the numeric value.
 // In other words, |hostname| must be an IPv4 literal, or an IPv6 literal
-// surrounded by brackets as in [::1].
+// surrounded by brackets as in [::1]. On failure |ip_address| may have been
+// overwritten and could contain an invalid IPAddress.
 NET_EXPORT bool ParseURLHostnameToAddress(const base::StringPiece& hostname,
                                           IPAddress* ip_address)
     WARN_UNUSED_RESULT;
 
 // Returns number of matching initial bits between the addresses |a1| and |a2|.
-NET_EXPORT unsigned CommonPrefixLength(const IPAddress& a1,
-                                       const IPAddress& a2);
+NET_EXPORT size_t CommonPrefixLength(const IPAddress& a1, const IPAddress& a2);
 
 // Computes the number of leading 1-bits in |mask|.
-NET_EXPORT unsigned MaskPrefixLength(const IPAddress& mask);
+NET_EXPORT size_t MaskPrefixLength(const IPAddress& mask);
 
 // Checks whether |address| starts with |prefix|. This provides similar
 // functionality as IPAddressMatchesPrefix() but doesn't perform automatic IPv4
@@ -205,4 +296,4 @@ bool IPAddressStartsWith(const IPAddress& address, const uint8_t (&prefix)[N]) {
 
 }  // namespace net
 
-#endif  // NET_BASE_IP_ADDRESS_NET_H_
+#endif  // NET_BASE_IP_ADDRESS_H_

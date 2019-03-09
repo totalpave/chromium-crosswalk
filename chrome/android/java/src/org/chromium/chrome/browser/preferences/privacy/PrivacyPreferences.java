@@ -10,19 +10,28 @@ import android.preference.Preference;
 import android.preference.Preference.OnPreferenceChangeListener;
 import android.preference.PreferenceFragment;
 import android.preference.PreferenceScreen;
+import android.support.graphics.drawable.VectorDrawableCompat;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 
+import org.chromium.base.BuildInfo;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeFeatureList;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchFieldTrial;
 import org.chromium.chrome.browser.help.HelpAndFeedback;
-import org.chromium.chrome.browser.physicalweb.PhysicalWeb;
-import org.chromium.chrome.browser.precache.PrecacheLauncher;
 import org.chromium.chrome.browser.preferences.ChromeBaseCheckBoxPreference;
 import org.chromium.chrome.browser.preferences.ManagedPreferenceDelegate;
+import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.preferences.PrefServiceBridge;
+import org.chromium.chrome.browser.preferences.PreferenceUtils;
+import org.chromium.chrome.browser.preferences.PreferencesLauncher;
+import org.chromium.chrome.browser.preferences.SyncAndServicesPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.usage_stats.UsageStatsConsentDialog;
+import org.chromium.ui.text.NoUnderlineClickableSpan;
+import org.chromium.ui.text.SpanApplier;
 
 /**
  * Fragment to keep track of the all the privacy related preferences.
@@ -31,64 +40,82 @@ public class PrivacyPreferences extends PreferenceFragment
         implements OnPreferenceChangeListener {
     private static final String PREF_NAVIGATION_ERROR = "navigation_error";
     private static final String PREF_SEARCH_SUGGESTIONS = "search_suggestions";
-    private static final String PREF_SAFE_BROWSING_EXTENDED_REPORTING =
-            "safe_browsing_extended_reporting";
+    private static final String PREF_SAFE_BROWSING_SCOUT_REPORTING =
+            "safe_browsing_scout_reporting";
     private static final String PREF_SAFE_BROWSING = "safe_browsing";
+    private static final String PREF_CAN_MAKE_PAYMENT = "can_make_payment";
     private static final String PREF_CONTEXTUAL_SEARCH = "contextual_search";
     private static final String PREF_NETWORK_PREDICTIONS = "network_predictions";
-    private static final String PREF_CRASH_DUMP_UPLOAD_NO_CELLULAR =
-            "crash_dump_upload_no_cellular";
     private static final String PREF_DO_NOT_TRACK = "do_not_track";
     private static final String PREF_USAGE_AND_CRASH_REPORTING = "usage_and_crash_reports";
-    private static final String PREF_PHYSICAL_WEB = "physical_web";
+    private static final String PREF_CLEAR_BROWSING_DATA = "clear_browsing_data";
+    private static final String PREF_SYNC_AND_SERVICES_LINK_DIVIDER =
+            "sync_and_services_link_divider";
+    private static final String PREF_SYNC_AND_SERVICES_LINK = "sync_and_services_link";
+    private static final String PREF_USAGE_STATS = "usage_stats_reporting";
 
     private ManagedPreferenceDelegate mManagedPreferenceDelegate;
-
-    // Needed for ChromeBackupAgent
-    public static final String PREF_CRASH_DUMP_UPLOAD = "crash_dump_upload";
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         PrivacyPreferencesManager privacyPrefManager = PrivacyPreferencesManager.getInstance();
         privacyPrefManager.migrateNetworkPredictionPreferences();
-        addPreferencesFromResource(R.xml.privacy_preferences);
+        PreferenceUtils.addPreferencesFromResource(this, R.xml.privacy_preferences);
         getActivity().setTitle(R.string.prefs_privacy);
         setHasOptionsMenu(true);
+        PrefServiceBridge prefServiceBridge = PrefServiceBridge.getInstance();
+        PreferenceScreen preferenceScreen = getPreferenceScreen();
 
         mManagedPreferenceDelegate = createManagedPreferenceDelegate();
 
+        ChromeBaseCheckBoxPreference canMakePaymentPref =
+                (ChromeBaseCheckBoxPreference) findPreference(PREF_CAN_MAKE_PAYMENT);
+        canMakePaymentPref.setOnPreferenceChangeListener(this);
+
         ChromeBaseCheckBoxPreference networkPredictionPref =
                 (ChromeBaseCheckBoxPreference) findPreference(PREF_NETWORK_PREDICTIONS);
-        networkPredictionPref.setChecked(
-                PrefServiceBridge.getInstance().getNetworkPredictionEnabled());
+        networkPredictionPref.setChecked(prefServiceBridge.getNetworkPredictionEnabled());
         networkPredictionPref.setOnPreferenceChangeListener(this);
         networkPredictionPref.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
 
-        // Display the correct settings fragment according to the user experiment group and to type
-        // of the device, by removing not applicable preference fragments.
-        CrashDumpUploadPreference uploadCrashDumpPref =
-                (CrashDumpUploadPreference) findPreference(PREF_CRASH_DUMP_UPLOAD);
-        ChromeBaseCheckBoxPreference uploadCrashDumpNoCellularPref =
-                (ChromeBaseCheckBoxPreference) findPreference(PREF_CRASH_DUMP_UPLOAD_NO_CELLULAR);
-
-        PreferenceScreen preferenceScreen = getPreferenceScreen();
-        if (privacyPrefManager.isCellularExperimentEnabled()) {
-            preferenceScreen.removePreference(uploadCrashDumpNoCellularPref);
-            preferenceScreen.removePreference(uploadCrashDumpPref);
-        } else {
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.UNIFIED_CONSENT)) {
+            // Remove preferences that were migrated to SyncAndServicesPreferences.
+            preferenceScreen.removePreference(findPreference(PREF_NAVIGATION_ERROR));
+            preferenceScreen.removePreference(findPreference(PREF_SEARCH_SUGGESTIONS));
+            preferenceScreen.removePreference(findPreference(PREF_SAFE_BROWSING_SCOUT_REPORTING));
+            preferenceScreen.removePreference(findPreference(PREF_SAFE_BROWSING));
+            preferenceScreen.removePreference(findPreference(PREF_CONTEXTUAL_SEARCH));
             preferenceScreen.removePreference(findPreference(PREF_USAGE_AND_CRASH_REPORTING));
-            if (privacyPrefManager.isMobileNetworkCapable()) {
-                preferenceScreen.removePreference(uploadCrashDumpNoCellularPref);
-                uploadCrashDumpPref.setOnPreferenceChangeListener(this);
-                uploadCrashDumpPref.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
-            } else {
-                preferenceScreen.removePreference(uploadCrashDumpPref);
-                uploadCrashDumpNoCellularPref.setOnPreferenceChangeListener(this);
-                uploadCrashDumpNoCellularPref.setManagedPreferenceDelegate(
-                        mManagedPreferenceDelegate);
-            }
+
+            // TODO(https://crbug.com/846376): Update strings in XML after UNIFIED_CONSENT launch.
+            networkPredictionPref.setTitle(R.string.preload_pages_title);
+            networkPredictionPref.setSummary(R.string.preload_pages_summary);
+
+            // Put networkPredictionPref after canMakePaymentPref by overriding order value.
+            // However, calling setOrder doesn't change existing order if Preference has already
+            // been added to PreferenceGroup. Remove and re-add it to work around this.
+            // TODO(https://crbug.com/846376): Reorder prefs in XML after UNIFIED_CONSENT launch.
+            preferenceScreen.removePreference(networkPredictionPref);
+            networkPredictionPref.setOrder(canMakePaymentPref.getOrder());
+            preferenceScreen.addPreference(networkPredictionPref);
+
+            Preference syncAndServicesLink = findPreference(PREF_SYNC_AND_SERVICES_LINK);
+            NoUnderlineClickableSpan linkSpan =
+                    new NoUnderlineClickableSpan(getResources(), view -> {
+                        PreferencesLauncher.launchSettingsPage(getActivity(),
+                                SyncAndServicesPreferences.class,
+                                SyncAndServicesPreferences.createArguments(false));
+                    });
+            syncAndServicesLink.setSummary(
+                    SpanApplier.applySpans(getString(R.string.privacy_sync_and_services_link),
+                            new SpanApplier.SpanInfo("<link>", "</link>", linkSpan)));
+
+            updateSummaries();
+            return;
         }
+        preferenceScreen.removePreference(findPreference(PREF_SYNC_AND_SERVICES_LINK_DIVIDER));
+        preferenceScreen.removePreference(findPreference(PREF_SYNC_AND_SERVICES_LINK));
 
         ChromeBaseCheckBoxPreference navigationErrorPref =
                 (ChromeBaseCheckBoxPreference) findPreference(PREF_NAVIGATION_ERROR);
@@ -104,53 +131,49 @@ public class PrivacyPreferences extends PreferenceFragment
             preferenceScreen.removePreference(findPreference(PREF_CONTEXTUAL_SEARCH));
         }
 
-        ChromeBaseCheckBoxPreference safeBrowsingExtendedReportingPref =
-                (ChromeBaseCheckBoxPreference) findPreference(
-                        PREF_SAFE_BROWSING_EXTENDED_REPORTING);
-        safeBrowsingExtendedReportingPref.setOnPreferenceChangeListener(this);
-        safeBrowsingExtendedReportingPref.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
+        // Listen to changes to the Extended Reporting pref.
+        ChromeBaseCheckBoxPreference scoutReportingPref =
+                (ChromeBaseCheckBoxPreference) findPreference(PREF_SAFE_BROWSING_SCOUT_REPORTING);
+        scoutReportingPref.setOnPreferenceChangeListener(this);
+        scoutReportingPref.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
 
         ChromeBaseCheckBoxPreference safeBrowsingPref =
                 (ChromeBaseCheckBoxPreference) findPreference(PREF_SAFE_BROWSING);
         safeBrowsingPref.setOnPreferenceChangeListener(this);
         safeBrowsingPref.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
 
-        if (!PhysicalWeb.featureIsEnabled()) {
-            preferenceScreen.removePreference(findPreference(PREF_PHYSICAL_WEB));
-        }
-
         updateSummaries();
     }
 
     @Override
     public boolean onPreferenceChange(Preference preference, Object newValue) {
-        // CrashDumpUploadPreference listens to its own PreferenceChanged to update its text.
-        // We have replaced the listener. If we do run into a CrashDumpUploadPreference change,
-        // we will call onPreferenceChange to change the displayed text.
-        if (preference instanceof CrashDumpUploadPreference) {
-            ((CrashDumpUploadPreference) preference).onPreferenceChange(preference, newValue);
-        }
-
         String key = preference.getKey();
         if (PREF_SEARCH_SUGGESTIONS.equals(key)) {
             PrefServiceBridge.getInstance().setSearchSuggestEnabled((boolean) newValue);
         } else if (PREF_SAFE_BROWSING.equals(key)) {
             PrefServiceBridge.getInstance().setSafeBrowsingEnabled((boolean) newValue);
-        } else if (PREF_SAFE_BROWSING_EXTENDED_REPORTING.equals(key)) {
+        } else if (PREF_SAFE_BROWSING_SCOUT_REPORTING.equals(key)) {
             PrefServiceBridge.getInstance().setSafeBrowsingExtendedReportingEnabled(
                     (boolean) newValue);
         } else if (PREF_NETWORK_PREDICTIONS.equals(key)) {
             PrefServiceBridge.getInstance().setNetworkPredictionEnabled((boolean) newValue);
-            PrecacheLauncher.updatePrecachingEnabled(getActivity());
+            recordNetworkPredictionEnablingUMA((boolean) newValue);
         } else if (PREF_NAVIGATION_ERROR.equals(key)) {
             PrefServiceBridge.getInstance().setResolveNavigationErrorEnabled((boolean) newValue);
-        } else if (PREF_CRASH_DUMP_UPLOAD_NO_CELLULAR.equals(key)) {
-            PrefServiceBridge.getInstance().setCrashReportingEnabled((boolean) newValue);
-        } else if (PREF_CRASH_DUMP_UPLOAD.equals(key)) {
-            PrivacyPreferencesManager.getInstance().setUploadCrashDump((String) newValue);
+        } else if (PREF_CAN_MAKE_PAYMENT.equals(key)) {
+            PrefServiceBridge.getInstance().setBoolean(
+                    Pref.CAN_MAKE_PAYMENT_ENABLED, (boolean) newValue);
+        } else if (PREF_USAGE_STATS.equals(key)) {
+            PrefServiceBridge.getInstance().setBoolean(
+                    Pref.USAGE_STATS_ENABLED, (boolean) newValue);
         }
 
         return true;
+    }
+
+    private void recordNetworkPredictionEnablingUMA(boolean enabled) {
+        // Report user turning on and off NetworkPrediction.
+        RecordHistogram.recordBooleanHistogram("PrefService.NetworkPredictionEnabled", enabled);
     }
 
     @Override
@@ -172,23 +195,41 @@ public class PrivacyPreferences extends PreferenceFragment
 
         CheckBoxPreference navigationErrorPref = (CheckBoxPreference) findPreference(
                 PREF_NAVIGATION_ERROR);
-        navigationErrorPref.setChecked(prefServiceBridge.isResolveNavigationErrorEnabled());
+        if (navigationErrorPref != null) {
+            navigationErrorPref.setChecked(
+                    prefServiceBridge.isResolveNavigationErrorEnabled());
+        }
 
         CheckBoxPreference searchSuggestionsPref = (CheckBoxPreference) findPreference(
                 PREF_SEARCH_SUGGESTIONS);
-        searchSuggestionsPref.setChecked(prefServiceBridge.isSearchSuggestEnabled());
+        if (searchSuggestionsPref != null) {
+            searchSuggestionsPref.setChecked(prefServiceBridge.isSearchSuggestEnabled());
+        }
 
         CheckBoxPreference extendedReportingPref =
-                (CheckBoxPreference) findPreference(PREF_SAFE_BROWSING_EXTENDED_REPORTING);
-        extendedReportingPref.setChecked(
-                prefServiceBridge.isSafeBrowsingExtendedReportingEnabled());
+                (CheckBoxPreference) findPreference(PREF_SAFE_BROWSING_SCOUT_REPORTING);
+        if (extendedReportingPref != null) {
+            extendedReportingPref.setChecked(
+                    prefServiceBridge.isSafeBrowsingExtendedReportingEnabled());
+        }
 
         CheckBoxPreference safeBrowsingPref =
                 (CheckBoxPreference) findPreference(PREF_SAFE_BROWSING);
-        safeBrowsingPref.setChecked(prefServiceBridge.isSafeBrowsingEnabled());
+        if (safeBrowsingPref != null) {
+            safeBrowsingPref.setChecked(prefServiceBridge.isSafeBrowsingEnabled());
+        }
+
+        CheckBoxPreference canMakePaymentPref =
+                (CheckBoxPreference) findPreference(PREF_CAN_MAKE_PAYMENT);
+        if (canMakePaymentPref != null) {
+            canMakePaymentPref.setChecked(
+                    prefServiceBridge.getBoolean(Pref.CAN_MAKE_PAYMENT_ENABLED));
+        }
 
         Preference doNotTrackPref = findPreference(PREF_DO_NOT_TRACK);
-        doNotTrackPref.setSummary(prefServiceBridge.isDoNotTrackEnabled() ? textOn : textOff);
+        if (doNotTrackPref != null) {
+            doNotTrackPref.setSummary(prefServiceBridge.isDoNotTrackEnabled() ? textOn : textOff);
+        }
 
         Preference contextualPref = findPreference(PREF_CONTEXTUAL_SEARCH);
         if (contextualPref != null) {
@@ -196,46 +237,46 @@ public class PrivacyPreferences extends PreferenceFragment
             contextualPref.setSummary(isContextualSearchEnabled ? textOn : textOff);
         }
 
-        Preference physicalWebPref = findPreference(PREF_PHYSICAL_WEB);
-        if (physicalWebPref != null) {
-            physicalWebPref.setSummary(privacyPrefManager.isPhysicalWebEnabled()
-                    ? textOn : textOff);
+        Preference usageAndCrashPref = findPreference(PREF_USAGE_AND_CRASH_REPORTING);
+        if (usageAndCrashPref != null) {
+            usageAndCrashPref.setSummary(
+                    privacyPrefManager.isUsageAndCrashReportingPermittedByUser() ? textOn
+                                                                                 : textOff);
         }
 
-        if (privacyPrefManager.isCellularExperimentEnabled()) {
-            Preference usageAndCrashPref = findPreference(PREF_USAGE_AND_CRASH_REPORTING);
-            usageAndCrashPref.setSummary(privacyPrefManager.isUsageAndCrashReportingEnabled()
-                    ? textOn : textOff);
+        Preference usageStatsPref = findPreference(PREF_USAGE_STATS);
+        if (usageStatsPref != null) {
+            if (BuildInfo.isAtLeastQ() && prefServiceBridge.getBoolean(Pref.USAGE_STATS_ENABLED)) {
+                usageStatsPref.setOnPreferenceClickListener(preference -> {
+                    UsageStatsConsentDialog.create(getActivity(), true, false).show();
+                    return true;
+                });
+            } else {
+                getPreferenceScreen().removePreference(usageStatsPref);
+            }
         }
     }
 
     private ManagedPreferenceDelegate createManagedPreferenceDelegate() {
-        return new ManagedPreferenceDelegate() {
-            @Override
-            public boolean isPreferenceControlledByPolicy(Preference preference) {
-                String key = preference.getKey();
-                PrefServiceBridge prefs = PrefServiceBridge.getInstance();
-                if (PREF_NAVIGATION_ERROR.equals(key)) {
-                    return prefs.isResolveNavigationErrorManaged();
-                }
-                if (PREF_SEARCH_SUGGESTIONS.equals(key)) {
-                    return prefs.isSearchSuggestManaged();
-                }
-                if (PREF_SAFE_BROWSING_EXTENDED_REPORTING.equals(key)) {
-                    return prefs.isSafeBrowsingExtendedReportingManaged();
-                }
-                if (PREF_SAFE_BROWSING.equals(key)) {
-                    return prefs.isSafeBrowsingManaged();
-                }
-                if (PREF_NETWORK_PREDICTIONS.equals(key)) {
-                    return prefs.isNetworkPredictionManaged();
-                }
-                if (PREF_CRASH_DUMP_UPLOAD.equals(key)
-                        || PREF_CRASH_DUMP_UPLOAD_NO_CELLULAR.equals(key)) {
-                    return prefs.isCrashReportManaged();
-                }
-                return false;
+        return preference -> {
+            String key = preference.getKey();
+            PrefServiceBridge prefs = PrefServiceBridge.getInstance();
+            if (PREF_NAVIGATION_ERROR.equals(key)) {
+                return prefs.isResolveNavigationErrorManaged();
             }
+            if (PREF_SEARCH_SUGGESTIONS.equals(key)) {
+                return prefs.isSearchSuggestManaged();
+            }
+            if (PREF_SAFE_BROWSING_SCOUT_REPORTING.equals(key)) {
+                return prefs.isSafeBrowsingExtendedReportingManaged();
+            }
+            if (PREF_SAFE_BROWSING.equals(key)) {
+                return prefs.isSafeBrowsingManaged();
+            }
+            if (PREF_NETWORK_PREDICTIONS.equals(key)) {
+                return prefs.isNetworkPredictionManaged();
+            }
+            return false;
         };
     }
 
@@ -244,7 +285,8 @@ public class PrivacyPreferences extends PreferenceFragment
         menu.clear();
         MenuItem help = menu.add(
                 Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, R.string.menu_help);
-        help.setIcon(R.drawable.ic_help_and_feedback);
+        help.setIcon(VectorDrawableCompat.create(
+                getResources(), R.drawable.ic_help_and_feedback, getActivity().getTheme()));
     }
 
     @Override

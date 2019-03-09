@@ -26,7 +26,9 @@
 namespace ppapi {
 namespace proxy {
 
-class PluginDispatcher;
+// A "safe" way to run callbacks, doing nothing if they are not
+// pending (active).
+void SafeRunCallback(scoped_refptr<TrackedCallback>* callback, int32_t error);
 
 class PPAPI_PROXY_EXPORT PluginResource : public Resource {
  public:
@@ -155,8 +157,8 @@ class PPAPI_PROXY_EXPORT PluginResource : public Resource {
 
  private:
   IPC::Sender* GetSender(Destination dest) {
-    return dest == RENDERER ? connection_.renderer_sender :
-                              connection_.browser_sender;
+    return dest == RENDERER ? connection_.GetRendererSender()
+                            : connection_.browser_sender();
   }
 
   // Helper function to send a |PpapiHostMsg_ResourceCall| to the given

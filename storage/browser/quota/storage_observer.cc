@@ -2,21 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "storage/browser/quota/storage_observer.h"
+
 #include <stdint.h>
 
-#include "storage/browser/quota/storage_observer.h"
+#include "third_party/blink/public/mojom/quota/quota_types.mojom-shared.h"
 
 namespace storage {
 
 // StorageObserver::Filter
 
 StorageObserver::Filter::Filter()
-    : storage_type(kStorageTypeUnknown) {
-}
+    : storage_type(blink::mojom::StorageType::kUnknown) {}
 
-StorageObserver::Filter::Filter(StorageType storage_type, const GURL& origin)
-    : storage_type(storage_type), origin(origin) {
-}
+StorageObserver::Filter::Filter(blink::mojom::StorageType storage_type,
+                                const url::Origin& origin)
+    : storage_type(storage_type), origin(origin) {}
 
 bool StorageObserver::Filter::operator==(const Filter& other) const {
   return storage_type == other.storage_type &&
@@ -30,14 +31,13 @@ StorageObserver::MonitorParams::MonitorParams()
 }
 
 StorageObserver::MonitorParams::MonitorParams(
-    StorageType storage_type,
-    const GURL& origin,
+    blink::mojom::StorageType storage_type,
+    const url::Origin& origin,
     const base::TimeDelta& rate,
     bool get_initial_state)
-        : filter(storage_type, origin),
-          rate(rate),
-          dispatch_initial_state(get_initial_state) {
-}
+    : filter(storage_type, origin),
+      rate(rate),
+      dispatch_initial_state(get_initial_state) {}
 
 StorageObserver::MonitorParams::MonitorParams(
     const Filter& filter,

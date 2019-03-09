@@ -6,14 +6,16 @@
 
 #include <Security/Security.h>
 
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/mac/mac_logging.h"
 #include "base/message_loop/message_loop.h"
-#include "base/observer_list_threadsafe.h"
+#include "base/message_loop/message_loop_current.h"
 #include "base/process/process_handle.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/lock.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "crypto/mac_security_services_lock.h"
 #include "net/base/net_errors.h"
 #include "net/cert/x509_certificate.h"
@@ -27,24 +29,25 @@ class CertDatabase::Notifier {
   // Creates a new Notifier that will forward Keychain events to |cert_db|.
   // |message_loop| must refer to a thread with an associated CFRunLoop - a
   // TYPE_UI thread. Events will be dispatched from this message loop.
-  Notifier(CertDatabase* cert_db, base::MessageLoop* message_loop)
+  Notifier(CertDatabase* cert_db,
+           scoped_refptr<base::SingleThreadTaskRunner> task_runner)
       : cert_db_(cert_db),
+        task_runner_(std::move(task_runner)),
         registered_(false),
         called_shutdown_(false) {
     // Ensure an associated CFRunLoop.
-    DCHECK(base::MessageLoopForUI::IsCurrent());
-    task_runner_ = message_loop->task_runner();
-    task_runner_->PostTask(FROM_HERE,
-                           base::Bind(&Notifier::Init,
-                                      base::Unretained(this)));
+    DCHECK(base::MessageLoopCurrentForUI::IsSet());
+    DCHECK(task_runner_->BelongsToCurrentThread());
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&Notifier::Init, base::Unretained(this)));
   }
 
-  // Should be called from the |task_runner_|'s thread. Use Shutdown()
-  // to shutdown on arbitrary threads.
+  // Should be called from the |task_runner_|'s sequence. Use Shutdown()
+  // to shutdown on arbitrary sequence.
   ~Notifier() {
     DCHECK(called_shutdown_);
-    // Only unregister from the same thread where registration was performed.
-    if (registered_ && task_runner_->RunsTasksOnCurrentThread())
+    // Only unregister from the same sequence where registration was performed.
+    if (registered_ && task_runner_->RunsTasksInCurrentSequence())
       SecKeychainRemoveCallback(&Notifier::KeychainCallback);
   }
 
@@ -104,7 +107,7 @@ OSStatus CertDatabase::Notifier::KeychainCallback(
   switch (keychain_event) {
     case kSecKeychainListChangedEvent:
     case kSecTrustSettingsChangedEvent:
-      that->cert_db_->NotifyObserversOfCACertChanged(NULL);
+      that->cert_db_->NotifyObserversCertDBChanged();
       break;
 
     default:
@@ -114,62 +117,16 @@ OSStatus CertDatabase::Notifier::KeychainCallback(
   return errSecSuccess;
 }
 
-void CertDatabase::SetMessageLoopForKeychainEvents() {
+void CertDatabase::StartListeningForKeychainEvents() {
+  ReleaseNotifier();
+  notifier_ = new Notifier(this, base::ThreadTaskRunnerHandle::Get());
+}
+
+void CertDatabase::ReleaseNotifier() {
   // Shutdown will take care to delete the notifier on the right thread.
-  if (notifier_.get())
-    notifier_.release()->Shutdown();
-
-  notifier_.reset(new Notifier(this, base::MessageLoopForUI::current()));
-}
-
-CertDatabase::CertDatabase()
-    : observer_list_(new base::ObserverListThreadSafe<Observer>) {
-}
-
-CertDatabase::~CertDatabase() {
-  // Shutdown will take care to delete the notifier on the right thread.
-  if (notifier_.get())
-    notifier_.release()->Shutdown();
-}
-
-int CertDatabase::CheckUserCert(X509Certificate* cert) {
-  if (!cert)
-    return ERR_CERT_INVALID;
-  if (cert->HasExpired())
-    return ERR_CERT_DATE_INVALID;
-
-  // Verify the Keychain already has the corresponding private key:
-  SecIdentityRef identity = NULL;
-  OSStatus err = SecIdentityCreateWithCertificate(NULL, cert->os_cert_handle(),
-                                                  &identity);
-  if (err == errSecItemNotFound)
-    return ERR_NO_PRIVATE_KEY_FOR_CERT;
-
-  if (err != noErr || !identity) {
-    // TODO(snej): Map the error code more intelligently.
-    return ERR_CERT_INVALID;
-  }
-
-  CFRelease(identity);
-  return OK;
-}
-
-int CertDatabase::AddUserCert(X509Certificate* cert) {
-  OSStatus err;
-  {
-    base::AutoLock locked(crypto::GetMacSecurityServicesLock());
-    err = SecCertificateAddToKeychain(cert->os_cert_handle(), NULL);
-  }
-  switch (err) {
-    case noErr:
-      CertDatabase::NotifyObserversOfCertAdded(cert);
-      // Fall through.
-    case errSecDuplicateItem:
-      return OK;
-    default:
-      OSSTATUS_LOG(ERROR, err) << "CertDatabase failed to add cert to keychain";
-      // TODO(snej): Map the error code more intelligently.
-      return ERR_ADD_USER_CERT_FAILED;
+  if (notifier_) {
+    notifier_->Shutdown();
+    notifier_ = nullptr;
   }
 }
 

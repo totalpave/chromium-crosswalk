@@ -9,7 +9,7 @@
 
 #include "base/strings/string16.h"
 #include "content/common/content_export.h"
-#include "third_party/WebKit/public/web/WebMenuItemInfo.h"
+#include "third_party/blink/public/web/web_menu_item_info.h"
 
 namespace content {
 
@@ -17,11 +17,12 @@ namespace content {
 // custom entries of the context menu.
 struct CONTENT_EXPORT MenuItem {
   enum Type {
-    OPTION           = blink::WebMenuItemInfo::Option,
-    CHECKABLE_OPTION = blink::WebMenuItemInfo::CheckableOption,
-    GROUP            = blink::WebMenuItemInfo::Group,
-    SEPARATOR        = blink::WebMenuItemInfo::Separator,
-    SUBMENU  // This is currently only used by Pepper, not by WebKit.
+    OPTION = blink::WebMenuItemInfo::kOption,
+    CHECKABLE_OPTION = blink::WebMenuItemInfo::kCheckableOption,
+    GROUP = blink::WebMenuItemInfo::kGroup,
+    SEPARATOR = blink::WebMenuItemInfo::kSeparator,
+    SUBMENU,  // This is currently only used by Pepper, not by WebKit.
+    TYPE_LAST = SUBMENU
   };
 
   MenuItem();

@@ -8,33 +8,38 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <deque>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "base/containers/circular_deque.h"
 #include "base/files/file_path.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "components/download/public/common/download_item.h"
 #include "content/browser/download/save_types.h"
 #include "content/common/content_export.h"
-#include "content/public/browser/download_item.h"
 #include "content/public/browser/download_manager_delegate.h"
 #include "content/public/browser/save_page_type.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/referrer.h"
 #include "net/base/net_errors.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "url/gurl.h"
 
 class GURL;
 
-namespace content {
+namespace download {
 class DownloadItemImpl;
+}
+
+namespace content {
 class DownloadManagerImpl;
 class FrameTreeNode;
 class RenderFrameHostImpl;
@@ -44,15 +49,15 @@ class SaveItem;
 class SavePackage;
 class WebContents;
 
-// The SavePackage object manages the process of saving a page as only-html or
-// complete-html or MHTML and providing the information for displaying saving
-// status.  Saving page as only-html means means that we save web page to a
-// single HTML file regardless internal sub resources and sub frames.  Saving
-// page as complete-html page means we save not only the main html file the user
-// told it to save but also a directory for the auxiliary files such as all
-// sub-frame html files, image files, css files and js files.  Saving page as
-// MHTML means the same thing as complete-html, but it uses the MHTML format to
-// contain the html and all auxiliary files in a single text file.
+// SavePackage manages the process of saving a page as only-HTML, complete-HTML
+// or MHTML and provides status information about the job.
+// - only-html: the web page is saved to a single HTML file excluding
+// sub-resources and sub-frames
+// - complete-html: the web page's main frame HTML is saved to the user selected
+// file and a directory for the auxiliary files such as all sub-frame html
+// files, image files, css files and js files is created
+// - MHTML: the main frame and all auxiliary files are stored a single text
+//   file using the MHTML format.
 //
 // Each page saving job may include one or multiple files which need to be
 // saved. Each file is represented by a SaveItem, and all SaveItems are owned
@@ -61,7 +66,6 @@ class WebContents;
 class CONTENT_EXPORT SavePackage
     : public base::RefCountedThreadSafe<SavePackage>,
       public WebContentsObserver,
-      public DownloadItem::Observer,
       public base::SupportsWeakPtr<SavePackage> {
  public:
   enum WaitState {
@@ -91,16 +95,16 @@ class CONTENT_EXPORT SavePackage
   // Initialize the SavePackage. Returns true if it initializes properly.  Need
   // to make sure that this method must be called in the UI thread because using
   // g_browser_process on a non-UI thread can cause crashes during shutdown.
-  // |cb| will be called when the DownloadItem is created, before data is
-  // written to disk.
+  // |cb| will be called when the download::DownloadItem is created, before data
+  // is written to disk.
   bool Init(const SavePackageDownloadCreatedCallback& cb);
 
   // Cancel all in progress request, might be called by user or internal error.
-  void Cancel(bool user_action);
+  void Cancel(bool user_action, bool cancel_download_item = true);
 
   void Finish();
 
-  // Notifications sent from the FILE thread to the UI thread.
+  // Notifications sent from the download sequence to the UI thread.
   void StartSave(const SaveFileCreateInfo* info);
   bool UpdateSaveProgress(SaveItemId save_item_id,
                           int64_t size,
@@ -132,12 +136,11 @@ class CONTENT_EXPORT SavePackage
   FRIEND_TEST_ALL_PREFIXES(SavePackageTest, TestLongSafePureFilename);
   FRIEND_TEST_ALL_PREFIXES(SavePackageBrowserTest, ImplicitCancel);
   FRIEND_TEST_ALL_PREFIXES(SavePackageBrowserTest, ExplicitCancel);
+  FRIEND_TEST_ALL_PREFIXES(SavePackageBrowserTest, DownloadItemDestroyed);
 
   // Map from SaveItem::id() (aka save_item_id) into a SaveItem.
-  using SaveItemIdMap =
-      std::unordered_map<SaveItemId, SaveItem*, SaveItemId::Hasher>;
-
-  using SaveItemQueue = std::deque<SaveItem*>;
+  using SaveItemIdMap = std::
+      unordered_map<SaveItemId, std::unique_ptr<SaveItem>, SaveItemId::Hasher>;
 
   using FileNameSet = std::set<base::FilePath::StringType,
                                bool (*)(base::FilePath::StringPieceType,
@@ -153,19 +156,19 @@ class CONTENT_EXPORT SavePackage
               const base::FilePath& file_full_path,
               const base::FilePath& directory_full_path);
 
+  ~SavePackage() override;
+
   void InitWithDownloadItem(
       const SavePackageDownloadCreatedCallback& download_created_callback,
-      DownloadItemImpl* item);
+      download::DownloadItemImpl* item);
 
   // Callback for WebContents::GenerateMHTML().
   void OnMHTMLGenerated(int64_t size);
 
-  ~SavePackage() override;
-
   // Notes from Init() above applies here as well.
   void InternalInit();
 
-  void Stop();
+  void Stop(bool cancel_download_item);
   void CheckFinish();
 
   // Initiate a saving job of a specific URL. We send the request to
@@ -181,14 +184,8 @@ class CONTENT_EXPORT SavePackage
   bool OnMessageReceived(const IPC::Message& message,
                          RenderFrameHost* render_frame_host) override;
 
-  // DownloadItem::Observer implementation.
-  void OnDownloadDestroyed(DownloadItem* download) override;
-
   // Update the download history of this item upon completion.
   void FinalizeDownloadEntry();
-
-  // Detach from DownloadManager.
-  void RemoveObservers();
 
   // Return max length of a path for a specific base directory.
   // This is needed on POSIX, which restrict the length of file names in
@@ -253,7 +250,7 @@ class CONTENT_EXPORT SavePackage
 
   // Helper for finding a SaveItem with the given url, or falling back to
   // creating a SaveItem with the given parameters.
-  SaveItem* CreatePendingSaveItemDeduplicatingByUrl(
+  void CreatePendingSaveItemDeduplicatingByUrl(
       int container_frame_tree_node_id,
       int save_item_frame_tree_node_id,
       const GURL& url,
@@ -303,9 +300,12 @@ class CONTENT_EXPORT SavePackage
   static GURL GetUrlToBeSaved(WebContents* web_contents);
 
   static base::FilePath CreateDirectoryOnFileThread(
+      const base::string16& title,
+      const GURL& page_url,
+      bool can_save_as_complete,
+      const std::string& mime_type,
       const base::FilePath& website_save_dir,
       const base::FilePath& download_save_dir,
-      const base::FilePath& suggested_filename,
       bool skip_dir_check);
   void ContinueGetSaveInfo(bool can_save_as_complete,
                            const base::FilePath& suggested_path);
@@ -327,34 +327,14 @@ class CONTENT_EXPORT SavePackage
   }
 
   // The current speed in files per second. This is used to update the
-  // DownloadItem associated to this SavePackage. The files per second is
-  // presented by the DownloadItem to the UI as bytes per second, which is
-  // not correct but matches the way the total and received number of files is
-  // presented as the total and received bytes.
+  // download::DownloadItem associated to this SavePackage. The files per second
+  // is presented by the download::DownloadItem to the UI as bytes per second,
+  // which is not correct but matches the way the total and received number of
+  // files is presented as the total and received bytes.
   int64_t CurrentSpeed() const;
 
-  // Helper function for preparing suggested name for the SaveAs Dialog. The
-  // suggested name is determined by the web document's title.
-  base::FilePath GetSuggestedNameForSaveAs(
-      bool can_save_as_complete,
-      const std::string& contents_mime_type);
-
-  // Ensures that the file name has a proper extension for HTML by adding ".htm"
-  // if necessary.
-  static base::FilePath EnsureHtmlExtension(const base::FilePath& name);
-
-  // Ensures that the file name has a proper extension for supported formats
-  // if necessary.
-  static base::FilePath EnsureMimeExtension(const base::FilePath& name,
-      const std::string& contents_mime_type);
-
-  // Returns extension for supported MIME types (for example, for "text/plain"
-  // it returns "txt").
-  static const base::FilePath::CharType* ExtensionForMimeType(
-      const std::string& contents_mime_type);
-
   // A queue for items we are about to start saving.
-  SaveItemQueue waiting_item_queue_;
+  base::circular_deque<std::unique_ptr<SaveItem>> waiting_item_queue_;
 
   // Map of all saving job in in-progress state.
   SaveItemIdMap in_progress_items_;
@@ -388,20 +368,20 @@ class CONTENT_EXPORT SavePackage
   // Map of all saving job which are successfully saved.
   SaveItemIdMap saved_success_items_;
 
-  // Non-owning pointer for handling file writing on the FILE thread.
+  // Non-owning pointer for handling file writing on the download sequence.
   SaveFileManager* file_manager_ = nullptr;
 
-  // DownloadManager owns the DownloadItem and handles history and UI.
+  // DownloadManager owns the download::DownloadItem and handles history and UI.
   DownloadManagerImpl* download_manager_ = nullptr;
-  DownloadItemImpl* download_ = nullptr;
+  download::DownloadItemImpl* download_ = nullptr;
 
   // The URL of the page the user wants to save.
-  GURL page_url_;
+  const GURL page_url_;
   base::FilePath saved_main_file_path_;
   base::FilePath saved_main_directory_path_;
 
   // The title of the page the user wants to save.
-  base::string16 title_;
+  const base::string16 title_;
 
   // Used to calculate package download speed (in files per second).
   const base::TimeTicks start_tick_;
@@ -438,6 +418,10 @@ class CONTENT_EXPORT SavePackage
 
   // Unique ID for this SavePackage.
   const SavePackageId unique_id_;
+
+  // UKM IDs for reporting.
+  ukm::SourceId ukm_source_id_;
+  uint64_t ukm_download_id_;
 
   DISALLOW_COPY_AND_ASSIGN(SavePackage);
 };

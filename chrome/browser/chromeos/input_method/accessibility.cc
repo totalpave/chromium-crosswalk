@@ -6,9 +6,9 @@
 
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/chromeos/input_method/input_method_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/aura/accessibility/automation_manager_aura.h"
+#include "ui/base/ime/chromeos/input_method_util.h"
 
 namespace chromeos {
 namespace input_method {
@@ -37,7 +37,7 @@ void Accessibility::InputMethodChanged(InputMethodManager* imm,
   const std::string medium_name = base::UTF16ToUTF8(
       imm_->GetInputMethodUtil()->GetInputMethodMediumName(descriptor));
 
-  AutomationManagerAura::GetInstance()->HandleAlert(profile, medium_name);
+  AutomationManagerAura::GetInstance()->HandleAlert(medium_name);
 }
 
 }  // namespace input_method

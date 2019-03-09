@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
 #include "base/strings/string16.h"
 #include "components/history/core/browser/history_service.h"
 #include "content/public/browser/notification_details.h"
@@ -31,18 +30,17 @@ class LocationBar;
 class Profile;
 
 namespace app_modal {
-class AppModalDialog;
+class JavaScriptAppModalDialog;
 }
 
 namespace base {
 class FilePath;
 }
 
-namespace chrome {
 struct NavigateParams;
-}
 
 namespace content {
+class RenderProcessHost;
 class WebContents;
 }
 
@@ -76,36 +74,72 @@ bool GetCurrentTabTitle(const Browser* browser, base::string16* title);
 // Performs the provided navigation process, blocking until the navigation
 // finishes. May change the params in some cases (i.e. if the navigation
 // opens a new browser window). Uses chrome::Navigate.
-void NavigateToURL(chrome::NavigateParams* params);
+//
+// Note this does not return a RenderProcessHost for where the navigation
+// occurs, so tests using this will be unable to verify the destruction of
+// the RenderProcessHost when navigating again.
+void NavigateToURL(NavigateParams* params);
 
 // Navigates the selected tab of |browser| to |url|, blocking until the
 // navigation finishes. Simulates a POST and uses chrome::Navigate.
+//
+// Note this does not return a RenderProcessHost for where the navigation
+// occurs, so tests using this will be unable to verify the destruction of
+// the RenderProcessHost when navigating again.
 void NavigateToURLWithPost(Browser* browser, const GURL& url);
 
 // Navigates the selected tab of |browser| to |url|, blocking until the
 // navigation finishes. Uses Browser::OpenURL --> chrome::Navigate.
-void NavigateToURL(Browser* browser, const GURL& url);
+//
+// Returns a RenderProcessHost* for the renderer where the navigation
+// occured. Use this when navigating again, when the test wants to wait not
+// just for the navigation to complete but also for the previous
+// RenderProcessHost to be torn down. Navigation does NOT imply the old
+// RenderProcessHost is gone, and assuming so creates a race condition that
+// can be exagerated by artifically slowing the FrameHostMsg_SwapOut_ACK reply
+// from the renderer being navigated from.
+content::RenderProcessHost* NavigateToURL(Browser* browser, const GURL& url);
 
 // Navigates the specified tab of |browser| to |url|, blocking until the
 // navigation finishes.
 // |disposition| indicates what tab the navigation occurs in, and
 // |browser_test_flags| controls what to wait for before continuing.
-void NavigateToURLWithDisposition(Browser* browser,
-                                  const GURL& url,
-                                  WindowOpenDisposition disposition,
-                                  int browser_test_flags);
+//
+// If the |browser_test_flags| includes a request to wait for navigation, this
+// returns a RenderProcessHost* for the renderer where the navigation
+// occured. Use this when navigating again, when the test wants to wait not
+// just for the navigation to complete but also for the previous
+// RenderProcessHost to be torn down. Navigation does NOT imply the old
+// RenderProcessHost is gone, and assuming so creates a race condition that
+// can be exagerated by artifically slowing the FrameHostMsg_SwapOut_ACK reply
+// from the renderer being navigated from.
+content::RenderProcessHost* NavigateToURLWithDisposition(
+    Browser* browser,
+    const GURL& url,
+    WindowOpenDisposition disposition,
+    int browser_test_flags);
 
 // Navigates the selected tab of |browser| to |url|, blocking until the
 // number of navigations specified complete.
-void NavigateToURLBlockUntilNavigationsComplete(Browser* browser,
-                                                const GURL& url,
-                                                int number_of_navigations);
+//
+// Returns a RenderProcessHost* for the renderer where the navigation
+// occured. Use this when navigating again, when the test wants to wait not
+// just for the navigation to complete but also for the previous
+// RenderProcessHost to be torn down. Navigation does NOT imply the old
+// RenderProcessHost is gone, and assuming so creates a race condition that
+// can be exagerated by artifically slowing the FrameHostMsg_SwapOut_ACK reply
+// from the renderer being navigated from.
+content::RenderProcessHost* NavigateToURLBlockUntilNavigationsComplete(
+    Browser* browser,
+    const GURL& url,
+    int number_of_navigations);
 
 // Navigates the specified tab (via |disposition|) of |browser| to |url|,
 // blocking until the |number_of_navigations| specified complete.
 // |disposition| indicates what tab the download occurs in, and
 // |browser_test_flags| controls what to wait for before continuing.
-void NavigateToURLWithDispositionBlockUntilNavigationsComplete(
+content::RenderProcessHost*
+NavigateToURLWithDispositionBlockUntilNavigationsComplete(
     Browser* browser,
     const GURL& url,
     int number_of_navigations,
@@ -128,8 +162,8 @@ GURL GetTestUrl(const base::FilePath& dir, const base::FilePath& file);
 // Generate the path of the build directory, relative to the source root.
 bool GetRelativeBuildDirectory(base::FilePath* build_dir);
 
-// Blocks until an application modal dialog is showns and returns it.
-app_modal::AppModalDialog* WaitForAppModalDialog();
+// Blocks until an application modal dialog is shown and returns it.
+app_modal::JavaScriptAppModalDialog* WaitForAppModalDialog();
 
 // Performs a find in the page of the specified tab. Returns the number of
 // matches found.  |ordinal| is an optional parameter which is set to the index
@@ -149,8 +183,10 @@ void WaitForHistoryToLoad(history::HistoryService* history_service);
 void DownloadURL(Browser* browser, const GURL& download_url);
 
 // Send the given text to the omnibox and wait until it's updated.
-void SendToOmniboxAndSubmit(LocationBar* location_bar,
-                            const std::string& input);
+void SendToOmniboxAndSubmit(
+    LocationBar* location_bar,
+    const std::string& input,
+    base::TimeTicks match_selection_timestamp = base::TimeTicks());
 
 // Gets the first browser that is not in the specified set.
 Browser* GetBrowserNotInSet(const std::set<Browser*>& excluded_browsers);
@@ -262,9 +298,6 @@ class BrowserAddedObserver {
 
   DISALLOW_COPY_AND_ASSIGN(BrowserAddedObserver);
 };
-
-// Configures the geolocation provider to always return the given position.
-void OverrideGeolocation(double latitude, double longitude);
 
 // Enumerates all history contents on the backend thread. Returns them in
 // descending order by time.

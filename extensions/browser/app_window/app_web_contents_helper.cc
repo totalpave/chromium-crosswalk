@@ -14,6 +14,7 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/suggest_permission_util.h"
 #include "extensions/common/permissions/api_permission.h"
+#include "third_party/blink/public/platform/web_gesture_event.h"
 
 namespace extensions {
 
@@ -31,10 +32,20 @@ AppWebContentsHelper::AppWebContentsHelper(
 // static
 bool AppWebContentsHelper::ShouldSuppressGestureEvent(
     const blink::WebGestureEvent& event) {
+  // Disable "smart zoom" (double-tap with two fingers on Mac trackpad).
+  if (event.GetType() == blink::WebInputEvent::kGestureDoubleTap)
+    return true;
+
   // Disable pinch zooming in app windows.
-  return event.type == blink::WebGestureEvent::GesturePinchBegin ||
-         event.type == blink::WebGestureEvent::GesturePinchUpdate ||
-         event.type == blink::WebGestureEvent::GesturePinchEnd;
+  if (blink::WebInputEvent::IsPinchGestureEventType(event.GetType())) {
+    // Only suppress pinch events that cause a scale change. We still
+    // allow synthetic wheel events for touchpad pinch to go to the page.
+    return !(event.SourceDevice() ==
+                 blink::WebGestureDevice::kWebGestureDeviceTouchpad &&
+             event.NeedsWheelEvent());
+  }
+
+  return false;
 }
 
 content::WebContents* AppWebContentsHelper::OpenURLFromTab(
@@ -43,9 +54,9 @@ content::WebContents* AppWebContentsHelper::OpenURLFromTab(
   // anchor tags (even those without target="_blank") to new tabs, but right
   // now we can't distinguish between those and <meta> refreshes or window.href
   // navigations, which we don't want to allow.
-  // TOOD(mihaip): Can we check for user gestures instead?
+  // TODO(mihaip): Can we check for user gestures instead?
   WindowOpenDisposition disposition = params.disposition;
-  if (disposition == CURRENT_TAB) {
+  if (disposition == WindowOpenDisposition::CURRENT_TAB) {
     web_contents_->GetMainFrame()->AddMessageToConsole(
         content::CONSOLE_MESSAGE_LEVEL_ERROR,
         base::StringPrintf(
@@ -55,10 +66,9 @@ content::WebContents* AppWebContentsHelper::OpenURLFromTab(
   }
 
   // These dispositions aren't really navigations.
-  if (disposition == SUPPRESS_OPEN || disposition == SAVE_TO_DISK ||
-      disposition == IGNORE_ACTION) {
+  if (disposition == WindowOpenDisposition::SAVE_TO_DISK ||
+      disposition == WindowOpenDisposition::IGNORE_ACTION)
     return NULL;
-  }
 
   content::WebContents* contents =
       app_delegate_->OpenURLFromTab(browser_context_, web_contents_, params);
@@ -86,24 +96,25 @@ void AppWebContentsHelper::RequestToLockMouse() const {
 
 void AppWebContentsHelper::RequestMediaAccessPermission(
     const content::MediaStreamRequest& request,
-    const content::MediaResponseCallback& callback) const {
+    content::MediaResponseCallback callback) const {
   const Extension* extension = GetExtension();
   if (!extension)
     return;
 
-  app_delegate_->RequestMediaAccessPermission(
-      web_contents_, request, callback, extension);
+  app_delegate_->RequestMediaAccessPermission(web_contents_, request,
+                                              std::move(callback), extension);
 }
 
 bool AppWebContentsHelper::CheckMediaAccessPermission(
+    content::RenderFrameHost* render_frame_host,
     const GURL& security_origin,
-    content::MediaStreamType type) const {
+    blink::MediaStreamType type) const {
   const Extension* extension = GetExtension();
   if (!extension)
     return false;
 
   return app_delegate_->CheckMediaAccessPermission(
-      web_contents_, security_origin, type, extension);
+      render_frame_host, security_origin, type, extension);
 }
 
 const Extension* AppWebContentsHelper::GetExtension() const {

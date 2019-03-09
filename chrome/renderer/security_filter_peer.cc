@@ -11,17 +11,19 @@
 #include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/grit/generated_resources.h"
-#include "content/public/child/fixed_received_data.h"
+#include "content/public/renderer/fixed_received_data.h"
+#include "net/base/escape.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
+#include "services/network/public/cpp/url_loader_completion_status.h"
 #include "ui/base/l10n/l10n_util.h"
 
 SecurityFilterPeer::SecurityFilterPeer(
-    std::unique_ptr<content::RequestPeer> peer)
-    : original_peer_(std::move(peer)) {}
-
-SecurityFilterPeer::~SecurityFilterPeer() {
-}
+    std::unique_ptr<content::RequestPeer> peer,
+    const std::string& mime_type,
+    const std::string& data)
+    : original_peer_(std::move(peer)), mime_type_(mime_type), data_(data) {}
+SecurityFilterPeer::~SecurityFilterPeer() {}
 
 // static
 std::unique_ptr<content::RequestPeer>
@@ -44,53 +46,81 @@ SecurityFilterPeer::CreateSecurityFilterPeerForDeniedRequest(
     case net::ERR_CERT_WEAK_KEY:
     case net::ERR_CERT_NAME_CONSTRAINT_VIOLATION:
     case net::ERR_INSECURE_RESPONSE:
-    case net::ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN:
-      if (content::IsResourceTypeFrame(resource_type))
-        return CreateSecurityFilterPeerForFrame(std::move(peer), os_error);
-      // Any other content is entirely filtered-out.
-      return base::WrapUnique(new ReplaceContentPeer(
-          std::move(peer), std::string(), std::string()));
+    case net::ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN: {
+      std::string mime_type;
+      std::string data;
+      if (content::IsResourceTypeFrame(resource_type)) {
+        // TODO(jcampan): use a different message when getting a
+        // phishing/malware error.
+        data = base::StringPrintf(
+            "<html><meta charset='UTF-8'>"
+            "<body style='background-color:#990000;color:white;'>"
+            "%s</body></html>",
+            net::EscapeForHTML(
+                l10n_util::GetStringUTF8(IDS_UNSAFE_FRAME_MESSAGE))
+                .c_str());
+        mime_type = "text/html";
+      }
+      return base::WrapUnique(
+          new SecurityFilterPeer(std::move(peer), mime_type, data));
+    }
     default:
       // For other errors, we use our normal error handling.
       return peer;
   }
 }
 
-// static
-std::unique_ptr<content::RequestPeer>
-SecurityFilterPeer::CreateSecurityFilterPeerForFrame(
-    std::unique_ptr<content::RequestPeer> peer,
-    int os_error) {
-  // TODO(jcampan): use a different message when getting a phishing/malware
-  // error.
-  std::string html = base::StringPrintf(
-      "<html><meta charset='UTF-8'>"
-      "<body style='background-color:#990000;color:white;'>"
-      "%s</body></html>",
-      l10n_util::GetStringUTF8(IDS_UNSAFE_FRAME_MESSAGE).c_str());
-  return base::WrapUnique(
-      new ReplaceContentPeer(std::move(peer), "text/html", html));
-}
-
 void SecurityFilterPeer::OnUploadProgress(uint64_t position, uint64_t size) {
-  original_peer_->OnUploadProgress(position, size);
+  NOTREACHED();
 }
 
 bool SecurityFilterPeer::OnReceivedRedirect(
     const net::RedirectInfo& redirect_info,
-    const content::ResourceResponseInfo& info) {
+    const network::ResourceResponseInfo& info) {
   NOTREACHED();
   return false;
 }
 
-// static
-void ProcessResponseInfo(const content::ResourceResponseInfo& info_in,
-                         content::ResourceResponseInfo* info_out,
-                         const std::string& mime_type) {
-  DCHECK(info_out);
-  *info_out = info_in;
-  info_out->mime_type = mime_type;
-  // Let's create our own HTTP headers.
+void SecurityFilterPeer::OnReceivedResponse(
+    const network::ResourceResponseInfo& info) {
+  NOTREACHED();
+}
+
+void SecurityFilterPeer::OnStartLoadingResponseBody(
+    mojo::ScopedDataPipeConsumerHandle body) {
+  NOTREACHED();
+}
+
+void SecurityFilterPeer::OnReceivedData(std::unique_ptr<ReceivedData> data) {
+  NOTREACHED();
+}
+
+void SecurityFilterPeer::OnTransferSizeUpdated(int transfer_size_diff) {
+  NOTREACHED();
+}
+
+void SecurityFilterPeer::OnCompletedRequest(
+    const network::URLLoaderCompletionStatus& status) {
+  network::ResourceResponseInfo info;
+  info.mime_type = mime_type_;
+  info.headers = CreateHeaders(mime_type_);
+  info.content_length = static_cast<int>(data_.size());
+  original_peer_->OnReceivedResponse(info);
+  if (!data_.empty()) {
+    original_peer_->OnReceivedData(std::make_unique<content::FixedReceivedData>(
+        data_.data(), data_.size()));
+  }
+  network::URLLoaderCompletionStatus ok_status(status);
+  ok_status.error_code = net::OK;
+  original_peer_->OnCompletedRequest(ok_status);
+}
+
+scoped_refptr<base::TaskRunner> SecurityFilterPeer::GetTaskRunner() {
+  return original_peer_->GetTaskRunner();
+}
+
+scoped_refptr<net::HttpResponseHeaders> SecurityFilterPeer::CreateHeaders(
+    const std::string& mime_type) {
   std::string raw_headers;
   raw_headers.append("HTTP/1.1 200 OK");
   raw_headers.push_back('\0');
@@ -106,94 +136,5 @@ void ProcessResponseInfo(const content::ResourceResponseInfo& info_in,
     raw_headers.push_back('\0');
   }
   raw_headers.push_back('\0');
-  net::HttpResponseHeaders* new_headers =
-      new net::HttpResponseHeaders(raw_headers);
-  info_out->headers = new_headers;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// BufferedPeer
-
-BufferedPeer::BufferedPeer(std::unique_ptr<content::RequestPeer> peer,
-                           const std::string& mime_type)
-    : SecurityFilterPeer(std::move(peer)), mime_type_(mime_type) {}
-
-BufferedPeer::~BufferedPeer() {
-}
-
-void BufferedPeer::OnReceivedResponse(
-    const content::ResourceResponseInfo& info) {
-  ProcessResponseInfo(info, &response_info_, mime_type_);
-}
-
-void BufferedPeer::OnReceivedData(std::unique_ptr<ReceivedData> data) {
-  data_.append(data->payload(), data->length());
-}
-
-void BufferedPeer::OnCompletedRequest(int error_code,
-                                      bool was_ignored_by_handler,
-                                      bool stale_copy_in_cache,
-                                      const std::string& security_info,
-                                      const base::TimeTicks& completion_time,
-                                      int64_t total_transfer_size) {
-  // Give sub-classes a chance at altering the data.
-  if (error_code != net::OK || !DataReady()) {
-    // Pretend we failed to load the resource.
-    original_peer_->OnReceivedResponse(response_info_);
-    original_peer_->OnCompletedRequest(net::ERR_ABORTED, false,
-                                       stale_copy_in_cache, security_info,
-                                       completion_time, total_transfer_size);
-    return;
-  }
-
-  original_peer_->OnReceivedResponse(response_info_);
-  if (!data_.empty()) {
-    original_peer_->OnReceivedData(base::WrapUnique(
-        new content::FixedReceivedData(data_.data(), data_.size(), -1)));
-  }
-  original_peer_->OnCompletedRequest(error_code, was_ignored_by_handler,
-                                     stale_copy_in_cache, security_info,
-                                     completion_time, total_transfer_size);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// ReplaceContentPeer
-
-ReplaceContentPeer::ReplaceContentPeer(
-    std::unique_ptr<content::RequestPeer> peer,
-    const std::string& mime_type,
-    const std::string& data)
-    : SecurityFilterPeer(std::move(peer)), mime_type_(mime_type), data_(data) {}
-
-ReplaceContentPeer::~ReplaceContentPeer() {
-}
-
-void ReplaceContentPeer::OnReceivedResponse(
-    const content::ResourceResponseInfo& info) {
-  // Ignore this, we'll serve some alternate content in OnCompletedRequest.
-}
-
-void ReplaceContentPeer::OnReceivedData(std::unique_ptr<ReceivedData> data) {
-  // Ignore this, we'll serve some alternate content in OnCompletedRequest.
-}
-
-void ReplaceContentPeer::OnCompletedRequest(
-    int error_code,
-    bool was_ignored_by_handler,
-    bool stale_copy_in_cache,
-    const std::string& security_info,
-    const base::TimeTicks& completion_time,
-    int64_t total_transfer_size) {
-  content::ResourceResponseInfo info;
-  ProcessResponseInfo(info, &info, mime_type_);
-  info.security_info = security_info;
-  info.content_length = static_cast<int>(data_.size());
-  original_peer_->OnReceivedResponse(info);
-  if (!data_.empty()) {
-    original_peer_->OnReceivedData(base::WrapUnique(
-        new content::FixedReceivedData(data_.data(), data_.size(), -1)));
-  }
-  original_peer_->OnCompletedRequest(net::OK, false, stale_copy_in_cache,
-                                     security_info, completion_time,
-                                     total_transfer_size);
+  return base::MakeRefCounted<net::HttpResponseHeaders>(raw_headers);
 }

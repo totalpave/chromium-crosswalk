@@ -21,8 +21,9 @@ GenericHandler::~GenericHandler() {
 }
 
 void GenericHandler::RegisterMessages() {
-  web_ui()->RegisterMessageCallback("navigateToUrl",
-      base::Bind(&GenericHandler::HandleNavigateToUrl, base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "navigateToUrl", base::BindRepeating(&GenericHandler::HandleNavigateToUrl,
+                                           base::Unretained(this)));
 }
 
 void GenericHandler::HandleNavigateToUrl(const base::ListValue* args) {
@@ -47,8 +48,9 @@ void GenericHandler::HandleNavigateToUrl(const base::ListValue* args) {
 
   WindowOpenDisposition disposition = ui::DispositionFromClick(
       middle_button, alt_key, ctrl_key, meta_key, shift_key);
-  if (disposition == CURRENT_TAB && target_string == "_blank")
-    disposition = NEW_FOREGROUND_TAB;
+  if (disposition == WindowOpenDisposition::CURRENT_TAB &&
+      target_string == "_blank")
+    disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
 
   web_ui()->GetWebContents()->OpenURL(OpenURLParams(GURL(url_string),
                                                     Referrer(),

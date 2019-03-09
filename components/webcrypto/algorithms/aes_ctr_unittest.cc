@@ -5,14 +5,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/values.h"
 #include "components/webcrypto/algorithm_dispatch.h"
 #include "components/webcrypto/algorithms/test_helpers.h"
 #include "components/webcrypto/crypto_data.h"
 #include "components/webcrypto/status.h"
-#include "third_party/WebKit/public/platform/WebCryptoAlgorithmParams.h"
-#include "third_party/WebKit/public/platform/WebCryptoKeyAlgorithm.h"
+#include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
+#include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
 
 namespace webcrypto {
 
@@ -22,23 +22,21 @@ namespace {
 blink::WebCryptoAlgorithm CreateAesCtrAlgorithm(
     const std::vector<uint8_t>& counter,
     uint8_t length_bits) {
-  return blink::WebCryptoAlgorithm::adoptParamsAndCreate(
-      blink::WebCryptoAlgorithmIdAesCtr,
-      new blink::WebCryptoAesCtrParams(
-          length_bits, counter.data(),
-          static_cast<unsigned int>(counter.size())));
+  return blink::WebCryptoAlgorithm::AdoptParamsAndCreate(
+      blink::kWebCryptoAlgorithmIdAesCtr,
+      new blink::WebCryptoAesCtrParams(length_bits, counter));
 }
 
 class WebCryptoAesCtrTest : public WebCryptoTestBase {};
 
 TEST_F(WebCryptoAesCtrTest, EncryptDecryptKnownAnswer) {
-  std::unique_ptr<base::ListValue> tests;
+  base::ListValue tests;
   ASSERT_TRUE(ReadJsonTestFileToList("aes_ctr.json", &tests));
 
-  for (size_t test_index = 0; test_index < tests->GetSize(); ++test_index) {
+  for (size_t test_index = 0; test_index < tests.GetSize(); ++test_index) {
     SCOPED_TRACE(test_index);
     base::DictionaryValue* test;
-    ASSERT_TRUE(tests->GetDictionary(test_index, &test));
+    ASSERT_TRUE(tests.GetDictionary(test_index, &test));
 
     std::vector<uint8_t> test_key = GetBytesFromHexString(test, "key");
     std::vector<uint8_t> test_counter = GetBytesFromHexString(test, "counter");
@@ -51,10 +49,10 @@ TEST_F(WebCryptoAesCtrTest, EncryptDecryptKnownAnswer) {
         GetBytesFromHexString(test, "cipher_text");
 
     blink::WebCryptoKey key = ImportSecretKeyFromRaw(
-        test_key, CreateAlgorithm(blink::WebCryptoAlgorithmIdAesCtr),
-        blink::WebCryptoKeyUsageEncrypt | blink::WebCryptoKeyUsageDecrypt);
+        test_key, CreateAlgorithm(blink::kWebCryptoAlgorithmIdAesCtr),
+        blink::kWebCryptoKeyUsageEncrypt | blink::kWebCryptoKeyUsageDecrypt);
 
-    EXPECT_EQ(test_key.size() * 8, key.algorithm().aesParams()->lengthBits());
+    EXPECT_EQ(test_key.size() * 8, key.Algorithm().AesParams()->LengthBits());
 
     std::vector<uint8_t> output;
 
@@ -78,13 +76,13 @@ TEST_F(WebCryptoAesCtrTest, InvalidCounterBlockLength) {
 
   blink::WebCryptoKey key = ImportSecretKeyFromRaw(
       std::vector<uint8_t>(16),  // 128-bit key of all zeros.
-      CreateAlgorithm(blink::WebCryptoAlgorithmIdAesCtr),
-      blink::WebCryptoKeyUsageEncrypt | blink::WebCryptoKeyUsageDecrypt);
+      CreateAlgorithm(blink::kWebCryptoAlgorithmIdAesCtr),
+      blink::kWebCryptoKeyUsageEncrypt | blink::kWebCryptoKeyUsageDecrypt);
 
   std::vector<uint8_t> input(32);
   std::vector<uint8_t> output;
 
-  for (size_t i = 0; i < arraysize(kBadCounterBlockLengthBytes); ++i) {
+  for (size_t i = 0; i < base::size(kBadCounterBlockLengthBytes); ++i) {
     std::vector<uint8_t> bad_counter(kBadCounterBlockLengthBytes[i]);
 
     EXPECT_EQ(Status::ErrorIncorrectSizeAesCtrCounter(),
@@ -103,14 +101,14 @@ TEST_F(WebCryptoAesCtrTest, InvalidCounterLength) {
 
   blink::WebCryptoKey key = ImportSecretKeyFromRaw(
       std::vector<uint8_t>(16),  // 128-bit key of all zeros.
-      CreateAlgorithm(blink::WebCryptoAlgorithmIdAesCtr),
-      blink::WebCryptoKeyUsageEncrypt | blink::WebCryptoKeyUsageDecrypt);
+      CreateAlgorithm(blink::kWebCryptoAlgorithmIdAesCtr),
+      blink::kWebCryptoKeyUsageEncrypt | blink::kWebCryptoKeyUsageDecrypt);
 
   std::vector<uint8_t> counter(16);
   std::vector<uint8_t> input(32);
   std::vector<uint8_t> output;
 
-  for (size_t i = 0; i < arraysize(kBadCounterLengthBits); ++i) {
+  for (size_t i = 0; i < base::size(kBadCounterLengthBits); ++i) {
     uint8_t bad_counter_length_bits = kBadCounterLengthBits[i];
 
     EXPECT_EQ(Status::ErrorInvalidAesCtrCounterLength(),
@@ -136,8 +134,8 @@ TEST_F(WebCryptoAesCtrTest, OverflowAndRepeatCounter) {
 
   blink::WebCryptoKey key = ImportSecretKeyFromRaw(
       std::vector<uint8_t>(16),  // 128-bit key of all zeros.
-      CreateAlgorithm(blink::WebCryptoAlgorithmIdAesCtr),
-      blink::WebCryptoKeyUsageEncrypt | blink::WebCryptoKeyUsageDecrypt);
+      CreateAlgorithm(blink::kWebCryptoAlgorithmIdAesCtr),
+      blink::kWebCryptoKeyUsageEncrypt | blink::kWebCryptoKeyUsageDecrypt);
 
   std::vector<uint8_t> buffer(272);
 
@@ -148,7 +146,7 @@ TEST_F(WebCryptoAesCtrTest, OverflowAndRepeatCounter) {
 
   std::vector<uint8_t> output;
 
-  for (size_t i = 0; i < arraysize(kStartCounter); ++i) {
+  for (size_t i = 0; i < base::size(kStartCounter); ++i) {
     std::vector<uint8_t> counter(16);
     counter[15] = kStartCounter[i];
 

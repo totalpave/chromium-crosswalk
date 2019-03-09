@@ -16,6 +16,8 @@ std::string JobTypeToString(JobType type) {
       return "TYPE_GET_ABOUT_RESOURCE";
     case TYPE_GET_APP_LIST:
       return "TYPE_GET_APP_LIST";
+    case TYPE_GET_ALL_TEAM_DRIVE_LIST:
+      return "TYPE_GET_ALL_TEAM_DRIVE_LIST";
     case TYPE_GET_ALL_RESOURCE_LIST:
       return "TYPE_GET_ALL_RESOURCE_LIST";
     case TYPE_GET_RESOURCE_LIST_IN_DIRECTORY:
@@ -24,8 +26,12 @@ std::string JobTypeToString(JobType type) {
       return "TYPE_SEARCH";
     case TYPE_GET_CHANGE_LIST:
       return "TYPE_GET_CHANGE_LIST";
+    case TYPE_GET_START_PAGE_TOKEN:
+      return "TYPE_GET_START_PAGE_TOKEN";
     case TYPE_GET_REMAINING_CHANGE_LIST:
       return "TYPE_GET_REMAINING_CHANGE_LIST";
+    case TYPE_GET_REMAINING_TEAM_DRIVE_LIST:
+      return "TYPE_GET_REMAINING_TEAM_DRIVE_LIST";
     case TYPE_GET_REMAINING_FILE_LIST:
       return "TYPE_GET_REMAINING_FILE_LIST";
     case TYPE_GET_RESOURCE_ENTRY:
@@ -87,10 +93,9 @@ std::string JobInfo::ToString() const {
   if (job_type == TYPE_DOWNLOAD_FILE ||
       job_type == TYPE_UPLOAD_NEW_FILE ||
       job_type == TYPE_UPLOAD_EXISTING_FILE) {
-    base::StringAppendF(&output,
-                        " bytes: %s/%s",
-                        base::Int64ToString(num_completed_bytes).c_str(),
-                        base::Int64ToString(num_total_bytes).c_str());
+    base::StringAppendF(&output, " bytes: %s/%s",
+                        base::NumberToString(num_completed_bytes).c_str(),
+                        base::NumberToString(num_total_bytes).c_str());
   }
   return output;
 }
@@ -100,12 +105,15 @@ bool IsActiveFileTransferJobInfo(const JobInfo& job_info) {
   // are added.
   switch (job_info.job_type) {
     case TYPE_GET_ABOUT_RESOURCE:
+    case TYPE_GET_START_PAGE_TOKEN:
     case TYPE_GET_APP_LIST:
+    case TYPE_GET_ALL_TEAM_DRIVE_LIST:
     case TYPE_GET_ALL_RESOURCE_LIST:
     case TYPE_GET_RESOURCE_LIST_IN_DIRECTORY:
     case TYPE_SEARCH:
     case TYPE_GET_CHANGE_LIST:
     case TYPE_GET_REMAINING_CHANGE_LIST:
+    case TYPE_GET_REMAINING_TEAM_DRIVE_LIST:
     case TYPE_GET_REMAINING_FILE_LIST:
     case TYPE_GET_RESOURCE_ENTRY:
     case TYPE_GET_SHARE_URL:

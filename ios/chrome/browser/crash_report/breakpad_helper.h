@@ -70,9 +70,6 @@ void SetCurrentFreeMemoryInKB(int value);
 // the key as getting no free disk space is important information.
 void SetCurrentFreeDiskInKB(int value);
 
-// Sets a key indicating application is using Flywheel Data Reduction Proxy.
-void SetDataReductionProxyIsEnabled(bool value);
-
 // Increases a key indicating the number of PDF tabs opened. If value is TRUE,
 // the counter is increased. If value is FALSE, the counter is decreased. If
 // counter falls to 0, the entry is removed. This function does not keep
@@ -91,6 +88,16 @@ void SetCurrentOrientation(int statusBarOrientation, int deviceOrientation);
 // class. The values are from the UIKit UIUserInterfaceSizeClass enum (decimal
 // values from 0 to 2).
 void SetCurrentHorizontalSizeClass(int horizontalSizeClass);
+
+// Sets a key in browser_state dictionary to store the count of regular tabs.
+void SetRegularTabCount(int tabCount);
+
+// Sets a key in browser_state dictionary to store the count of incognito tabs.
+void SetIncognitoTabCount(int tabCount);
+
+// Sets a key indicating that destroying and rebuilding the incognito browser
+// state is in progress, otherwise remove the key.
+void SetDestroyingAndRebuildingIncognitoBrowserState(bool in_progress);
 
 // Sets a key in browser to store the playback state of media player (audio or
 // video). This function records a new start. This function is called for each

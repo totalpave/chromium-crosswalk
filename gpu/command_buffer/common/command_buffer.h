@@ -13,10 +13,6 @@
 #include "gpu/command_buffer/common/constants.h"
 #include "gpu/gpu_export.h"
 
-namespace base {
-class SharedMemory;
-}
-
 namespace gpu {
 
 // Common interface for CommandBuffer implementations.
@@ -26,10 +22,11 @@ class GPU_EXPORT CommandBuffer {
     State()
         : get_offset(0),
           token(-1),
+          release_count(0),
           error(error::kNoError),
           context_lost_reason(error::kUnknown),
-          generation(0) {
-    }
+          generation(0),
+          set_get_buffer_count(0) {}
 
     // The offset (in entries) from which the reader is reading.
     int32_t get_offset;
@@ -41,6 +38,10 @@ class GPU_EXPORT CommandBuffer {
     // embedded in the command buffer. The default token value is zero.
     int32_t token;
 
+    // The fence sync release count. Incremented by InsertFenceSync commands.
+    // Used by the client to monitor sync token progress.
+    uint64_t release_count;
+
     // Error status.
     error::Error error;
 
@@ -51,6 +52,10 @@ class GPU_EXPORT CommandBuffer {
     // time a new state is retrieved from the command processor, so that
     // consistency can be kept even if IPC messages are processed out-of-order.
     uint32_t generation;
+
+    // Number of times SetGetBuffer was called. This allows the client to verify
+    // that |get| corresponds (or not) to the last buffer it set.
+    uint32_t set_get_buffer_count;
   };
 
   struct ConsoleMessage {
@@ -60,11 +65,9 @@ class GPU_EXPORT CommandBuffer {
     std::string message;
   };
 
-  CommandBuffer() {
-  }
+  CommandBuffer() = default;
 
-  virtual ~CommandBuffer() {
-  }
+  virtual ~CommandBuffer() = default;
 
   // Check if a value is between a start and end value, inclusive, allowing
   // for wrapping if start > end.
@@ -77,13 +80,6 @@ class GPU_EXPORT CommandBuffer {
 
   // Returns the last state without synchronizing with the service.
   virtual State GetLastState() = 0;
-
-  // Returns the last token without synchronizing with the service. Note that
-  // while you could just call GetLastState().token, GetLastState needs to be
-  // fast as it is called for every command where GetLastToken is only called
-  // by code that needs to know the last token so it can be slower but more up
-  // to date than GetLastState.
-  virtual int32_t GetLastToken() = 0;
 
   // The writer calls this to update its put offset. This ensures the reader
   // sees the latest added commands, and will eventually process them. On the
@@ -98,34 +94,29 @@ class GPU_EXPORT CommandBuffer {
 
   // The writer calls this to wait until the current token is within a
   // specific range, inclusive. Can return early if an error is generated.
-  virtual void WaitForTokenInRange(int32_t start, int32_t end) = 0;
+  virtual State WaitForTokenInRange(int32_t start, int32_t end) = 0;
 
   // The writer calls this to wait until the current get offset is within a
-  // specific range, inclusive. Can return early if an error is generated.
-  virtual void WaitForGetOffsetInRange(int32_t start, int32_t end) = 0;
+  // specific range, inclusive, after SetGetBuffer was called exactly
+  // set_get_buffer_count times. Can return early if an error is generated.
+  virtual State WaitForGetOffsetInRange(uint32_t set_get_buffer_count,
+                                        int32_t start,
+                                        int32_t end) = 0;
 
   // Sets the buffer commands are read from.
-  // Also resets the get and put offsets to 0.
+  // Also resets the get and put offsets to 0, and increments
+  // set_get_buffer_count.
   virtual void SetGetBuffer(int32_t transfer_buffer_id) = 0;
 
   // Create a transfer buffer of the given size. Returns its ID or -1 on
   // error.
-  virtual scoped_refptr<gpu::Buffer> CreateTransferBuffer(size_t size,
+  virtual scoped_refptr<gpu::Buffer> CreateTransferBuffer(uint32_t size,
                                                           int32_t* id) = 0;
 
   // Destroy a transfer buffer. The ID must be positive.
+  // An ordering barrier must be placed after any commands that use the buffer
+  // before it is safe to call this function to destroy it.
   virtual void DestroyTransferBuffer(int32_t id) = 0;
-
-// The NaCl Win64 build only really needs the struct definitions above; having
-// GetLastError declared would mean we'd have to also define it, and pull more
-// of gpu in to the NaCl Win64 build.
-#if !defined(NACL_WIN64)
-  // TODO(apatrick): this is a temporary optimization while skia is calling
-  // RendererGLContext::MakeCurrent prior to every GL call. It saves returning 6
-  // ints redundantly when only the error is needed for the CommandBufferProxy
-  // implementation.
-  virtual error::Error GetLastError();
-#endif
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CommandBuffer);

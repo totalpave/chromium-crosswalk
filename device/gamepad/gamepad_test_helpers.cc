@@ -6,19 +6,28 @@
 
 namespace device {
 
-MockGamepadDataFetcher::MockGamepadDataFetcher(
-    const blink::WebGamepads& test_data)
+MockGamepadDataFetcher::MockGamepadDataFetcher(const Gamepads& test_data)
     : test_data_(test_data),
       read_data_(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                  base::WaitableEvent::InitialState::NOT_SIGNALED) {}
 
-MockGamepadDataFetcher::~MockGamepadDataFetcher() {}
+MockGamepadDataFetcher::~MockGamepadDataFetcher() = default;
 
-void MockGamepadDataFetcher::GetGamepadData(blink::WebGamepads* pads,
-                                            bool devices_changed_hint) {
+GamepadSource MockGamepadDataFetcher::source() {
+  return GAMEPAD_SOURCE_TEST;
+}
+
+void MockGamepadDataFetcher::GetGamepadData(bool devices_changed_hint) {
   {
     base::AutoLock lock(lock_);
-    *pads = test_data_;
+
+    for (size_t i = 0; i < Gamepads::kItemsLengthCap; ++i) {
+      if (test_data_.items[i].connected) {
+        PadState* pad = GetPadState(i);
+        if (pad)
+          memcpy(&pad->data, &test_data_.items[i], sizeof(Gamepad));
+      }
+    }
   }
   read_data_.Signal();
 }
@@ -36,27 +45,20 @@ void MockGamepadDataFetcher::WaitForDataReadAndCallbacksIssued() {
   WaitForDataRead();
 }
 
-void MockGamepadDataFetcher::SetTestData(const blink::WebGamepads& new_data) {
+void MockGamepadDataFetcher::SetTestData(const Gamepads& new_data) {
   base::AutoLock lock(lock_);
   test_data_ = new_data;
 }
 
-MockGamepadSharedBuffer::MockGamepadSharedBuffer() {
-  size_t data_size = sizeof(blink::WebGamepads);
-  bool res = shared_memory_.CreateAndMapAnonymous(data_size);
-  CHECK(res);
-  blink::WebGamepads* buf = buffer();
-  memset(buf, 0, sizeof(blink::WebGamepads));
-}
+GamepadTestHelper::GamepadTestHelper() = default;
 
-base::SharedMemory* MockGamepadSharedBuffer::shared_memory() {
-  return &shared_memory_;
-}
+GamepadTestHelper::~GamepadTestHelper() = default;
 
-blink::WebGamepads* MockGamepadSharedBuffer::buffer() {
-  void* mem = shared_memory_.memory();
-  CHECK(mem);
-  return static_cast<blink::WebGamepads*>(mem);
+GamepadServiceTestConstructor::GamepadServiceTestConstructor(
+    const Gamepads& test_data) {
+  data_fetcher_ = new MockGamepadDataFetcher(test_data);
+  gamepad_service_ =
+      new GamepadService(std::unique_ptr<GamepadDataFetcher>(data_fetcher_));
 }
 
 void MockGamepadSharedBuffer::WriteBegin() {}

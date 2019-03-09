@@ -8,7 +8,7 @@
 
 namespace cc {
 
-ScrollOffsetAnimationUpdate::ScrollOffsetAnimationUpdate() {}
+ScrollOffsetAnimationUpdate::ScrollOffsetAnimationUpdate() = default;
 
 ScrollOffsetAnimationUpdate::ScrollOffsetAnimationUpdate(ElementId element_id)
     : element_id_(element_id), takeover_(false) {}
@@ -16,7 +16,7 @@ ScrollOffsetAnimationUpdate::ScrollOffsetAnimationUpdate(ElementId element_id)
 ScrollOffsetAnimations::ScrollOffsetAnimations(AnimationHost* animation_host)
     : animation_host_(animation_host) {}
 
-ScrollOffsetAnimations::~ScrollOffsetAnimations() {}
+ScrollOffsetAnimations::~ScrollOffsetAnimations() = default;
 
 ScrollOffsetAnimationUpdate ScrollOffsetAnimations::GetUpdateForElementId(
     ElementId element_id) const {
@@ -34,6 +34,7 @@ void ScrollOffsetAnimations::AddAdjustmentUpdate(ElementId element_id,
   update.adjustment_ += adjustment;
   element_to_update_map_[element_id] = update;
   animation_host_->SetNeedsCommit();
+  animation_host_->SetNeedsPushProperties();
 }
 
 void ScrollOffsetAnimations::AddTakeoverUpdate(ElementId element_id) {
@@ -42,6 +43,7 @@ void ScrollOffsetAnimations::AddTakeoverUpdate(ElementId element_id) {
   update.takeover_ = true;
   element_to_update_map_[element_id] = update;
   animation_host_->SetNeedsCommit();
+  animation_host_->SetNeedsPushProperties();
 }
 
 bool ScrollOffsetAnimations::HasUpdatesForTesting() const {

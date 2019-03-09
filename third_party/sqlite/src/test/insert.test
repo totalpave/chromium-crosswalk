@@ -91,7 +91,7 @@ do_test insert-1.6c {
 do_test insert-2.1 {
   execsql {
     CREATE TABLE test2(
-      f1 int default -111, 
+      f1 int default -111,
       f2 real default +4.32,
       f3 int default +222,
       f4 int default 7.89
@@ -115,7 +115,7 @@ do_test insert-2.10 {
   execsql {
     DROP TABLE test2;
     CREATE TABLE test2(
-      f1 int default 111, 
+      f1 int default 111,
       f2 real default -4.32,
       f3 text default hi,
       f4 text default 'abc-123',
@@ -250,7 +250,7 @@ ifcapable tempdb {
       expr {[lsearch $x OpenEphemeral]>0}
     } {1}
   }
-  
+
   do_test insert-5.4 {
     # Verify that table "test1" begins on page 3.  This should be the same
     # page number used by "t4" above.
@@ -289,7 +289,7 @@ ifcapable tempdb {
 # Ticket #334:  REPLACE statement corrupting indices.
 #
 ifcapable conflict {
-  # The REPLACE command is not available if SQLITE_OMIT_CONFLICT is 
+  # The REPLACE command is not available if SQLITE_OMIT_CONFLICT is
   # defined at compilation time.
   do_test insert-6.1 {
     execsql {
@@ -328,8 +328,8 @@ ifcapable conflict {
   } {}
 }
 
-# Test that the special optimization for queries of the form 
-# "SELECT max(x) FROM tbl" where there is an index on tbl(x) works with 
+# Test that the special optimization for queries of the form
+# "SELECT max(x) FROM tbl" where there is an index on tbl(x) works with
 # INSERT statments.
 do_test insert-7.1 {
   execsql {
@@ -435,6 +435,28 @@ do_execsql_test insert-12.3 {
   SELECT * FROM t12c;
 } {one xyzzy two}
 
+# 2018-06-11.  From OSSFuzz.  A column cache malfunction in
+# the constraint checking on an index of expressions causes
+# an assertion fault in a REPLACE.  Ticket
+# https://www.sqlite.org/src/info/c2432ef9089ee73b
+#
+do_execsql_test insert-13.1 {
+  DROP TABLE IF EXISTS t13;
+  CREATE TABLE t13(a INTEGER PRIMARY KEY,b UNIQUE);
+  CREATE INDEX t13x1 ON t13(-b=b);
+  INSERT INTO t13 VALUES(1,5),(6,2);
+  REPLACE INTO t13 SELECT b,0 FROM t13;
+  SELECT * FROM t13 ORDER BY +b;
+} {2 0 6 2 1 5}
+
+# 2019-01-17.  From the chromium fuzzer.
+#
+do_execsql_test insert-14.1 {
+  DROP TABLE IF EXISTS t14;
+  CREATE TABLE t14(x INTEGER PRIMARY KEY);
+  INSERT INTO t14 VALUES(CASE WHEN 1 THEN null END);
+  SELECT x FROM t14;
+} {1}
 
 integrity_check insert-99.0
 

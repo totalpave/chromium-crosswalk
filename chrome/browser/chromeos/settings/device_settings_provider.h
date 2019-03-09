@@ -12,16 +12,18 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/chromeos/policy/proto/chrome_device_policy.pb.h"
 #include "chrome/browser/chromeos/settings/device_settings_service.h"
 #include "chromeos/settings/cros_settings_provider.h"
 #include "components/ownership/owner_settings_service.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
+#include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/prefs/pref_value_map.h"
+
+class PrefService;
 
 namespace base {
 class Value;
-}
+}  // namespace base
 
 namespace enterprise_management {
 class ChromeDeviceSettingsProto;
@@ -30,6 +32,8 @@ class ChromeDeviceSettingsProto;
 namespace chromeos {
 
 // CrosSettingsProvider implementation that works with device settings.
+// Dependency: chromeos::InstallAttributes must be initialized while this class
+// is in use.
 //
 // Note that the write path is in the process of being migrated to
 // OwnerSettingsServiceChromeOS (crbug.com/230018).
@@ -42,7 +46,8 @@ class DeviceSettingsProvider
   typedef base::Callback<policy::DeviceMode(void)> GetDeviceModeCallback;
 
   DeviceSettingsProvider(const NotifyObserversCallback& notify_cb,
-                         DeviceSettingsService* device_settings_service);
+                         DeviceSettingsService* device_settings_service,
+                         PrefService* pref_service);
   ~DeviceSettingsProvider() override;
 
   // Returns true if |path| is handled by this provider.
@@ -52,6 +57,12 @@ class DeviceSettingsProvider
   const base::Value* Get(const std::string& path) const override;
   TrustedStatus PrepareTrustedValues(const base::Closure& callback) override;
   bool HandlesSetting(const std::string& path) const override;
+
+  // Helper function that decodes policies from provided proto into the pref
+  // map.
+  static void DecodePolicies(
+      const enterprise_management::ChromeDeviceSettingsProto& policy,
+      PrefValueMap* new_values_cache);
 
  private:
   // CrosSettingsProvider implementation:
@@ -77,11 +88,6 @@ class DeviceSettingsProvider
       const enterprise_management::ChromeDeviceSettingsProto& settings,
       TrustedStatus trusted_status);
 
-  // Applies the data roaming policy.
-  void ApplyRoamingSetting(bool new_value);
-  void ApplyRoamingSettingFromProto(
-      const enterprise_management::ChromeDeviceSettingsProto& settings);
-
   // In case of missing policy blob we should verify if this is upgrade of
   // machine owned from pre version 12 OS and the user never touched the device
   // settings. In this case revert to defaults and let people in until the owner
@@ -105,6 +111,8 @@ class DeviceSettingsProvider
   std::vector<base::Closure> callbacks_;
 
   DeviceSettingsService* device_settings_service_;
+  PrefService* local_state_;
+
   mutable PrefValueMap migration_values_;
 
   TrustedStatus trusted_status_;

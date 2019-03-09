@@ -12,12 +12,13 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/memory/scoped_refptr.h"
 
 class GURL;
 
 namespace base {
 class FilePath;
+class SequencedTaskRunner;
 }  // namespace base
 
 namespace history_report {
@@ -29,10 +30,10 @@ class DeltaFileBackend;
 class DeltaFileService {
  public:
   explicit DeltaFileService(const base::FilePath& dir);
-  ~DeltaFileService();
+  virtual ~DeltaFileService();
 
-  // Adds new addtion entry to delta file.
-  void PageAdded(const GURL& url);
+  // Adds new addition entry to delta file.
+  virtual void PageAdded(const GURL& url);
   // Adds new deletion entry to delta file.
   void PageDeleted(const GURL& url);
   // Removes all delta file entries with seqno <= lower_bound.
@@ -52,8 +53,7 @@ class DeltaFileService {
   std::string Dump();
 
  private:
-
-  base::SequencedWorkerPool::SequenceToken worker_pool_token_;
+  const scoped_refptr<base::SequencedTaskRunner> task_runner_;
   std::unique_ptr<DeltaFileBackend> delta_file_backend_;
 
   DISALLOW_COPY_AND_ASSIGN(DeltaFileService);

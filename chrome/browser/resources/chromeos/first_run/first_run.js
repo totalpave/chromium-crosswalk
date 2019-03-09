@@ -6,7 +6,7 @@
  * @fileoverview First run UI.
  */
 
-<include src="step.js">
+// <include src="step.js">
 
 // Transitions durations.
 /** @const  */ var DEFAULT_TRANSITION_DURATION_MS = 400;
@@ -30,15 +30,16 @@ function changeVisibility(
     return;
   }
   var transitionDuration = (opt_transitionDuration === undefined) ?
-    cr.FirstRun.getDefaultTransitionDuration() : opt_transitionDuration;
+      cr.FirstRun.getDefaultTransitionDuration() :
+      opt_transitionDuration;
   var style = element.style;
   var oldDurationValue = style.getPropertyValue('transition-duration');
   style.setProperty('transition-duration', transitionDuration + 'ms');
   var transition = visible ? 'show-animated' : 'hide-animated';
   classes.add(transition);
   classes.toggle('transparent');
-  element.addEventListener('webkitTransitionEnd', function f() {
-    element.removeEventListener('webkitTransitionEnd', f);
+  element.addEventListener('transitionend', function f() {
+    element.removeEventListener('transitionend', f);
     classes.remove(transition);
     if (oldDurationValue)
       style.setProperty('transition-duration', oldDurationValue);
@@ -170,8 +171,8 @@ cr.define('cr.FirstRun', function() {
      */
     removeHoles: function(opt_onHolesRemoved) {
       var mask = this.mask_;
-      var holes = Array.prototype.slice.call(
-          mask.getElementsByClassName('hole'));
+      var holes =
+          Array.prototype.slice.call(mask.getElementsByClassName('hole'));
       var holesLeft = holes.length;
       if (!holesLeft) {
         if (opt_onHolesRemoved)
@@ -179,8 +180,8 @@ cr.define('cr.FirstRun', function() {
         return;
       }
       holes.forEach(function(hole) {
-        changeVisibility(hole, false, this.getDefaultTransitionDuration(),
-            function() {
+        changeVisibility(
+            hole, false, this.getDefaultTransitionDuration(), function() {
               mask.removeChild(hole);
               --holesLeft;
               if (!holesLeft && opt_onHolesRemoved)
@@ -221,26 +222,34 @@ cr.define('cr.FirstRun', function() {
 
     /**
      * Shows step with given name in given position.
-     * @param {string} name Name of step.
-     * @param {object} position Optional parameter with optional fields |top|,
-     *     |right|, |bottom|, |left| used for step positioning.
-     * @param {Array} pointWithOffset Optional parameter for positioning
-     *     bubble. Contains [x, y, offset], where (x, y) - point to which bubble
-     *     points, offset - distance between arrow and point.
+     * @param {Object} stepParams Step params dictionary containing:
+     * |name|: Name of the step.
+     * |position|: Optional parameter with optional fields |top|, |right|,
+     *     |bottom|, |left| used for step positioning.
+     * |pointWithOffset|: Optional parameter for positioning bubble. Contains
+     *     [x, y, offset], where (x, y) - point to which bubble points,
+     *     offset - distance between arrow and point.
+     * |assistantEnabled|: Optional boolean value to indicate if Google
+     *     Assistant is enabled.
      */
-    showStep: function(name, position, pointWithOffset) {
+    showStep: function(stepParams) {
       assert(!this.currentStep_);
-      if (!this.steps_.hasOwnProperty(name))
-        throw Error('Step "' + name + '" not found.');
-      var step = this.steps_[name];
-      if (position)
-        step.setPosition(position);
-      if (pointWithOffset)
-        step.setPointsTo(pointWithOffset.slice(0, 2), pointWithOffset[2]);
+      if (!this.steps_.hasOwnProperty(stepParams.name))
+        throw Error('Step "' + stepParams.name + '" not found.');
+      var step = this.steps_[stepParams.name];
+      if (stepParams.position)
+        step.setPosition(stepParams.position);
+      if (stepParams.pointWithOffset) {
+        step.setPointsTo(
+            stepParams.pointWithOffset.slice(0, 2),
+            stepParams.pointWithOffset[2]);
+      }
+      if (stepParams.assistantEnabled)
+        step.setAssistantEnabled();
       step.show(true, function(step) {
         step.focusDefaultControl();
         this.currentStep_ = step;
-        chrome.send('stepShown', [name]);
+        chrome.send('stepShown', [stepParams.name]);
       }.bind(this));
     },
 
@@ -251,7 +260,8 @@ cr.define('cr.FirstRun', function() {
      *     changed.
      */
     setBackgroundVisible: function(visible, opt_onCompletion) {
-      changeVisibility(this.backgroundContainer_, visible,
+      changeVisibility(
+          this.backgroundContainer_, visible,
           this.getBackgroundTransitionDuration(), opt_onCompletion);
     },
 

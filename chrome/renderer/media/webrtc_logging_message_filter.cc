@@ -4,6 +4,7 @@
 
 #include "chrome/renderer/media/webrtc_logging_message_filter.h"
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/single_thread_task_runner.h"
 #include "chrome/common/media/webrtc_logging_messages.h"
@@ -18,9 +19,9 @@ WebRtcLoggingMessageFilter::WebRtcLoggingMessageFilter(
   // May be null in a browsertest using MockRenderThread.
   if (io_task_runner_.get()) {
     io_task_runner_->PostTask(
-        FROM_HERE, base::Bind(
-            &WebRtcLoggingMessageFilter::CreateLoggingHandler,
-            base::Unretained(this)));
+        FROM_HERE,
+        base::BindOnce(&WebRtcLoggingMessageFilter::CreateLoggingHandler,
+                       base::Unretained(this)));
   }
 }
 
@@ -39,9 +40,9 @@ bool WebRtcLoggingMessageFilter::OnMessageReceived(
   return handled;
 }
 
-void WebRtcLoggingMessageFilter::OnFilterAdded(IPC::Sender* sender) {
+void WebRtcLoggingMessageFilter::OnFilterAdded(IPC::Channel* channel) {
   DCHECK(!io_task_runner_.get() || io_task_runner_->BelongsToCurrentThread());
-  sender_ = sender;
+  sender_ = channel;
 }
 
 void WebRtcLoggingMessageFilter::OnFilterRemoved() {

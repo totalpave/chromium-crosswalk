@@ -17,8 +17,8 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/threading/thread_checker.h"
+#include "components/invalidation/impl/deprecated_invalidator_registrar.h"
 #include "components/invalidation/impl/invalidator.h"
-#include "components/invalidation/impl/invalidator_registrar.h"
 #include "components/invalidation/public/invalidation_export.h"
 #include "components/invalidation/public/invalidator_state.h"
 #include "components/invalidation/public/object_id_invalidation_map.h"
@@ -86,9 +86,8 @@ class INVALIDATION_EXPORT P2PNotificationData {
   ObjectIdInvalidationMap invalidation_map_;
 };
 
-class INVALIDATION_EXPORT P2PInvalidator
-    : public Invalidator,
-      public NON_EXPORTED_BASE(notifier::PushClientObserver) {
+class INVALIDATION_EXPORT P2PInvalidator : public Invalidator,
+                                           public notifier::PushClientObserver {
  public:
   // The |send_notification_target| parameter was added to allow us to send
   // self-notifications in some cases, but not others.  The value should be
@@ -105,6 +104,8 @@ class INVALIDATION_EXPORT P2PInvalidator
   void RegisterHandler(InvalidationHandler* handler) override;
   bool UpdateRegisteredIds(InvalidationHandler* handler,
                            const ObjectIdSet& ids) override;
+  bool UpdateRegisteredIds(InvalidationHandler* handler,
+                           const TopicSet& ids) override;
   void UnregisterHandler(InvalidationHandler* handler) override;
   InvalidatorState GetInvalidatorState() const override;
   void UpdateCredentials(const std::string& email,
@@ -129,7 +130,7 @@ class INVALIDATION_EXPORT P2PInvalidator
 
   base::ThreadChecker thread_checker_;
 
-  InvalidatorRegistrar registrar_;
+  DeprecatedInvalidatorRegistrar registrar_;
 
   // The push client.
   std::unique_ptr<notifier::PushClient> push_client_;

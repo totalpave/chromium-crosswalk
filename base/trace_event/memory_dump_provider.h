@@ -20,15 +20,7 @@ class BASE_EXPORT MemoryDumpProvider {
  public:
   // Optional arguments for MemoryDumpManager::RegisterDumpProvider().
   struct Options {
-    Options()
-        : target_pid(kNullProcessId),
-          dumps_on_single_thread_task_runner(false) {}
-
-    // If the dump provider generates dumps on behalf of another process,
-    // |target_pid| contains the pid of that process.
-    // The default value is kNullProcessId, which means that the dump provider
-    // generates dumps for the current process.
-    ProcessId target_pid;
+    Options() : dumps_on_single_thread_task_runner(false) {}
 
     // |dumps_on_single_thread_task_runner| is true if the dump provider runs on
     // a SingleThreadTaskRunner, which is usually the case. It is faster to run
@@ -36,7 +28,7 @@ class BASE_EXPORT MemoryDumpProvider {
     bool dumps_on_single_thread_task_runner;
   };
 
-  virtual ~MemoryDumpProvider() {}
+  virtual ~MemoryDumpProvider() = default;
 
   // Called by the MemoryDumpManager when generating memory dumps.
   // The |args| specify if the embedder should generate light/heavy dumps on
@@ -48,12 +40,8 @@ class BASE_EXPORT MemoryDumpProvider {
   virtual bool OnMemoryDump(const MemoryDumpArgs& args,
                             ProcessMemoryDump* pmd) = 0;
 
-  // Called by the MemoryDumpManager when an allocator should start or stop
-  // collecting extensive allocation data, if supported.
-  virtual void OnHeapProfilingEnabled(bool enabled) {}
-
  protected:
-  MemoryDumpProvider() {}
+  MemoryDumpProvider() = default;
 
   DISALLOW_COPY_AND_ASSIGN(MemoryDumpProvider);
 };

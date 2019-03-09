@@ -13,29 +13,20 @@
 #include "ppapi/shared_impl/url_request_info_data.h"
 #include "ppapi/thunk/thunk.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/WebKit/public/platform/WebURLRequest.h"
-#include "third_party/WebKit/public/web/WebFrameClient.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "third_party/blink/public/platform/web_url_request.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_local_frame_client.h"
+#include "third_party/blink/public/web/web_view.h"
 
 // This test is a end-to-end test from the resource to the WebKit request
 // object. The actual resource implementation is so simple, it makes sense to
 // test it by making sure the conversion routines actually work at the same
 // time.
 
-using blink::WebFrameClient;
 using blink::WebString;
 using blink::WebView;
 using blink::WebURL;
 using blink::WebURLRequest;
-
-namespace {
-
-// The base class destructor is protected, so derive.
-class TestWebFrameClient : public WebFrameClient {};
-
-}  // namespace
-
 using ppapi::proxy::URLRequestInfoResource;
 using ppapi::URLRequestInfoData;
 
@@ -61,20 +52,12 @@ class URLRequestInfoTest : public RenderViewTest {
     RenderViewTest::TearDown();
   }
 
-  bool GetDownloadToFile() {
-    WebURLRequest web_request;
-    URLRequestInfoData data = info_->GetData();
-    if (!CreateWebURLRequest(pp_instance_, &data, GetMainFrame(), &web_request))
-      return false;
-    return web_request.downloadToFile();
-  }
-
   WebString GetURL() {
     WebURLRequest web_request;
     URLRequestInfoData data = info_->GetData();
     if (!CreateWebURLRequest(pp_instance_, &data, GetMainFrame(), &web_request))
       return WebString();
-    return web_request.url().string();
+    return web_request.Url().GetString();
   }
 
   WebString GetMethod() {
@@ -82,7 +65,7 @@ class URLRequestInfoTest : public RenderViewTest {
     URLRequestInfoData data = info_->GetData();
     if (!CreateWebURLRequest(pp_instance_, &data, GetMainFrame(), &web_request))
       return WebString();
-    return web_request.httpMethod();
+    return web_request.HttpMethod();
   }
 
   WebString GetHeaderValue(const char* field) {
@@ -90,7 +73,7 @@ class URLRequestInfoTest : public RenderViewTest {
     URLRequestInfoData data = info_->GetData();
     if (!CreateWebURLRequest(pp_instance_, &data, GetMainFrame(), &web_request))
       return WebString();
-    return web_request.httpHeaderField(WebString::fromUTF8(field));
+    return web_request.HttpHeaderField(WebString::FromUTF8(field));
   }
 
   bool SetBooleanProperty(PP_URLRequestProperty prop, bool b) {
@@ -129,13 +112,8 @@ TEST_F(URLRequestInfoTest, AsURLRequestInfo) {
 TEST_F(URLRequestInfoTest, StreamToFile) {
   SetStringProperty(PP_URLREQUESTPROPERTY_URL, "http://www.google.com");
 
-  EXPECT_FALSE(GetDownloadToFile());
-
-  EXPECT_TRUE(SetBooleanProperty(PP_URLREQUESTPROPERTY_STREAMTOFILE, true));
-  EXPECT_TRUE(GetDownloadToFile());
-
-  EXPECT_TRUE(SetBooleanProperty(PP_URLREQUESTPROPERTY_STREAMTOFILE, false));
-  EXPECT_FALSE(GetDownloadToFile());
+  EXPECT_FALSE(SetBooleanProperty(PP_URLREQUESTPROPERTY_STREAMTOFILE, true));
+  EXPECT_FALSE(SetBooleanProperty(PP_URLREQUESTPROPERTY_STREAMTOFILE, false));
 }
 
 TEST_F(URLRequestInfoTest, FollowRedirects) {
@@ -198,7 +176,7 @@ TEST_F(URLRequestInfoTest, AllowCredentials) {
 TEST_F(URLRequestInfoTest, SetURL) {
   const char* url = "http://www.google.com/";
   EXPECT_TRUE(SetStringProperty(PP_URLREQUESTPROPERTY_URL, url));
-  EXPECT_STREQ(url, GetURL().utf8().data());
+  EXPECT_STREQ(url, GetURL().Utf8().data());
 }
 
 TEST_F(URLRequestInfoTest, JavascriptURL) {
@@ -210,22 +188,22 @@ TEST_F(URLRequestInfoTest, JavascriptURL) {
 
 TEST_F(URLRequestInfoTest, SetMethod) {
   // Test default method is "GET".
-  EXPECT_STREQ("GET", GetMethod().utf8().data());
+  EXPECT_STREQ("GET", GetMethod().Utf8().data());
   EXPECT_TRUE(SetStringProperty(PP_URLREQUESTPROPERTY_METHOD, "POST"));
-  EXPECT_STREQ("POST", GetMethod().utf8().data());
+  EXPECT_STREQ("POST", GetMethod().Utf8().data());
 }
 
 TEST_F(URLRequestInfoTest, SetHeaders) {
   // Test default header field.
-  EXPECT_STREQ("", GetHeaderValue("foo").utf8().data());
+  EXPECT_STREQ("", GetHeaderValue("foo").Utf8().data());
   // Test that we can set a header field.
   EXPECT_TRUE(SetStringProperty(PP_URLREQUESTPROPERTY_HEADERS, "foo: bar"));
-  EXPECT_STREQ("bar", GetHeaderValue("foo").utf8().data());
+  EXPECT_STREQ("bar", GetHeaderValue("foo").Utf8().data());
   // Test that we can set multiple header fields using \n delimiter.
   EXPECT_TRUE(
       SetStringProperty(PP_URLREQUESTPROPERTY_HEADERS, "foo: bar\nbar: baz"));
-  EXPECT_STREQ("bar", GetHeaderValue("foo").utf8().data());
-  EXPECT_STREQ("baz", GetHeaderValue("bar").utf8().data());
+  EXPECT_STREQ("bar", GetHeaderValue("foo").Utf8().data());
+  EXPECT_STREQ("baz", GetHeaderValue("bar").Utf8().data());
 }
 
 // TODO(bbudge) Unit tests for AppendDataToBody, AppendFileToBody.

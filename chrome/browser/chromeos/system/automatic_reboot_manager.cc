@@ -21,28 +21,25 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/posix/eintr_wrapper.h"
-#include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/threading/sequenced_worker_pool.h"
-#include "base/threading/thread_restrictions.h"
-#include "base/threading/thread_task_runner_handle.h"
+#include "base/task/post_task.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "base/time/tick_clock.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/common/pref_names.h"
-#include "chromeos/chromeos_paths.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_paths.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_source.h"
+#include "third_party/cros_system_api/dbus/service_constants.h"
 #include "ui/base/user_activity/user_activity_detector.h"
 
 namespace chromeos {
@@ -55,10 +52,9 @@ const int kLoginManagerIdleTimeoutMs = 60 * 1000;  // 60 seconds.
 const int kGracePeriodMs = 24 * 60 * 60 * 1000;    // 24 hours.
 const int kOneKilobyte = 1 << 10;                  // 1 kB in bytes.
 
-const char kSequenceToken[] = "automatic-reboot-manager";
-
 base::TimeDelta ReadTimeDeltaFromFile(const base::FilePath& path) {
-  base::ThreadRestrictions::AssertIOAllowed();
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   base::ScopedFD fd(
       HANDLE_EINTR(open(path.value().c_str(), O_RDONLY | O_NOFOLLOW)));
   if (!fd.is_valid())
@@ -78,35 +74,32 @@ base::TimeDelta ReadTimeDeltaFromFile(const base::FilePath& path) {
   return base::TimeDelta::FromMilliseconds(seconds * 1000.0);
 }
 
-void GetSystemEventTimes(
-    scoped_refptr<base::SingleThreadTaskRunner> reply_task_runner,
-    base::Callback<void(
-        const AutomaticRebootManager::SystemEventTimes&)> reply) {
+AutomaticRebootManager::SystemEventTimes GetSystemEventTimes() {
   base::FilePath uptime_file;
-  CHECK(PathService::Get(chromeos::FILE_UPTIME, &uptime_file));
+  CHECK(base::PathService::Get(chromeos::FILE_UPTIME, &uptime_file));
   base::FilePath update_reboot_needed_uptime_file;
-  CHECK(PathService::Get(chromeos::FILE_UPDATE_REBOOT_NEEDED_UPTIME,
-                         &update_reboot_needed_uptime_file));
-  reply_task_runner->PostTask(FROM_HERE, base::Bind(reply,
-      AutomaticRebootManager::SystemEventTimes(
-          ReadTimeDeltaFromFile(uptime_file),
-          ReadTimeDeltaFromFile(update_reboot_needed_uptime_file))));
+  CHECK(base::PathService::Get(chromeos::FILE_UPDATE_REBOOT_NEEDED_UPTIME,
+                               &update_reboot_needed_uptime_file));
+  return AutomaticRebootManager::SystemEventTimes(
+      ReadTimeDeltaFromFile(uptime_file),
+      ReadTimeDeltaFromFile(update_reboot_needed_uptime_file));
 }
 
 void SaveUpdateRebootNeededUptime() {
-  base::ThreadRestrictions::AssertIOAllowed();
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   const base::TimeDelta kZeroTimeDelta;
 
   base::FilePath update_reboot_needed_uptime_file;
-  CHECK(PathService::Get(chromeos::FILE_UPDATE_REBOOT_NEEDED_UPTIME,
-                         &update_reboot_needed_uptime_file));
+  CHECK(base::PathService::Get(chromeos::FILE_UPDATE_REBOOT_NEEDED_UPTIME,
+                               &update_reboot_needed_uptime_file));
   const base::TimeDelta last_update_reboot_needed_uptime =
       ReadTimeDeltaFromFile(update_reboot_needed_uptime_file);
   if (last_update_reboot_needed_uptime != kZeroTimeDelta)
     return;
 
   base::FilePath uptime_file;
-  CHECK(PathService::Get(chromeos::FILE_UPTIME, &uptime_file));
+  CHECK(base::PathService::Get(chromeos::FILE_UPTIME, &uptime_file));
   const base::TimeDelta uptime = ReadTimeDeltaFromFile(uptime_file);
   if (uptime == kZeroTimeDelta)
     return;
@@ -119,7 +112,7 @@ void SaveUpdateRebootNeededUptime() {
     return;
 
   std::string update_reboot_needed_uptime =
-      base::DoubleToString(uptime.InSecondsF());
+      base::NumberToString(uptime.InSecondsF());
   base::WriteFileDescriptor(fd.get(), update_reboot_needed_uptime.c_str(),
                             update_reboot_needed_uptime.size());
 }
@@ -149,9 +142,10 @@ AutomaticRebootManager::SystemEventTimes::SystemEventTimes(
   has_update_reboot_needed_time = true;
 }
 
-AutomaticRebootManager::AutomaticRebootManager(
-    std::unique_ptr<base::TickClock> clock)
-    : clock_(std::move(clock)),
+AutomaticRebootManager::AutomaticRebootManager(const base::TickClock* clock)
+    : initialized_(base::WaitableEvent::ResetPolicy::MANUAL,
+                   base::WaitableEvent::InitialState::NOT_SIGNALED),
+      clock_(clock),
       have_boot_time_(false),
       have_update_reboot_needed_time_(false),
       reboot_reason_(AutomaticRebootManagerObserver::REBOOT_REASON_UNKNOWN),
@@ -167,9 +161,8 @@ AutomaticRebootManager::AutomaticRebootManager(
   notification_registrar_.Add(this, chrome::NOTIFICATION_APP_TERMINATING,
       content::NotificationService::AllSources());
 
-  DBusThreadManager* dbus_thread_manager = DBusThreadManager::Get();
-  dbus_thread_manager->GetPowerManagerClient()->AddObserver(this);
-  dbus_thread_manager->GetUpdateEngineClient()->AddObserver(this);
+  PowerManagerClient::Get()->AddObserver(this);
+  DBusThreadManager::Get()->GetUpdateEngineClient()->AddObserver(this);
 
   // If no user is logged in, a reboot may be performed whenever the user is
   // idle. Start listening for user activity to determine whether the user is
@@ -183,30 +176,20 @@ AutomaticRebootManager::AutomaticRebootManager(
     OnUserActivity(NULL);
   }
 
-  // In a regular browser, base::ThreadTaskRunnerHandle::Get() and
-  // base::ThreadTaskRunnerHandle::Get() return pointers to the same object.
-  // In unit tests, using base::ThreadTaskRunnerHandle::Get() has the advantage
-  // that it allows a custom base::SingleThreadTaskRunner to be injected.
-  base::SequencedWorkerPool* worker_pool =
-      content::BrowserThread::GetBlockingPool();
-  worker_pool->PostSequencedWorkerTaskWithShutdownBehavior(
-      worker_pool->GetNamedSequenceToken(kSequenceToken),
+  base::PostTaskWithTraitsAndReplyWithResult(
       FROM_HERE,
-      base::Bind(&GetSystemEventTimes,
-                 base::ThreadTaskRunnerHandle::Get(),
-                 base::Bind(&AutomaticRebootManager::Init,
-                            weak_ptr_factory_.GetWeakPtr())),
-      base::SequencedWorkerPool::SKIP_ON_SHUTDOWN);
+      {base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN, base::MayBlock()},
+      base::BindOnce(&GetSystemEventTimes),
+      base::BindOnce(&AutomaticRebootManager::Init,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 AutomaticRebootManager::~AutomaticRebootManager() {
-  FOR_EACH_OBSERVER(AutomaticRebootManagerObserver,
-                    observers_,
-                    WillDestroyAutomaticRebootManager());
+  for (auto& observer : observers_)
+    observer.WillDestroyAutomaticRebootManager();
 
-  DBusThreadManager* dbus_thread_manager = DBusThreadManager::Get();
-  dbus_thread_manager->GetPowerManagerClient()->RemoveObserver(this);
-  dbus_thread_manager->GetUpdateEngineClient()->RemoveObserver(this);
+  PowerManagerClient::Get()->RemoveObserver(this);
+  DBusThreadManager::Get()->GetUpdateEngineClient()->RemoveObserver(this);
   if (ui::UserActivityDetector::Get())
     ui::UserActivityDetector::Get()->RemoveObserver(this);
 }
@@ -219,6 +202,11 @@ void AutomaticRebootManager::AddObserver(
 void AutomaticRebootManager::RemoveObserver(
     AutomaticRebootManagerObserver* observer) {
   observers_.RemoveObserver(observer);
+}
+
+bool AutomaticRebootManager::WaitForInitForTesting(
+    const base::TimeDelta& timeout) {
+  return initialized_.TimedWait(timeout);
 }
 
 void AutomaticRebootManager::SuspendDone(
@@ -236,8 +224,10 @@ void AutomaticRebootManager::UpdateStatusChanged(
     return;
   }
 
-  content::BrowserThread::PostBlockingPoolTask(
-      FROM_HERE, base::Bind(&SaveUpdateRebootNeededUptime));
+  base::PostTaskWithTraits(FROM_HERE,
+                           {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+                            base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
+                           base::BindOnce(&SaveUpdateRebootNeededUptime));
 
   update_reboot_needed_time_ = clock_->NowTicks();
   have_update_reboot_needed_time_ = true;
@@ -292,6 +282,8 @@ void AutomaticRebootManager::RegisterPrefs(PrefRegistrySimple* registry) {
 }
 
 void AutomaticRebootManager::Init(const SystemEventTimes& system_event_times) {
+  initialized_.Signal();
+
   const base::TimeDelta offset = clock_->NowTicks() - base::TimeTicks::Now();
   if (system_event_times.has_boot_time) {
     // Convert the time at which the device was booted to |clock_| ticks.
@@ -313,6 +305,7 @@ void AutomaticRebootManager::Init(const SystemEventTimes& system_event_times) {
 }
 
 void AutomaticRebootManager::Reschedule() {
+  VLOG(1) << "Rescheduling reboot";
   // Safeguard against reboot loops under error conditions: If the boot time is
   // unavailable because /proc/uptime could not be read, do nothing.
   if (!have_boot_time_)
@@ -340,6 +333,7 @@ void AutomaticRebootManager::Reschedule() {
       local_state_registrar_.prefs()->GetBoolean(prefs::kRebootAfterUpdate) &&
       (!have_reboot_request_time ||
        update_reboot_needed_time_ < reboot_request_time)) {
+    VLOG(1) << "Scheduling reboot because of OS update";
     reboot_request_time = update_reboot_needed_time_;
     have_reboot_request_time = true;
     reboot_reason_ = AutomaticRebootManagerObserver::REBOOT_REASON_OS_UPDATE;
@@ -363,6 +357,7 @@ void AutomaticRebootManager::Reschedule() {
   // started in the past, the timer is still used with its delay set to zero.
   if (!grace_start_timer_)
     grace_start_timer_.reset(new base::OneShotTimer);
+  VLOG(1) << "Scheduling reboot attempt in " << (grace_start_time - now);
   grace_start_timer_->Start(FROM_HERE,
                             std::max(grace_start_time - now, kZeroTimeDelta),
                             base::Bind(&AutomaticRebootManager::RequestReboot,
@@ -374,6 +369,7 @@ void AutomaticRebootManager::Reschedule() {
   // in the past, the timer is still used with its delay set to zero.
   if (!grace_end_timer_)
     grace_end_timer_.reset(new base::OneShotTimer);
+  VLOG(1) << "Scheduling unconditional reboot in " << (grace_end_time - now);
   grace_end_timer_->Start(FROM_HERE,
                           std::max(grace_end_time - now, kZeroTimeDelta),
                           base::Bind(&AutomaticRebootManager::Reboot,
@@ -381,12 +377,12 @@ void AutomaticRebootManager::Reschedule() {
 }
 
 void AutomaticRebootManager::RequestReboot() {
+  VLOG(1) << "Reboot requested, reason: " << reboot_reason_;
   reboot_requested_ = true;
   DCHECK_NE(AutomaticRebootManagerObserver::REBOOT_REASON_UNKNOWN,
             reboot_reason_);
-  FOR_EACH_OBSERVER(AutomaticRebootManagerObserver,
-                    observers_,
-                    OnRebootRequested(reboot_reason_));
+  for (auto& observer : observers_)
+    observer.OnRebootRequested(reboot_reason_);
   MaybeReboot(false);
 }
 
@@ -407,14 +403,18 @@ void AutomaticRebootManager::MaybeReboot(bool ignore_session) {
 void AutomaticRebootManager::Reboot() {
   // If a non-kiosk-app session is in progress, do not reboot.
   if (user_manager::UserManager::Get()->IsUserLoggedIn() &&
-      !user_manager::UserManager::Get()->IsLoggedInAsKioskApp()) {
+      !user_manager::UserManager::Get()->IsLoggedInAsKioskApp() &&
+      !user_manager::UserManager::Get()->IsLoggedInAsArcKioskApp()) {
+    VLOG(1) << "Skipping reboot because non-kiosk session is active";
     return;
   }
 
   login_screen_idle_timer_.reset();
   grace_start_timer_.reset();
   grace_end_timer_.reset();
-  DBusThreadManager::Get()->GetPowerManagerClient()->RequestRestart();
+  VLOG(1) << "Rebooting immediately.";
+  PowerManagerClient::Get()->RequestRestart(
+      power_manager::REQUEST_RESTART_OTHER, "automatic reboot manager");
 }
 
 }  // namespace system

@@ -5,6 +5,7 @@
 #ifndef CONTENT_PUBLIC_BROWSER_DEVTOOLS_FRONTEND_HOST_H_
 #define CONTENT_PUBLIC_BROWSER_DEVTOOLS_FRONTEND_HOST_H_
 
+#include <memory>
 #include <string>
 
 #include "base/callback.h"
@@ -19,15 +20,20 @@ class RenderFrameHost;
 // which is implemented by the embedder.
 // This allows us to avoid exposing DevTools frontend messages through
 // the content public API.
+// Note: DevToolsFrontendHost is not supported on Android.
 class DevToolsFrontendHost {
  public:
   using HandleMessageCallback = base::Callback<void(const std::string&)>;
 
   // Creates a new DevToolsFrontendHost for RenderFrameHost where DevTools
   // frontend is loaded.
-  CONTENT_EXPORT static DevToolsFrontendHost* Create(
+  CONTENT_EXPORT static std::unique_ptr<DevToolsFrontendHost> Create(
       RenderFrameHost* frontend_main_frame,
       const HandleMessageCallback& handle_message_callback);
+
+  CONTENT_EXPORT static void SetupExtensionsAPI(
+      RenderFrameHost* frame,
+      const std::string& extension_api);
 
   CONTENT_EXPORT virtual ~DevToolsFrontendHost() {}
 

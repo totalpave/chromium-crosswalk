@@ -11,18 +11,28 @@ import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 
-class DropdownDividerDrawable extends Drawable {
+/**
+ * A drawable divider to be used by dropdown adapters.
+ */
+public class DropdownDividerDrawable extends Drawable {
+    private final Paint mPaint;
+    private final Rect mDividerRect;
+    private final Integer mBackgroundColor;
 
-    private Paint mPaint;
-    private Rect mDividerRect;
-
-    public DropdownDividerDrawable() {
+    /**
+     * Creates a drawable to draw a divider line that separates the list of {@link DropdownItem}
+     * and, optionally, paints the rectangular canvas.
+     * @param backgroundColor Popup background color. If {@code null}, does not paint the canvas.
+     */
+    public DropdownDividerDrawable(Integer backgroundColor) {
         mPaint = new Paint();
         mDividerRect = new Rect();
+        mBackgroundColor = backgroundColor;
     }
 
     @Override
     public void draw(Canvas canvas) {
+        if (mBackgroundColor != null) canvas.drawColor(mBackgroundColor);
         canvas.drawRect(mDividerRect, mPaint);
     }
 
@@ -35,7 +45,7 @@ class DropdownDividerDrawable extends Drawable {
         mDividerRect.set(0, 0, mDividerRect.right, height);
     }
 
-    public void setColor(int color) {
+    public void setDividerColor(int color) {
         mPaint.setColor(color);
     }
 

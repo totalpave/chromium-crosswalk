@@ -5,7 +5,9 @@
 #include "content/public/common/content_client.h"
 
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_piece.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "content/public/common/origin_util.h"
 #include "content/public/common/user_agent.h"
@@ -38,11 +40,6 @@ class InternalTestInitializer {
 
 void SetContentClient(ContentClient* client) {
   g_client = client;
-
-  // TODO(jam): find out which static on Windows is causing this to have to be
-  // called on startup.
-  if (client)
-    client->GetUserAgent();
 }
 
 ContentClient* GetContentClient() {
@@ -61,11 +58,11 @@ ContentUtilityClient* SetUtilityClientForTesting(ContentUtilityClient* u) {
   return InternalTestInitializer::SetUtility(u);
 }
 
+ContentClient::Schemes::Schemes() = default;
+ContentClient::Schemes::~Schemes() = default;
+
 ContentClient::ContentClient()
-    : browser_(NULL),
-      gpu_(NULL),
-      renderer_(NULL),
-      utility_(NULL) {}
+    : browser_(nullptr), gpu_(nullptr), renderer_(nullptr), utility_(nullptr) {}
 
 ContentClient::~ContentClient() {
 }
@@ -74,15 +71,13 @@ bool ContentClient::CanSendWhileSwappedOut(const IPC::Message* message) {
   return false;
 }
 
-std::string ContentClient::GetProduct() const {
-  return std::string();
-}
-
-std::string ContentClient::GetUserAgent() const {
-  return std::string();
-}
-
 base::string16 ContentClient::GetLocalizedString(int message_id) const {
+  return base::string16();
+}
+
+base::string16 ContentClient::GetLocalizedString(
+    int message_id,
+    const base::string16& replacement) const {
   return base::string16();
 }
 
@@ -98,8 +93,8 @@ base::RefCountedMemory* ContentClient::GetDataResourceBytes(
 }
 
 gfx::Image& ContentClient::GetNativeImageNamed(int resource_id) const {
-  CR_DEFINE_STATIC_LOCAL(gfx::Image, kEmptyImage, ());
-  return kEmptyImage;
+  static base::NoDestructor<gfx::Image> kEmptyImage;
+  return *kEmptyImage;
 }
 
 std::string ContentClient::GetProcessTypeNameInEnglish(int type) {
@@ -107,24 +102,16 @@ std::string ContentClient::GetProcessTypeNameInEnglish(int type) {
   return std::string();
 }
 
-#if defined(OS_MACOSX)
-bool ContentClient::GetSandboxProfileForSandboxType(
-    int sandbox_type,
-    int* sandbox_profile_resource_id) const {
-  return false;
-}
-#endif
-
-bool ContentClient::IsSupplementarySiteIsolationModeEnabled() {
-  return false;
+base::DictionaryValue ContentClient::GetNetLogConstants() const {
+  return base::DictionaryValue();
 }
 
-OriginTrialPolicy* ContentClient::GetOriginTrialPolicy() {
+blink::OriginTrialPolicy* ContentClient::GetOriginTrialPolicy() {
   return nullptr;
 }
 
 bool ContentClient::AllowScriptExtensionForServiceWorker(
-    const GURL& script_url) {
+    const url::Origin& script_origin) {
   return false;
 }
 
@@ -133,9 +120,12 @@ bool ContentClient::UsingSynchronousCompositing() {
   return false;
 }
 
-media::MediaClientAndroid* ContentClient::GetMediaClientAndroid() {
+media::MediaDrmBridgeClient* ContentClient::GetMediaDrmBridgeClient() {
   return nullptr;
 }
 #endif  // OS_ANDROID
+
+void ContentClient::OnServiceManagerConnected(
+    ServiceManagerConnection* connection) {}
 
 }  // namespace content

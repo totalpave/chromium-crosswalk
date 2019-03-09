@@ -12,9 +12,7 @@
 #include "content/public/browser/content_browser_client.h"
 
 namespace content {
-class ShellBrowserContext;
 class ShellBrowserMainParts;
-class ShellResourceDispatcherHostDelegate;
 }
 
 namespace ash {
@@ -30,6 +28,16 @@ class ShellContentBrowserClient : public content::ContentBrowserClient {
   // Overridden from content::ContentBrowserClient:
   content::BrowserMainParts* CreateBrowserMainParts(
       const content::MainFunctionParams& parameters) override;
+  void GetQuotaSettings(
+      content::BrowserContext* context,
+      content::StoragePartition* partition,
+      storage::OptionalQuotaSettingsCallback callback) override;
+  base::Optional<service_manager::Manifest> GetServiceManifestOverlay(
+      base::StringPiece name) override;
+  void RegisterOutOfProcessServices(OutOfProcessServiceMap* services) override;
+  void HandleServiceRequest(
+      const std::string& service_name,
+      service_manager::mojom::ServiceRequest request) override;
 
  private:
   ShellBrowserMainParts* shell_browser_main_parts_;

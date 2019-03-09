@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.preferences.autofill;
 
+import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.LayoutInflater;
@@ -32,20 +33,27 @@ abstract class AutofillCreditCardEditor extends AutofillEditorBase {
             Bundle savedInstanceState) {
         View v = super.onCreateView(inflater, container, savedInstanceState);
 
+        // Do not use autofill for the fields.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            getActivity().getWindow().getDecorView().setImportantForAutofill(
+                    View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        }
+
         // Populate the billing address dropdown.
         ArrayAdapter<AutofillProfile> profilesAdapter = new ArrayAdapter<AutofillProfile>(
                 getActivity(), android.R.layout.simple_spinner_item);
         profilesAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
 
         AutofillProfile noSelection = new AutofillProfile();
-        noSelection.setLabel(
-                getActivity().getString(R.string.autofill_billing_address_select_prompt));
+        noSelection.setLabel(getActivity().getString(R.string.select));
         profilesAdapter.add(noSelection);
 
         List<AutofillProfile> profiles = PersonalDataManager.getInstance().getProfilesForSettings();
         for (int i = 0; i < profiles.size(); i++) {
             AutofillProfile profile = profiles.get(i);
-            if (profile.getIsLocal()) profilesAdapter.add(profile);
+            if (profile.getIsLocal() && !TextUtils.isEmpty(profile.getStreetAddress())) {
+                profilesAdapter.add(profile);
+            }
         }
 
         mBillingAddress =
@@ -72,5 +80,16 @@ abstract class AutofillCreditCardEditor extends AutofillEditorBase {
         }
 
         return v;
+    }
+
+    @Override
+    protected void initializeButtons(View v) {
+        super.initializeButtons(v);
+
+        mBillingAddress.setOnItemSelectedListener(this);
+
+        // Listen for touch events on billing address field. We clear the keyboard when user touches
+        // the billing address field because it is a drop down menu.
+        mBillingAddress.setOnTouchListener(this);
     }
 }

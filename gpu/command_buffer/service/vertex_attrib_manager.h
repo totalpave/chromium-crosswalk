@@ -15,11 +15,12 @@
 #include "build/build_config.h"
 #include "gpu/command_buffer/service/buffer_manager.h"
 #include "gpu/command_buffer/service/gl_utils.h"
-#include "gpu/gpu_export.h"
+#include "gpu/gpu_gles2_export.h"
 
 namespace gpu {
 namespace gles2 {
 
+class BufferManager;
 class FeatureInfo;
 class GLES2Decoder;
 class Program;
@@ -28,7 +29,7 @@ class VertexArrayManager;
 // Info about a Vertex Attribute. This is used to track what the user currently
 // has bound on each Vertex Attribute so that checking can be done at
 // glDrawXXX time.
-class GPU_EXPORT VertexAttrib {
+class GPU_GLES2_EXPORT VertexAttrib {
  public:
   typedef std::list<VertexAttrib*> VertexAttribList;
 
@@ -76,6 +77,8 @@ class GPU_EXPORT VertexAttrib {
   bool enabled() const {
     return enabled_;
   }
+
+  bool enabled_in_driver() const { return enabled_in_driver_; }
 
   // Find the maximum vertex accessed, accounting for instancing.
   GLuint MaxVertexAccessed(GLsizei primcount,
@@ -127,13 +130,14 @@ class GPU_EXPORT VertexAttrib {
     divisor_ = divisor;
   }
 
-  void Unbind(Buffer* buffer);
-
   // The index of this attrib.
   GLuint index_;
 
   // Whether or not this attribute is enabled.
   bool enabled_;
+
+  // Whether or not this attribute is actually enabled in the driver.
+  bool enabled_in_driver_;
 
   // number of components (1, 2, 3, 4)
   GLint size_;
@@ -174,12 +178,12 @@ class GPU_EXPORT VertexAttrib {
 // Manages vertex attributes.
 // This class also acts as the service-side representation of a
 // vertex array object and it's contained state.
-class GPU_EXPORT VertexAttribManager :
-    public base::RefCounted<VertexAttribManager> {
+class GPU_GLES2_EXPORT VertexAttribManager
+    : public base::RefCounted<VertexAttribManager> {
  public:
   typedef std::list<VertexAttrib*> VertexAttribList;
 
-  VertexAttribManager();
+  explicit VertexAttribManager(bool do_buffer_refcounting);
 
   void Initialize(uint32_t num_vertex_attribs, bool init_attribs);
 
@@ -197,7 +201,39 @@ class GPU_EXPORT VertexAttribManager :
     if (index < vertex_attribs_.size()) {
       return &vertex_attribs_[index];
     }
-    return NULL;
+    return nullptr;
+  }
+
+  void UpdateAttribBaseTypeAndMask(GLuint loc, GLenum base_type) {
+    DCHECK(loc < vertex_attribs_.size());
+    int shift_bits = (loc % 16) * 2;
+    attrib_enabled_mask_[loc / 16] |= (0x3 << shift_bits);
+    attrib_base_type_mask_[loc / 16] &= ~(0x3 << shift_bits);
+    attrib_base_type_mask_[loc / 16] |= base_type << shift_bits;
+  }
+
+  // Sets the Enable/DisableVertexAttribArray state in the driver. This state
+  // is tracked for the current virtual context. Because of this, virtual
+  // context restore code should not call this function.
+  void SetDriverVertexAttribEnabled(GLuint index, bool enable) {
+    DCHECK_LT(index, vertex_attribs_.size());
+    VertexAttrib& attrib = vertex_attribs_[index];
+
+    if (enable != attrib.enabled_in_driver_) {
+      attrib.enabled_in_driver_ = enable;
+      if (enable) {
+        glEnableVertexAttribArray(index);
+      } else {
+        glDisableVertexAttribArray(index);
+      }
+    }
+  }
+
+  const std::vector<uint32_t>& attrib_base_type_mask() const {
+    return attrib_base_type_mask_;
+  }
+  const std::vector<uint32_t>& attrib_enabled_mask() const {
+    return attrib_enabled_mask_;
   }
 
   void SetAttribInfo(
@@ -218,8 +254,12 @@ class GPU_EXPORT VertexAttribManager :
       if (type == GL_FIXED) {
         ++num_fixed_attribs_;
       }
+      if (do_buffer_refcounting_ && is_bound_ && attrib->buffer_)
+        attrib->buffer_->OnUnbind(GL_ARRAY_BUFFER, true);
       attrib->SetInfo(buffer, size, type, normalized, gl_stride, real_stride,
                       offset, integer);
+      if (do_buffer_refcounting_ && is_bound_ && buffer)
+        buffer->OnBind(GL_ARRAY_BUFFER, true);
     }
   }
 
@@ -238,7 +278,7 @@ class GPU_EXPORT VertexAttribManager :
     return service_id_;
   }
 
-  void Unbind(Buffer* buffer);
+  void Unbind(Buffer* buffer, Buffer* bound_array_buffer);
 
   bool IsDeleted() const {
     return deleted_;
@@ -256,10 +296,13 @@ class GPU_EXPORT VertexAttribManager :
       const char* function_name,
       GLES2Decoder* decoder,
       FeatureInfo* feature_info,
+      BufferManager* buffer_manager,
       Program* current_program,
       GLuint max_vertex_accessed,
       bool instanced,
       GLsizei primcount);
+
+  void SetIsBound(bool is_bound);
 
  private:
   friend class VertexArrayManager;
@@ -269,7 +312,8 @@ class GPU_EXPORT VertexAttribManager :
   // Used when creating from a VertexArrayManager
   VertexAttribManager(VertexArrayManager* manager,
                       GLuint service_id,
-                      uint32_t num_vertex_attribs);
+                      uint32_t num_vertex_attribs,
+                      bool do_buffer_refcounting);
 
   ~VertexAttribManager();
 
@@ -283,6 +327,15 @@ class GPU_EXPORT VertexAttribManager :
   // Info for each vertex attribute saved so we can check at glDrawXXX time
   // if it is safe to draw.
   std::vector<VertexAttrib> vertex_attribs_;
+
+  // Vertex attrib base types: FLOAT, INT, or UINT.
+  // Each base type is encoded into 2 bits, the lowest 2 bits for location 0,
+  // the highest 2 bits for location (max_vertex_attribs - 1).
+  std::vector<uint32_t> attrib_base_type_mask_;
+  // Same layout as above, 2 bits per location, 0x03 if a location for an
+  // vertex attrib is enabled by enabbleVertexAttribArray, 0x00 if it is
+  // disabled by disableVertexAttribArray. Every location is 0x00 by default.
+  std::vector<uint32_t> attrib_enabled_mask_;
 
   // The currently bound element array buffer. If this is 0 it is illegal
   // to call glDrawElements.
@@ -298,6 +351,14 @@ class GPU_EXPORT VertexAttribManager :
   // True if deleted.
   bool deleted_;
 
+  // True if this is the currently bound VAO.
+  bool is_bound_;
+
+  // Whether or not to call Buffer::OnBind/OnUnbind whenever bindings change.
+  // This is only necessary for WebGL contexts to implement
+  // https://crbug.com/696345
+  bool do_buffer_refcounting_;
+
   // Service side vertex array object id.
   GLuint service_id_;
 };
@@ -306,4 +367,3 @@ class GPU_EXPORT VertexAttribManager :
 }  // namespace gpu
 
 #endif  // GPU_COMMAND_BUFFER_SERVICE_VERTEX_ATTRIB_MANAGER_H_
-

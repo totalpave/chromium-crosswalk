@@ -6,22 +6,22 @@
 #define CHROME_BROWSER_PLUGINS_CHROME_PLUGIN_SERVICE_FILTER_H_
 
 #include <map>
+#include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
-#include "base/containers/hash_tables.h"
 #include "base/files/file_path.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/singleton.h"
 #include "base/synchronization/lock.h"
-#include "build/build_config.h"
+#include "chrome/browser/plugins/plugin_prefs.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/plugin_service_filter.h"
 #include "content/public/common/webplugininfo.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
-class PluginPrefs;
 class Profile;
 
 namespace content {
@@ -36,15 +36,14 @@ class ChromePluginServiceFilter : public content::PluginServiceFilter,
   static ChromePluginServiceFilter* GetInstance();
 
   // This method should be called on the UI thread.
-  void RegisterResourceContext(PluginPrefs* plugin_prefs, const void* context);
+  void RegisterResourceContext(Profile* profile, const void* context);
 
   void UnregisterResourceContext(const void* context);
 
-  // Overrides the plugin lookup mechanism for a given tab and object URL to use
-  // a specific plugin.
+  // Overrides the plugin lookup mechanism for a given tab to use a specific
+  // plugin.
   void OverridePluginForFrame(int render_process_id,
                               int render_frame_id,
-                              const GURL& url,
                               const content::WebPluginInfo& plugin);
 
   // Authorizes a given plugin for a given process.
@@ -59,12 +58,14 @@ class ChromePluginServiceFilter : public content::PluginServiceFilter,
                            bool load_blocked,
                            const std::string& identifier);
 
-  // PluginServiceFilter implementation:
+  // PluginServiceFilter implementation.
+  // If |plugin_content_url| is not available, pass the same URL used to
+  // generate |main_frame_origin|. These parameters may be empty.
   bool IsPluginAvailable(int render_process_id,
                          int render_frame_id,
                          const void* context,
-                         const GURL& url,
-                         const GURL& policy_url,
+                         const GURL& plugin_content_url,
+                         const url::Origin& main_frame_origin,
                          content::WebPluginInfo* plugin) override;
 
   // CanLoadPlugin always grants permission to the browser
@@ -74,14 +75,11 @@ class ChromePluginServiceFilter : public content::PluginServiceFilter,
 
  private:
   friend struct base::DefaultSingletonTraits<ChromePluginServiceFilter>;
+  struct ContextInfo;
 
   struct OverriddenPlugin {
-    OverriddenPlugin();
-    ~OverriddenPlugin();
-
-    int render_frame_id;
-    GURL url;  // If empty, the override applies to all urls in render_frame.
-    content::WebPluginInfo plugin;
+    const int render_frame_id;
+    const content::WebPluginInfo plugin;
   };
 
   struct ProcessDetails {
@@ -107,8 +105,8 @@ class ChromePluginServiceFilter : public content::PluginServiceFilter,
   content::NotificationRegistrar registrar_;
 
   base::Lock lock_;  // Guards access to member variables.
-  typedef std::map<const void*, scoped_refptr<PluginPrefs> > ResourceContextMap;
-  ResourceContextMap resource_context_map_;
+
+  std::map<const void*, std::unique_ptr<ContextInfo>> resource_context_map_;
 
   std::map<int, ProcessDetails> plugin_details_;
 };

@@ -5,16 +5,13 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_AUTOMATION_INTERNAL_AUTOMATION_INTERNAL_API_H_
 #define CHROME_BROWSER_EXTENSIONS_API_AUTOMATION_INTERNAL_AUTOMATION_INTERNAL_API_H_
 
-#include "chrome/browser/extensions/chrome_extension_function.h"
+#include <string>
+
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
-
-namespace content {
-struct AXEventNotificationDetails;
-}  // namespace content
+#include "extensions/browser/extension_function.h"
 
 namespace extensions {
-class AutomationActionAdapter;
 
 namespace api {
 namespace automation_internal {
@@ -26,14 +23,13 @@ struct Params;
 }  // namespace extensions
 
 namespace ui {
-struct AXNodeData;
-}
+struct AXActionData;
+}  // namespace ui
 
 namespace extensions {
 
 // Implementation of the chrome.automation API.
-class AutomationInternalEnableTabFunction
-    : public ChromeUIThreadExtensionFunction {
+class AutomationInternalEnableTabFunction : public UIThreadExtensionFunction {
   DECLARE_EXTENSION_FUNCTION("automationInternal.enableTab",
                              AUTOMATIONINTERNAL_ENABLETAB)
  protected:
@@ -52,15 +48,16 @@ class AutomationInternalPerformActionFunction
   ExtensionFunction::ResponseAction Run() override;
 
  private:
-  // Helper function to route an action to an action adapter.
-  ExtensionFunction::ResponseAction RouteActionToAdapter(
+  // Helper function to convert extension action to ax action.
+  ExtensionFunction::ResponseAction ConvertToAXActionData(
       api::automation_internal::PerformAction::Params* params,
-      AutomationActionAdapter* adapter);
+      ui::AXActionData* data);
 };
 
 class AutomationInternalEnableFrameFunction : public UIThreadExtensionFunction {
   DECLARE_EXTENSION_FUNCTION("automationInternal.enableFrame",
-                             AUTOMATIONINTERNAL_PERFORMACTION)
+                             AUTOMATIONINTERNAL_ENABLEFRAME)
+
  protected:
   ~AutomationInternalEnableFrameFunction() override {}
 
@@ -80,7 +77,7 @@ class AutomationInternalEnableDesktopFunction
 class AutomationInternalQuerySelectorFunction
     : public UIThreadExtensionFunction {
   DECLARE_EXTENSION_FUNCTION("automationInternal.querySelector",
-                             AUTOMATIONINTERNAL_ENABLEDESKTOP)
+                             AUTOMATIONINTERNAL_QUERYSELECTOR)
 
  public:
   typedef base::Callback<void(const std::string& error,

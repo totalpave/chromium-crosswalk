@@ -18,6 +18,8 @@ class NavigationTracingObserver
     : public content::WebContentsObserver,
       public content::WebContentsUserData<NavigationTracingObserver> {
  public:
+  ~NavigationTracingObserver() override;
+
   static bool IsEnabled();
 
  private:
@@ -25,16 +27,14 @@ class NavigationTracingObserver
 
   explicit NavigationTracingObserver(content::WebContents* web_contents);
 
-  ~NavigationTracingObserver() override;
-
   // content::WebContentsObserver implementation.
-  void DidStartProvisionalLoadForFrame(
-      content::RenderFrameHost* render_frame_host,
-      const GURL& validated_url,
-      bool is_error_page,
-      bool is_iframe_srcdoc) override;
+  void DidStartNavigation(
+      content::NavigationHandle* navigation_handle) override;
 
-  static content::BackgroundTracingManager::TriggerHandle navigation_handle;
+  static content::BackgroundTracingManager::TriggerHandle
+      navigation_trigger_handle_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(NavigationTracingObserver);
 };

@@ -6,41 +6,39 @@ cr.define('settings', function() {
   /**
    * A test version of LifetimeBrowserProxy.
    *
-   * @constructor
    * @implements {settings.LifetimeBrowserProxy}
-   * @extends {settings.TestBrowserProxy}
    */
-  var TestLifetimeBrowserProxy = function() {
-    var methodNames = ['restart', 'relaunch'];
-    if (cr.isChromeOS)
-      methodNames.push('logOutAndRestart', 'factoryReset');
+  class TestLifetimeBrowserProxy extends TestBrowserProxy {
+    constructor() {
+      const methodNames = ['restart', 'relaunch'];
+      if (cr.isChromeOS) {
+        methodNames.push('signOutAndRestart', 'factoryReset');
+      }
 
-    settings.TestBrowserProxy.call(this, methodNames);
-  };
-
-  TestLifetimeBrowserProxy.prototype = {
-    __proto__: settings.TestBrowserProxy.prototype,
+      super(methodNames);
+    }
 
     /** @override */
-    restart: function() {
+    restart() {
       this.methodCalled('restart');
-    },
+    }
 
     /** @override */
-    relaunch: function() {
+    relaunch() {
       this.methodCalled('relaunch');
-    },
-  };
+    }
+  }
 
   if (cr.isChromeOS) {
     /** @override */
-    TestLifetimeBrowserProxy.prototype.logOutAndRestart = function() {
-      this.methodCalled('logOutAndRestart');
+    TestLifetimeBrowserProxy.prototype.signOutAndRestart = function() {
+      this.methodCalled('signOutAndRestart');
     };
 
     /** @override */
-    TestLifetimeBrowserProxy.prototype.factoryReset = function() {
-      this.methodCalled('factoryReset');
+    TestLifetimeBrowserProxy.prototype.factoryReset = function(
+        requestTpmFirmwareUpdate) {
+      this.methodCalled('factoryReset', requestTpmFirmwareUpdate);
     };
   }
 

@@ -18,11 +18,13 @@
 #include "base/rand_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "chromeos/geolocation/geoposition.h"
 #include "chromeos/geolocation/simple_geolocation_provider.h"
 #include "chromeos/timezone/timezone_provider.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace chromeos {
 
@@ -119,9 +121,13 @@ class TimeZoneResolver::TimeZoneResolverImpl : public base::PowerObserver {
   base::WeakPtr<TimeZoneResolver::TimeZoneResolverImpl> AsWeakPtr();
 
   bool ShouldSendWiFiGeolocationData();
+  bool ShouldSendCellularGeolocationData();
 
  private:
   const TimeZoneResolver* resolver_;
+
+  // Helper to check timezone detection policy against expected value
+  bool CheckTimezoneManagementSetting(int expected_policy_value);
 
   // Returns delay to next timezone update request
   base::TimeDelta CalculateNextInterval();
@@ -178,14 +184,14 @@ class TZRequest {
   DISALLOW_COPY_AND_ASSIGN(TZRequest);
 };
 
-TZRequest::~TZRequest() {
-}
+TZRequest::~TZRequest() = default;
 
 void TZRequest::StartRequestOnNetworkAvailable() {
   resolver_->RecordAttempt();
   resolver_->geolocation_provider()->RequestGeolocation(
       base::TimeDelta::FromSeconds(kRefreshTimeZoneTimeoutSeconds),
       resolver_->ShouldSendWiFiGeolocationData(),
+      resolver_->ShouldSendCellularGeolocationData(),
       base::Bind(&TZRequest::OnLocationResolved, AsWeakPtr()));
 }
 
@@ -199,8 +205,8 @@ void TZRequest::OnLocationResolved(const Geoposition& position,
                                    bool server_error,
                                    const base::TimeDelta elapsed) {
   base::ScopedClosureRunner on_request_finished(
-      base::Bind(&TimeZoneResolver::TimeZoneResolverImpl::RequestIsFinished,
-                 base::Unretained(resolver_)));
+      base::BindOnce(&TimeZoneResolver::TimeZoneResolverImpl::RequestIsFinished,
+                     base::Unretained(resolver_)));
 
   // Ignore invalid position.
   if (!position.Valid())
@@ -221,15 +227,15 @@ void TZRequest::OnLocationResolved(const Geoposition& position,
       base::Bind(&TZRequest::OnTimezoneResolved, AsWeakPtr()));
 
   // Prevent |on_request_finished| from firing here.
-  base::Closure unused = on_request_finished.Release();
+  base::OnceClosure unused = on_request_finished.Release();
 }
 
 void TZRequest::OnTimezoneResolved(
     std::unique_ptr<TimeZoneResponseData> timezone,
     bool server_error) {
   base::ScopedClosureRunner on_request_finished(
-      base::Bind(&TimeZoneResolver::TimeZoneResolverImpl::RequestIsFinished,
-                 base::Unretained(resolver_)));
+      base::BindOnce(&TimeZoneResolver::TimeZoneResolverImpl::RequestIsFinished,
+                     base::Unretained(resolver_)));
 
   DCHECK(timezone);
   VLOG(1) << "Refreshed local timezone={" << timezone->ToStringForDebug()
@@ -256,9 +262,9 @@ TimeZoneResolver::TimeZoneResolverImpl::TimeZoneResolverImpl(
     const TimeZoneResolver* resolver)
     : resolver_(resolver),
       geolocation_provider_(
-          resolver->context().get(),
+          resolver->shared_url_loader_factory(),
           SimpleGeolocationProvider::DefaultGeolocationProviderURL()),
-      timezone_provider_(resolver->context().get(),
+      timezone_provider_(resolver->shared_url_loader_factory(),
                          DefaultTimezoneProviderURL()),
       requests_count_(0),
       weak_ptr_factory_(this) {
@@ -373,6 +379,11 @@ bool TimeZoneResolver::TimeZoneResolverImpl::ShouldSendWiFiGeolocationData() {
   return resolver_->ShouldSendWiFiGeolocationData();
 }
 
+bool TimeZoneResolver::TimeZoneResolverImpl::
+    ShouldSendCellularGeolocationData() {
+  return resolver_->ShouldSendCellularGeolocationData();
+}
+
 base::WeakPtr<TimeZoneResolver::TimeZoneResolverImpl>
 TimeZoneResolver::TimeZoneResolverImpl::AsWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
@@ -380,21 +391,21 @@ TimeZoneResolver::TimeZoneResolverImpl::AsWeakPtr() {
 
 // ------------------------------------------------------------------------
 // TimeZoneResolver::Delegate implementation
-TimeZoneResolver::Delegate::Delegate() {}
-TimeZoneResolver::Delegate::~Delegate() {}
+TimeZoneResolver::Delegate::Delegate() = default;
+TimeZoneResolver::Delegate::~Delegate() = default;
 
 // ------------------------------------------------------------------------
 // TimeZoneResolver implementation
 
 TimeZoneResolver::TimeZoneResolver(
     Delegate* delegate,
-    scoped_refptr<net::URLRequestContextGetter> context,
+    scoped_refptr<network::SharedURLLoaderFactory> factory,
     const GURL& url,
     const ApplyTimeZoneCallback& apply_timezone,
     const DelayNetworkCallClosure& delay_network_call,
     PrefService* local_state)
     : delegate_(delegate),
-      context_(context),
+      shared_url_loader_factory_(std::move(factory)),
       url_(url),
       apply_timezone_(apply_timezone),
       delay_network_call_(delay_network_call),
@@ -438,6 +449,15 @@ void TimeZoneResolver::RegisterPrefs(PrefRegistrySimple* registry) {
 
 bool TimeZoneResolver::ShouldSendWiFiGeolocationData() const {
   return delegate_->ShouldSendWiFiGeolocationData();
+}
+
+bool TimeZoneResolver::ShouldSendCellularGeolocationData() const {
+  return delegate_->ShouldSendCellularGeolocationData();
+}
+
+scoped_refptr<network::SharedURLLoaderFactory>
+TimeZoneResolver::shared_url_loader_factory() const {
+  return shared_url_loader_factory_;
 }
 
 }  // namespace chromeos

@@ -35,7 +35,6 @@ bool IsValidFormFieldData(const FormFieldData& field) {
          IsValidString16(field.value) &&
          IsValidString(field.form_control_type) &&
          IsValidString(field.autocomplete_attribute) &&
-         IsValidString16Vector(field.option_values) &&
          IsValidString16Vector(field.option_contents);
 }
 
@@ -68,14 +67,6 @@ bool IsValidPasswordFormFillData(const PasswordFormFillData& form) {
     if (!IsValidString16(it.first) ||
         !IsValidString16(it.second.password) ||
         !IsValidString(it.second.realm))
-      return false;
-  }
-
-  for (const auto& it : form.other_possible_usernames) {
-    if (!IsValidString16(it.first.username) ||
-        !IsValidString16(it.first.password) ||
-        !IsValidString(it.first.realm) ||
-        !IsValidString16Vector(it.second))
       return false;
   }
 

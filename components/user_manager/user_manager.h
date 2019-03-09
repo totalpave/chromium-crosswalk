@@ -17,21 +17,9 @@
 class AccountId;
 class PrefService;
 
-namespace base {
-class DictionaryValue;
-}
-
-namespace chromeos {
-class LoginState;
-class ScopedUserManagerEnabler;
-}
-
-namespace cryptohome {
-class AsyncMethodCaller;
-}
-
 namespace user_manager {
 
+class ScopedUserManager;
 class RemoveUserDelegate;
 
 // Interface for UserManagerBase - that provides base implementation for
@@ -48,11 +36,27 @@ class USER_MANAGER_EXPORT UserManager {
     // Called when the local state preferences is changed.
     virtual void LocalStateChanged(UserManager* user_manager);
 
+    // Called when the image of the given user is changed.
+    virtual void OnUserImageChanged(const User& user);
+
+    // Called when the profile image download for the given user fails or
+    // user has the default profile image or no porfile image at all.
+    virtual void OnUserProfileImageUpdateFailed(const User& user);
+
+    // Called when the profile image for the given user is downloaded.
+    // |profile_image| contains the downloaded profile image.
+    virtual void OnUserProfileImageUpdated(const User& user,
+                                           const gfx::ImageSkia& profile_image);
+
+    // Called when any of the device cros settings which are responsible for
+    // user sign in are changed.
+    virtual void OnUsersSignInConstraintsChanged();
+
    protected:
     virtual ~Observer();
   };
 
-  // TODO(nkostylev): Refactor and move this observer out of UserManager.
+  // TODO(xiyuan): Refactor and move this observer out of UserManager.
   // Observer interface that defines methods used to notify on user session /
   // active user state changes. Default implementation is empty.
   class UserSessionStateObserver {
@@ -66,9 +70,6 @@ class USER_MANAGER_EXPORT UserManager {
     // Called right before notifying on user change so that those who rely
     // on account_id hash would be accessing up-to-date value.
     virtual void ActiveUserHashChanged(const std::string& hash);
-
-    // Called when child status has changed.
-    virtual void UserChangedChildStatus(User* user);
 
    protected:
     virtual ~UserSessionStateObserver();
@@ -159,7 +160,8 @@ class USER_MANAGER_EXPORT UserManager {
   // |username_hash| is used to identify homedir mount point.
   virtual void UserLoggedIn(const AccountId& account_id,
                             const std::string& username_hash,
-                            bool browser_restart) = 0;
+                            bool browser_restart,
+                            bool is_child) = 0;
 
   // Switches to active user identified by |account_id|. User has to be logged
   // in.
@@ -169,14 +171,8 @@ class USER_MANAGER_EXPORT UserManager {
   // restore has completed).
   virtual void SwitchToLastActiveUser() = 0;
 
-  // Called when browser session is started i.e. after
-  // browser_creator.LaunchBrowser(...) was called after user sign in.
-  // When user is at the image screen IsUserLoggedIn() will return true
-  // but IsSessionStarted() will return false. During the kiosk splash screen,
-  // we perform additional initialization after the user is logged in but
-  // before the session has been started.
-  // Fires NOTIFICATION_SESSION_STARTED.
-  virtual void SessionStarted() = 0;
+  // Invoked by session manager to inform session start.
+  virtual void OnSessionStarted() = 0;
 
   // Removes the user from the device. Note, it will verify that the given user
   // isn't the owner, so calling this method for the owner will take no effect.
@@ -200,12 +196,6 @@ class USER_MANAGER_EXPORT UserManager {
   // list or currently logged in as ephemeral. Returns |NULL| otherwise.
   // Same as FindUser but returns non-const pointer to User object.
   virtual User* FindUserAndModify(const AccountId& account_id) = 0;
-
-  // Returns the logged-in user.
-  // TODO(nkostylev): Deprecate this call, move clients to GetActiveUser().
-  // http://crbug.com/230852
-  virtual const User* GetLoggedInUser() const = 0;
-  virtual User* GetLoggedInUser() = 0;
 
   // Returns the logged-in user that is currently active within this session.
   // There could be multiple users logged in at the the same but for now
@@ -253,10 +243,8 @@ class USER_MANAGER_EXPORT UserManager {
   virtual std::string GetUserDisplayEmail(
       const AccountId& account_id) const = 0;
 
-  // Saves user's type for user |account_id| into local state preferences.
-  // Ignored If there is no such user.
-  virtual void SaveUserType(const AccountId& account_id,
-                            const UserType& user_type) = 0;
+  // Saves user's type for |user| into local state preferences.
+  virtual void SaveUserType(const User* user) = 0;
 
   // Returns true if current user is an owner.
   virtual bool IsCurrentUserOwner() const = 0;
@@ -298,13 +286,11 @@ class USER_MANAGER_EXPORT UserManager {
   // Returns true if we're logged in as a kiosk app.
   virtual bool IsLoggedInAsKioskApp() const = 0;
 
+  // Returns true if we're logged in as a ARC kiosk app.
+  virtual bool IsLoggedInAsArcKioskApp() const = 0;
+
   // Returns true if we're logged in as the stub user used for testing on Linux.
   virtual bool IsLoggedInAsStub() const = 0;
-
-  // Returns true if we're logged in and browser has been started i.e.
-  // browser_creator.LaunchBrowser(...) was called after sign in
-  // or restart after crash.
-  virtual bool IsSessionStarted() const = 0;
 
   // Returns true if data stored or cached for the user with the given
   // |account_id|
@@ -323,13 +309,28 @@ class USER_MANAGER_EXPORT UserManager {
   virtual void RemoveSessionStateObserver(UserSessionStateObserver* obs) = 0;
 
   virtual void NotifyLocalStateChanged() = 0;
-
-  // Changes the child status and notifies observers.
-  virtual void ChangeUserChildStatus(User* user, bool is_child) = 0;
-
+  virtual void NotifyUserImageChanged(const User& user) = 0;
+  virtual void NotifyUserProfileImageUpdateFailed(const User& user) = 0;
+  virtual void NotifyUserProfileImageUpdated(
+      const User& user,
+      const gfx::ImageSkia& profile_image) = 0;
+  virtual void NotifyUsersSignInConstraintsChanged() = 0;
 
   // Returns true if supervised users allowed.
   virtual bool AreSupervisedUsersAllowed() const = 0;
+
+  // Returns true if guest user is allowed.
+  virtual bool IsGuestSessionAllowed() const = 0;
+
+  // Returns true if the |user|, which has a GAIA account is allowed according
+  // to device settings and policies.
+  // Accept only users who has gaia account.
+  virtual bool IsGaiaUserAllowed(const User& user) const = 0;
+
+  // Returns true if |user| is allowed depending on device policies.
+  // Accepted user types: USER_TYPE_REGULAR, USER_TYPE_GUEST,
+  // USER_TYPE_SUPERVISED, USER_TYPE_CHILD.
+  virtual bool IsUserAllowed(const User& user) const = 0;
 
   // Returns "Local State" PrefService instance.
   virtual PrefService* GetLocalState() const = 0;
@@ -359,6 +360,9 @@ class USER_MANAGER_EXPORT UserManager {
   // Returns true if |account_id| is supervised.
   virtual bool IsSupervisedAccountId(const AccountId& account_id) const = 0;
 
+  virtual bool IsDeviceLocalAccountMarkedForRemoval(
+      const AccountId& account_id) const = 0;
+
   // Returns true when the browser has crashed and restarted during the current
   // user's session.
   virtual bool HasBrowserRestarted() const = 0;
@@ -373,11 +377,16 @@ class USER_MANAGER_EXPORT UserManager {
   // |on_resolved_callback| as reply callback.
   virtual void ScheduleResolveLocale(
       const std::string& locale,
-      const base::Closure& on_resolved_callback,
+      base::OnceClosure on_resolved_callback,
       std::string* out_resolved_locale) const = 0;
 
   // Returns true if |image_index| is a valid default user image index.
   virtual bool IsValidDefaultUserImageId(int image_index) const = 0;
+
+  UserType CalculateUserType(const AccountId& account_id,
+                             const User* user,
+                             bool browser_restart,
+                             bool is_child) const;
 
  protected:
   // Sets UserManager instance.
@@ -391,7 +400,7 @@ class USER_MANAGER_EXPORT UserManager {
   static UserManager* instance;
 
  private:
-  friend class chromeos::ScopedUserManagerEnabler;
+  friend class ScopedUserManager;
 
   // Same as Get() but doesn't won't crash is current instance is NULL.
   static UserManager* GetForTesting();
@@ -399,6 +408,19 @@ class USER_MANAGER_EXPORT UserManager {
   // Sets UserManager instance to the given |user_manager|.
   // Returns the previous value of the instance.
   static UserManager* SetForTesting(UserManager* user_manager);
+};
+
+// TODO(xiyuan): Move this along with UserSessionStateObserver
+class USER_MANAGER_EXPORT ScopedUserSessionStateObserver {
+ public:
+  explicit ScopedUserSessionStateObserver(
+      UserManager::UserSessionStateObserver* observer);
+  ~ScopedUserSessionStateObserver();
+
+ private:
+  UserManager::UserSessionStateObserver* const observer_;
+
+  DISALLOW_COPY_AND_ASSIGN(ScopedUserSessionStateObserver);
 };
 
 }  // namespace user_manager

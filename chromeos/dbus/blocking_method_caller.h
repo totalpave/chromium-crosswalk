@@ -5,16 +5,18 @@
 #ifndef CHROMEOS_DBUS_BLOCKING_METHOD_CALLER_H_
 #define CHROMEOS_DBUS_BLOCKING_METHOD_CALLER_H_
 
-#include "base/callback.h"
+#include <memory>
+
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/synchronization/waitable_event.h"
-#include "chromeos/chromeos_export.h"
 #include "dbus/message.h"
 
 namespace dbus {
 
 class Bus;
 class ObjectProxy;
+class ScopedDBusError;
 
 }  // namespace dbus
 
@@ -23,7 +25,7 @@ namespace chromeos {
 // A utility class to call D-Bus methods in a synchronous (blocking) way.
 // Note: Blocking the thread until it returns is not a good idea in most cases.
 //       Avoid using this class as hard as you can.
-class CHROMEOS_EXPORT BlockingMethodCaller {
+class COMPONENT_EXPORT(CHROMEOS_DBUS) BlockingMethodCaller {
  public:
   BlockingMethodCaller(dbus::Bus* bus, dbus::ObjectProxy* proxy);
   virtual ~BlockingMethodCaller();
@@ -31,6 +33,12 @@ class CHROMEOS_EXPORT BlockingMethodCaller {
   // Calls the method and blocks until it returns.
   std::unique_ptr<dbus::Response> CallMethodAndBlock(
       dbus::MethodCall* method_call);
+
+  // Calls the method and blocks until it returns. Populates the |error| and
+  // returns null in case of an error.
+  std::unique_ptr<dbus::Response> CallMethodAndBlockWithError(
+      dbus::MethodCall* method_call,
+      dbus::ScopedDBusError* error_out);
 
  private:
   dbus::Bus* bus_;

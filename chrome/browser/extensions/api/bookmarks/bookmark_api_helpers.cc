@@ -5,10 +5,14 @@
 #include "chrome/browser/extensions/api/bookmarks/bookmark_api_helpers.h"
 
 #include <math.h>  // For floor()
+
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
 #include "chrome/browser/extensions/api/bookmarks/bookmark_api_constants.h"
 #include "chrome/common/extensions/api/bookmarks.h"
 #include "components/bookmarks/browser/bookmark_model.h"
@@ -20,7 +24,6 @@ using bookmarks::BookmarkNode;
 
 namespace extensions {
 
-namespace keys = bookmark_api_constants;
 using api::bookmarks::BookmarkTreeNode;
 
 namespace bookmark_api_helpers {
@@ -56,12 +59,12 @@ void PopulateBookmarkTreeNode(
     api::bookmarks::BookmarkTreeNode* out_bookmark_tree_node) {
   DCHECK(out_bookmark_tree_node);
 
-  out_bookmark_tree_node->id = base::Int64ToString(node->id());
+  out_bookmark_tree_node->id = base::NumberToString(node->id());
 
   const BookmarkNode* parent = node->parent();
   if (parent) {
     out_bookmark_tree_node->parent_id.reset(
-        new std::string(base::Int64ToString(parent->id())));
+        new std::string(base::NumberToString(parent->id())));
     out_bookmark_tree_node->index.reset(new int(parent->GetIndexOf(node)));
   }
 
@@ -83,8 +86,7 @@ void PopulateBookmarkTreeNode(
         new double(floor(node->date_added().ToDoubleT() * 1000)));
   }
 
-  if (bookmarks::IsDescendantOf(node, managed->managed_node()) ||
-      bookmarks::IsDescendantOf(node, managed->supervised_node())) {
+  if (bookmarks::IsDescendantOf(node, managed->managed_node())) {
     out_bookmark_tree_node->unmodifiable =
         api::bookmarks::BOOKMARK_TREE_NODE_UNMODIFIABLE_MANAGED;
   }
@@ -124,20 +126,19 @@ bool RemoveNode(BookmarkModel* model,
                 std::string* error) {
   const BookmarkNode* node = bookmarks::GetBookmarkNodeByID(model, id);
   if (!node) {
-    *error = keys::kNoNodeError;
+    *error = bookmark_api_constants::kNoNodeError;
     return false;
   }
   if (model->is_permanent_node(node)) {
-    *error = keys::kModifySpecialError;
+    *error = bookmark_api_constants::kModifySpecialError;
     return false;
   }
-  if (bookmarks::IsDescendantOf(node, managed->managed_node()) ||
-      bookmarks::IsDescendantOf(node, managed->supervised_node())) {
-    *error = keys::kModifyManagedError;
+  if (bookmarks::IsDescendantOf(node, managed->managed_node())) {
+    *error = bookmark_api_constants::kModifyManagedError;
     return false;
   }
   if (node->is_folder() && !node->empty() && !recursive) {
-    *error = keys::kFolderNotEmptyError;
+    *error = bookmark_api_constants::kFolderNotEmptyError;
     return false;
   }
 
@@ -151,14 +152,14 @@ void GetMetaInfo(const BookmarkNode& node,
     return;
 
   const BookmarkNode::MetaInfoMap* meta_info = node.GetMetaInfoMap();
-  base::DictionaryValue* value = new base::DictionaryValue();
+  auto value = std::make_unique<base::DictionaryValue>();
   if (meta_info) {
     BookmarkNode::MetaInfoMap::const_iterator itr;
     for (itr = meta_info->begin(); itr != meta_info->end(); ++itr) {
-      value->SetStringWithoutPathExpansion(itr->first, itr->second);
+      value->SetKey(itr->first, base::Value(itr->second));
     }
   }
-  id_to_meta_info_map->Set(base::Int64ToString(node.id()), value);
+  id_to_meta_info_map->Set(base::NumberToString(node.id()), std::move(value));
 
   if (node.is_folder()) {
     for (int i = 0; i < node.child_count(); ++i) {

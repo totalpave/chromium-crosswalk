@@ -12,6 +12,7 @@ import java.util.Set;
  */
 public class ContextualSearchHeuristics {
     protected Set<ContextualSearchHeuristic> mHeuristics;
+    private QuickAnswersHeuristic mQuickAnswersHeuristic;
 
     /**
      * Manages a set of heuristics.
@@ -32,6 +33,21 @@ public class ContextualSearchHeuristics {
     }
 
     /**
+     * Optionally logs data about the duration the panel was viewed and /or opened.
+     * Default is to not log anything.
+     * @param panelViewDurationMs The duration that the panel was viewed (Peek and opened) by the
+     *        user.  This should always be a positive number, since this method is only called when
+     *        the panel has been viewed (Peeked).
+     * @param panelOpenDurationMs The duration that the panel was opened, or 0 if it was never
+     *        opened.
+     */
+    public void logPanelViewedDurations(long panelViewDurationMs, long panelOpenDurationMs) {
+        for (ContextualSearchHeuristic heuristic : mHeuristics) {
+            heuristic.logPanelViewedDurations(panelViewDurationMs, panelOpenDurationMs);
+        }
+    }
+
+    /**
      * Logs the condition state for all the Tap suppression heuristics.
      */
     public void logContitionState() {
@@ -46,5 +62,55 @@ public class ContextualSearchHeuristics {
      */
     void add(ContextualSearchHeuristic heuristicToAdd) {
         mHeuristics.add(heuristicToAdd);
+    }
+
+    /**
+     * @return Whether any heuristic that should be considered for aggregate tap suppression logging
+     *         is satisfied regardless of whether the tap was actually suppressed.
+     */
+    public boolean isAnyConditionSatisfiedForAggregrateLogging() {
+        for (ContextualSearchHeuristic heuristic : mHeuristics) {
+            if (heuristic.shouldAggregateLogForTapSuppression()
+                    && heuristic.isConditionSatisfiedForAggregateLogging()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Logs all the heuristics that want to provide a Ranker "feature" to the given recorder.
+     * @param recorder The recorder to log to.
+     */
+    public void logRankerTapSuppression(ContextualSearchInteractionRecorder recorder) {
+        for (ContextualSearchHeuristic heuristic : mHeuristics) {
+            heuristic.logRankerTapSuppression(recorder);
+        }
+    }
+
+    /**
+     * Logs all the heuristics that want to provide outcomes to Ranker to the given recorder.
+     * @param recorder The logger to log to.
+     */
+    public void logRankerTapSuppressionOutcome(ContextualSearchInteractionRecorder recorder) {
+        for (ContextualSearchHeuristic heuristic : mHeuristics) {
+            heuristic.logRankerTapSuppressionOutcome(recorder);
+        }
+    }
+
+    /**
+     * Sets the {@link QuickAnswersHeuristic} so that it can be accessed externally by
+     * {@link #getQuickAnswersHeuristic}.
+     * @param quickAnswersHeuristic The active {@link QuickAnswersHeuristic}.
+     */
+    public void setQuickAnswersHeuristic(QuickAnswersHeuristic quickAnswersHeuristic) {
+        mQuickAnswersHeuristic = quickAnswersHeuristic;
+    }
+
+    /**
+     * @return The active {@link QuickAnswersHeuristic}.
+     */
+    public QuickAnswersHeuristic getQuickAnswersHeuristic() {
+        return mQuickAnswersHeuristic;
     }
 }

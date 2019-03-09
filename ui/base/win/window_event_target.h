@@ -30,6 +30,18 @@ class UI_BASE_EXPORT WindowEventTarget {
                                      LPARAM l_param,
                                      bool* handled) = 0;
 
+  // Handles pointer events like WM_POINTERUP, WM_POINTERDOWN, WM_POINTERUPDATE
+  // events.
+  // The |message| parameter identifies the message.
+  // The |w_param| and |l_param| values are as per MSDN docs.
+  // The |handled| parameter is an output parameter which when set to false
+  // indicates that the message should be DefProc'ed.
+  // Returns the result of processing the message.
+  virtual LRESULT HandlePointerMessage(unsigned int message,
+                                       WPARAM w_param,
+                                       LPARAM l_param,
+                                       bool* handled) = 0;
+
   // Handles keyboard events like WM_KEYDOWN/WM_KEYUP, etc.
   // The |message| parameter identifies the message.
   // The |w_param| and |l_param| values are dependent on the type of the
@@ -76,6 +88,36 @@ class UI_BASE_EXPORT WindowEventTarget {
 
   // Notification from the forwarder window that its parent changed.
   virtual void HandleParentChanged() = 0;
+
+  // Apply the transform from Direct Manipulation API.
+
+  // Calls ApplyPinchZoomScale() for pinch-zoom gesture. scale is the scale
+  // factor.
+  virtual void ApplyPinchZoomScale(float scale) = 0;
+
+  // Pinch gesture phase. The sequencing expected of these events.
+  // The sequence of calls is ApplyPinchZoomBegin(), any number of calls to
+  // ApplyPinchZoomScale() and finally ApplyPinchZoomEnd().
+  virtual void ApplyPinchZoomBegin() = 0;
+  virtual void ApplyPinchZoomEnd() = 0;
+
+  // Calls ApplyPanGestureScroll() for pan gesture, scroll_x and scroll_y are
+  // pixel precison scroll offset.
+  virtual void ApplyPanGestureScroll(int scroll_x, int scroll_y) = 0;
+
+  // Calls ApplyPanGestureFling() for pan inertia gesture, scroll_x and scroll_y
+  // are pixel precison scroll offset.
+  virtual void ApplyPanGestureFling(int scroll_x, int scroll_y) = 0;
+
+  // Pan gesture phase. The sequencing expected of these events.
+  // The sequence of calls is ApplyPanGestureScrollBegin(), any number of calls
+  // to ApplyPanGestureScroll(), ApplyPanGestureScrollEnd(),
+  // ApplyPanGestureFlingBegin(), any number of calls to ApplyPanGestureFling(),
+  // and finally ApplyPanGestureFlingEnd().
+  virtual void ApplyPanGestureScrollBegin(int scroll_x, int scroll_y) = 0;
+  virtual void ApplyPanGestureScrollEnd() = 0;
+  virtual void ApplyPanGestureFlingBegin() = 0;
+  virtual void ApplyPanGestureFlingEnd() = 0;
 
  protected:
   WindowEventTarget();

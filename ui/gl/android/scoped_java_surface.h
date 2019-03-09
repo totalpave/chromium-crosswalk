@@ -43,6 +43,9 @@ class GL_EXPORT ScopedJavaSurface {
   // Checks whether the surface is an empty one.
   bool IsEmpty() const;
 
+  // Checks whether this object references a valid surface.
+  bool IsValid() const;
+
   // Checks whether the surface is hardware protected so that no readback is
   // possible.
   bool is_protected() const { return is_protected_; }
@@ -54,9 +57,10 @@ class GL_EXPORT ScopedJavaSurface {
  private:
   // Performs destructive move from |other| to this.
   void MoveFrom(ScopedJavaSurface& other);
+  void ReleaseSurfaceIfNeeded();
 
-  bool auto_release_;
-  bool is_protected_;
+  bool auto_release_ = true;
+  bool is_protected_ = false;
 
   base::android::ScopedJavaGlobalRef<jobject> j_surface_;
 

@@ -1,8 +1,6 @@
-/**
- * Copyright 2016 The Chromium Authors. All rights reserved.
+/* Copyright 2016 The Chromium Authors. All rights reserved.
  * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
- */
+ * found in the LICENSE file. */
 
 html,
 body,
@@ -13,6 +11,25 @@ webview,
   margin: 0;
   padding: 0;
   width: 100%;
+}
+
+.header {
+  color: rgba(0, 0, 0, 0.87);
+  font-family: Roboto, sans-serif;
+  padding: 64px 64px 0 64px;
+}
+
+p.title {
+  color: rgba(0, 0, 0, 0.87);
+  font-size: 28px;
+  font-weight: normal;
+  margin: 36px 0 0 0; /* = 64 - font height*/
+}
+
+.subtitle {
+  color: rgba(0, 0, 0, 0.87);
+  font-size: 13px;
+  margin: 23px 0 0 0; /* = 40 - 4 (adjustment) - line-height */
 }
 
 ::-webkit-scrollbar {
@@ -33,11 +50,23 @@ webview,
 #arc-support {
   flex: auto;
   overflow: hidden;
-  width: 960px;
+  width: 100%;
+}
+
+#service-container {
+  box-shadow: 0 -2px 2px -2px rgba(0, 0, 0, 0.14);
+  flex: auto;
+  margin: 40px 0 0 0;
+}
+
+#service-container::-webkit-scrollbar {
+  display: none;
 }
 
 #terms-view {
-  width: 640px;
+  display: block;
+  margin: auto;
+  width: 638px;
 }
 
 .bubble-button > div {
@@ -46,36 +75,53 @@ webview,
   width: 12px;
 }
 
-.button-separator {
-  width: 1px;
+.button-active-directory-auth {
+  border: 1px solid #e6e6e6;
+  border-radius: 2px;
+  color: #5a5a5a;
+  margin: 26px 18px 0 26px;
 }
 
-.checkbox-option {
-  height: 12px;
-  margin: 0;
-  padding: 0;
-  width: 12px;
+#button-retry,
+#button-agree,
+#button-next {
+  margin-inline-end: 18px;
 }
 
-.checkbox-text {
+#button-cancel,
+#button-send-feedback {
+  margin-inline-end: 6px;
+}
+
+#overlay-text-content p {
+  margin-bottom: 0;
+}
+
+.checkbox-text,
+.content-text {
   color: rgba(0, 0, 0, 0.54);
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 400;
   line-height: 16px;
   margin: 0;
-  padding: 0;
+}
+
+#google-service-confirmation .content-text {
+  font-weight: 600;
 }
 
 .content {
-  /* Default window inner height (688px) minus image caption height (300px) */
-  height: 388px;
+  /* height equals 464px, which is app height (640px) minus icon
+   * header (96px) and bottom (80px).
+   */
+  height: 464px;
   margin: 0;
-  padding: 0;
+  padding: 0 64px;
 }
 
 .controlled-setting-indicator {
-  -webkit-margin-end: 3px;
-  -webkit-margin-start: 2px;
+  margin-inline-end: 3px;
+  margin-inline-start: 2px;
 }
 
 .controlled-setting-indicator[controlled-by] > div {
@@ -86,7 +132,58 @@ webview,
   display: block;
   height: 300px;
   padding: 0;
-  width: 960px;
+  width: 100%;
+}
+
+.error-image {
+  display: block;
+  margin: auto;
+  padding: 60px 0 0 0;
+}
+
+.icon-header {
+  display: block;
+  height: 32px;
+  width: 32px;
+}
+
+.overlay-text .page {
+  width: 480px;
+}
+
+.overlay-text #overlay-url-container {
+  display: none;
+}
+
+.overlay-url .page {
+  width: 640px;
+}
+
+.overlay-url span {
+  display: none;
+}
+
+.overlay-url .content-area {
+  height: 332px;
+}
+
+.overlay-url webview {
+  display: block;
+  height: 300px;
+  margin: 24px 8px 8px 8px;
+  padding: 0;
+  width: 100%;
+}
+
+.overlay-url.overlay-loading #overlay-url,
+.overlay-url:not(.overlay-loading) #overlay-url-loading {
+  display: none;
+}
+
+.page {
+  font-family: 'Roboto';
+  font-size: 13px;
+  text-align: left;
 }
 
 .scrollable {
@@ -99,13 +196,34 @@ webview,
 .section {
   display: flex;
   flex-direction: column;
-  text-align: center;
+  text-align: start;
+}
+
+.section-active-directory-auth {
+  align-content: left;
+  padding: 64px 0 0 64px;
+  text-align: left;
+}
+
+.section-active-directory-auth-view {
+  border: 1px solid #e6e6e6;
+  color: rgba(0, 0, 0, 0.54);
+  flex: auto;
+  height: 305px;
+  margin: 40px 64px 0 auto;
+  overflow: hidden;
 }
 
 .section-buttons {
-  margin: auto;
-  padding: 16px 0 24px 0;
-  width: 640px;
+  box-shadow: 0 -1px 1px rgba(0, 0, 0, 0.14);
+  height: 80px;
+  padding: 0;
+  z-index: 1;
+  width: 100%
+}
+
+.section-active-directory-auth-buttons {
+  float: right;
 }
 
 .section-flex {
@@ -115,34 +233,29 @@ webview,
 
 .section-checkbox-container {
   margin: auto;
-  padding: 8px 0 0 0;
-  text-align: left;
-  width: 640px;
-}
-
-.section-checkbox-container > input[type='checkbox'] {
-  flex-shrink: 0;
-  margin: 0 8px 0 0;
+  max-width: 590px;
+  padding: 0 20px 16px 20px;
 }
 
 .section-terms {
-  border: 1px solid #e6e6e6;
-  color: rgba(0, 0, 0, 0.54);
+  border: 1px solid #d9d9d9;
+  box-sizing: border-box;
   flex: auto;
-  margin: 0 auto 8px auto;
-  overflow: hidden;
+  margin: 0 0 16px 0;
   padding: 0;
-  width: 640px;
 }
 
-.text-desc {
-  color: rgba(0, 0, 0, 0.54);
-  font-size: 18px;
-  font-weight: 300;
-  line-height: 24px;
-  margin: auto;
-  padding: 16px 0 0 0;
-  width: 640px;
+.text-active-directory-auth-title {
+  color: rgba(0, 0, 0, 0.87);
+  font-size: 28px;
+  font-weight: normal;
+  margin: 36px 64px 0 0; /* = 64 - font height*/
+}
+
+.text-active-directory-auth-subtitle {
+  color: rgba(0, 0, 0, 0.87);
+  font-size: 13px;
+  margin: 23px 64px 0 0; /* = 40 - 4 (adjustment) - line-height */
 }
 
 .text-status {
@@ -153,32 +266,19 @@ webview,
   padding: 11px 0 40px 0;
 }
 
-.text-terms-title {
-  color: rgba(0, 0, 0, 0.54);
-  font-size: 10px;
-  font-weight: 500;
-  margin: auto;
-  padding: 10px 0 8px 0;
-  text-align: left;
-  width: 640px;
-}
-
-.text-title {
-  color: rgba(0, 0, 0, 0.87);
-  font-size: 30px;
-  font-weight: 300;
-  line-height: 32px;
-  margin: auto;
-  padding: 4px 0 0 0;
-  width: 800px;
-}
-
 a:link {
-  color: rgb(51, 103, 214);
+  color: rgb(66, 133, 244);
   text-decoration: none;
 }
 
 a:visited {
-  color: rgb(51, 103, 214);
+  color: rgb(66, 133, 244);
   text-decoration: none;
 }
+
+a.invisible-link {
+  display: inline-block;
+  height: 0;
+  width: 0;
+}
+

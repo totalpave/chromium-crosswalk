@@ -48,13 +48,16 @@ class InterstitialPage {
       const GURL& url,
       InterstitialPageDelegate* delegate);
 
-  // Retrieves the InterstitialPage if any associated with the specified
-  // |web_contents|.
+  // Returns the InterstitialPage, if any, associated with the specified
+  // |web_contents|. Note: This returns a value from the time the interstitial
+  // page has Show() called on it.
+  //
+  // Compare to WebContents::GetInterstitialPage.
   CONTENT_EXPORT static InterstitialPage* GetInterstitialPage(
       WebContents* web_contents);
 
-  // Retrieves the InterstitialPage that hosts the RenderFrameHost, or nullptr
-  // if |rfh| is not a part of any InterstitialPage.
+  // Returns the InterstitialPage that hosts the RenderFrameHost, or nullptr if
+  // |rfh| is not a part of any InterstitialPage.
   CONTENT_EXPORT static InterstitialPage* FromRenderFrameHost(
       RenderFrameHost* rfh);
 
@@ -91,8 +94,8 @@ class InterstitialPage {
   // DidAttachInterstitialPage or DidDetachInterstitialPage notifications.
   virtual WebContents* GetWebContents() const = 0;
 
-  // Gets the RenderFrameHost associated with
-  // the interstitial page's main frame.
+  // Gets the RenderFrameHost associated with the interstitial page's main
+  // frame. May return nullptr if the interstitial is already hidden.
   virtual RenderFrameHost* GetMainFrame() const = 0;
 
   virtual InterstitialPageDelegate* GetDelegateForTesting() = 0;

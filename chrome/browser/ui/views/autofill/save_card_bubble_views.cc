@@ -4,94 +4,86 @@
 
 #include "chrome/browser/ui/views/autofill/save_card_bubble_views.h"
 
-#include <stddef.h>
+#include <memory>
 
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/autofill/save_card_bubble_controller.h"
+#include "chrome/browser/ui/browser_dialogs.h"
+#include "chrome/browser/ui/views/autofill/dialog_view_ids.h"
+#include "chrome/browser/ui/views/autofill/view_util.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/chrome_typography.h"
+#include "components/autofill/core/browser/autofill_metrics.h"
 #include "components/autofill/core/browser/credit_card.h"
 #include "components/autofill/core/browser/legal_message_line.h"
-#include "grit/components_strings.h"
+#include "components/autofill/core/browser/ui/save_card_bubble_controller.h"
+#include "components/autofill/core/common/autofill_features.h"
+#include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/gfx/color_palette.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/views/border.h"
+#include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
-#include "ui/views/controls/button/blue_button.h"
+#include "ui/views/bubble/tooltip_icon.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/controls/link.h"
 #include "ui/views/controls/styled_label.h"
+#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/views/layout/layout_constants.h"
+#include "ui/views/style/typography.h"
+#include "ui/views/window/dialog_client_view.h"
 
 namespace autofill {
 
-namespace {
-
-// Fixed width of the bubble.
-const int kBubbleWidth = 395;
-
-std::unique_ptr<views::StyledLabel> CreateLegalMessageLineLabel(
-    const LegalMessageLine& line,
-    views::StyledLabelListener* listener) {
-  std::unique_ptr<views::StyledLabel> label(
-      new views::StyledLabel(line.text(), listener));
-  for (const LegalMessageLine::Link& link : line.links()) {
-    label->AddStyleRange(link.range,
-                         views::StyledLabel::RangeStyleInfo::CreateForLink());
-  }
-  return label;
+SaveCardBubbleViews::SyncPromoDelegate::SyncPromoDelegate(
+    SaveCardBubbleController* controller,
+    signin_metrics::AccessPoint access_point)
+    : controller_(controller), access_point_(access_point) {
+  DCHECK(controller_);
 }
 
-}  // namespace
+void SaveCardBubbleViews::SyncPromoDelegate::OnEnableSync(
+    const AccountInfo& account,
+    bool is_default_promo_account) {
+  controller_->OnSyncPromoAccepted(account, access_point_,
+                                   is_default_promo_account);
+}
 
 SaveCardBubbleViews::SaveCardBubbleViews(views::View* anchor_view,
+                                         const gfx::Point& anchor_point,
                                          content::WebContents* web_contents,
                                          SaveCardBubbleController* controller)
-    : LocationBarBubbleDelegateView(anchor_view, web_contents),
-      controller_(controller),
-      learn_more_link_(nullptr) {
+    : LocationBarBubbleDelegateView(anchor_view, anchor_point, web_contents),
+      controller_(controller) {
   DCHECK(controller);
-  views::BubbleDialogDelegateView::CreateBubble(this);
+  chrome::RecordDialogCreation(chrome::DialogIdentifier::SAVE_CARD);
 }
-
-SaveCardBubbleViews::~SaveCardBubbleViews() {}
 
 void SaveCardBubbleViews::Show(DisplayReason reason) {
   ShowForReason(reason);
+  AssignIdsToDialogClientView();
 }
 
 void SaveCardBubbleViews::Hide() {
+  // If |controller_| is null, WindowClosing() won't invoke OnBubbleClosed(), so
+  // do that here. This will clear out |controller_|'s reference to |this|. Note
+  // that WindowClosing() happens only after the _asynchronous_ Close() task
+  // posted in CloseBubble() completes, but we need to fix references sooner.
+  if (controller_)
+    controller_->OnBubbleClosed();
   controller_ = nullptr;
   CloseBubble();
 }
 
-views::View* SaveCardBubbleViews::CreateExtraView() {
-  DCHECK(!learn_more_link_);
-  learn_more_link_ = new views::Link(l10n_util::GetStringUTF16(IDS_LEARN_MORE));
-  learn_more_link_->SetUnderline(false);
-  learn_more_link_->set_listener(this);
-  return learn_more_link_;
-}
-
 views::View* SaveCardBubbleViews::CreateFootnoteView() {
-  if (controller_->GetLegalMessageLines().empty())
-    return nullptr;
-
-  // Use BoxLayout to provide insets around the label.
-  View* view = new View();
-  view->SetLayoutManager(
-      new views::BoxLayout(views::BoxLayout::kVertical, 0, 0, 0));
-
-  // Add a StyledLabel for each line of the legal message.
-  for (const LegalMessageLine& line : controller_->GetLegalMessageLines())
-    view->AddChildView(CreateLegalMessageLineLabel(line, this).release());
-
-  return view;
+  return nullptr;
 }
 
 bool SaveCardBubbleViews::Accept() {
-  controller_->OnSaveButton();
+  if (controller_)
+    controller_->OnSaveButton({});
   return true;
 }
 
@@ -102,112 +94,145 @@ bool SaveCardBubbleViews::Cancel() {
 }
 
 bool SaveCardBubbleViews::Close() {
-  // Override to prevent Cancel from being called when the bubble is hidden.
-  // Return true to indicate that the bubble can be closed.
+  // If there is a cancel button (non-Material UI), Cancel is logged as a
+  // different user action than closing, so override Close() to prevent the
+  // superclass' implementation from calling Cancel().
+  //
+  // Clicking the top-right [X] close button and/or focusing then unfocusing the
+  // bubble count as a close action only (without calling Cancel), which means
+  // we can't tell the controller to permanently hide the bubble on close,
+  // because the user simply dismissed/ignored the bubble; they might want to
+  // access the bubble again from the location bar icon. Return true to indicate
+  // that the bubble can be closed.
   return true;
 }
 
-int SaveCardBubbleViews::GetDialogButtons() const {
-  // This is the default for BubbleDialogDelegateView, but it's not the default
-  // for LocationBarBubbleDelegateView.
-  return ui::DIALOG_BUTTON_OK | ui::DIALOG_BUTTON_CANCEL;
+gfx::Size SaveCardBubbleViews::CalculatePreferredSize() const {
+  const int width = ChromeLayoutProvider::Get()->GetDistanceMetric(
+                        DISTANCE_BUBBLE_PREFERRED_WIDTH) -
+                    margins().width();
+  return gfx::Size(width, GetHeightForWidth(width));
 }
 
-base::string16 SaveCardBubbleViews::GetDialogButtonLabel(
-    ui::DialogButton button) const {
-  return l10n_util::GetStringUTF16(button == ui::DIALOG_BUTTON_OK
-                                       ? IDS_AUTOFILL_SAVE_CARD_PROMPT_ACCEPT
-                                       : IDS_AUTOFILL_SAVE_CARD_PROMPT_DENY);
+void SaveCardBubbleViews::AddedToWidget() {
+  // Use a custom title container if offering to upload a server card.
+  // Done when this view is added to the widget, so the bubble frame
+  // view is guaranteed to exist.
+  if (!controller_->IsUploadSave())
+    return;
+
+  GetBubbleFrameView()->SetTitleView(
+      std::make_unique<TitleWithIconAndSeparatorView>(GetWindowTitle()));
 }
 
-bool SaveCardBubbleViews::ShouldDefaultButtonBeBlue() const {
+bool SaveCardBubbleViews::ShouldShowCloseButton() const {
   return true;
-}
-
-gfx::Size SaveCardBubbleViews::GetPreferredSize() const {
-  return gfx::Size(kBubbleWidth, GetHeightForWidth(kBubbleWidth));
 }
 
 base::string16 SaveCardBubbleViews::GetWindowTitle() const {
-  return controller_->GetWindowTitle();
+  return controller_ ? controller_->GetWindowTitle() : base::string16();
 }
 
 void SaveCardBubbleViews::WindowClosing() {
-  if (controller_)
+  if (controller_) {
     controller_->OnBubbleClosed();
-}
-
-void SaveCardBubbleViews::LinkClicked(views::Link* source, int event_flags) {
-  DCHECK_EQ(source, learn_more_link_);
-  controller_->OnLearnMoreClicked();
-}
-
-void SaveCardBubbleViews::StyledLabelLinkClicked(views::StyledLabel* label,
-                                                 const gfx::Range& range,
-                                                 int event_flags) {
-  // Index of |label| within its parent's view hierarchy is the same as the
-  // legal message line index. DCHECK this assumption to guard against future
-  // layout changes.
-  DCHECK_EQ(static_cast<size_t>(label->parent()->child_count()),
-            controller_->GetLegalMessageLines().size());
-
-  const auto& links =
-      controller_->GetLegalMessageLines()[label->parent()->GetIndexOf(label)]
-          .links();
-  for (const LegalMessageLine::Link& link : links) {
-    if (link.range == range) {
-      controller_->OnLegalMessageLinkClicked(link.url);
-      return;
-    }
+    controller_ = nullptr;
   }
-
-  // |range| was not found.
-  NOTREACHED();
 }
 
-// Create view containing everything except for the footnote.
+views::View* SaveCardBubbleViews::GetFootnoteViewForTesting() {
+  return footnote_view_;
+}
+
+SaveCardBubbleViews::~SaveCardBubbleViews() {}
+
+// Overridden
 std::unique_ptr<views::View> SaveCardBubbleViews::CreateMainContentView() {
-  std::unique_ptr<View> view(new View());
-  view->SetLayoutManager(
-      new views::BoxLayout(views::BoxLayout::kVertical, 0, 0,
-                           views::kUnrelatedControlVerticalSpacing));
+  std::unique_ptr<views::View> view = std::make_unique<views::View>();
+  ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
 
-  // Add the card type icon, last four digits and expiration date.
-  views::View* description_view = new views::View();
-  description_view->SetLayoutManager(new views::BoxLayout(
-      views::BoxLayout::kHorizontal, 0, 0, views::kRelatedButtonHSpacing));
-  view->AddChildView(description_view);
+  view->SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::kVertical, gfx::Insets(),
+      provider->GetDistanceMetric(views::DISTANCE_UNRELATED_CONTROL_VERTICAL)));
 
-  const CreditCard& card = controller_->GetCard();
-  views::ImageView* card_type_icon = new views::ImageView();
-  card_type_icon->SetImage(
-      ResourceBundle::GetSharedInstance()
-          .GetImageNamed(CreditCard::IconResourceId(card.type()))
-          .AsImageSkia());
-  card_type_icon->SetTooltipText(card.TypeForDisplay());
-  card_type_icon->SetBorder(
-      views::Border::CreateSolidBorder(1, SkColorSetA(SK_ColorBLACK, 10)));
-  description_view->AddChildView(card_type_icon);
-
-  description_view->AddChildView(new views::Label(
-      base::string16(kMidlineEllipsis) + card.LastFourDigits()));
-  description_view->AddChildView(
-      new views::Label(card.AbbreviatedExpirationDateForDisplay()));
-
-  // Optionally add label that will contain an explanation for upload.
+  // If applicable, add the upload explanation label.  Appears above the card
+  // info.
   base::string16 explanation = controller_->GetExplanatoryMessage();
   if (!explanation.empty()) {
-    views::Label* explanation_label = new views::Label(explanation);
+    auto* explanation_label = new views::Label(
+        explanation, CONTEXT_BODY_TEXT_LARGE, ChromeTextStyle::STYLE_SECONDARY);
     explanation_label->SetMultiLine(true);
     explanation_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     view->AddChildView(explanation_label);
   }
 
+  // Add the card type icon, last four digits and expiration date.
+  auto* description_view = new views::View();
+  views::BoxLayout* box_layout =
+      description_view->SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::kHorizontal, gfx::Insets(),
+          provider->GetDistanceMetric(
+              views::DISTANCE_RELATED_BUTTON_HORIZONTAL)));
+  view->AddChildView(description_view);
+
+  const CreditCard& card = controller_->GetCard();
+  auto* card_type_icon = new views::ImageView();
+  card_type_icon->SetImage(
+      ui::ResourceBundle::GetSharedInstance()
+          .GetImageNamed(CreditCard::IconResourceId(card.network()))
+          .AsImageSkia());
+  card_type_icon->set_tooltip_text(card.NetworkForDisplay());
+  description_view->AddChildView(card_type_icon);
+
+  description_view->AddChildView(
+      new views::Label(card.NetworkAndLastFourDigits(), CONTEXT_BODY_TEXT_LARGE,
+                       views::style::STYLE_PRIMARY));
+
+  if (!card.IsExpired(base::Time::Now())) {
+    // The spacer will stretch to use the available horizontal space in the
+    // dialog, which will end-align the expiration date label.
+    auto* spacer = new views::View();
+    description_view->AddChildView(spacer);
+    box_layout->SetFlexForView(spacer, /*flex=*/1);
+
+    auto* expiration_date_label = new views::Label(
+        card.AbbreviatedExpirationDateForDisplay(
+            !features::
+                IsAutofillSaveCardDialogUnlabeledExpirationDateEnabled()),
+        CONTEXT_BODY_TEXT_LARGE, ChromeTextStyle::STYLE_SECONDARY);
+    expiration_date_label->set_id(DialogViewId::EXPIRATION_DATE_LABEL);
+    description_view->AddChildView(expiration_date_label);
+  }
+
   return view;
 }
 
+void SaveCardBubbleViews::InitFootnoteView(views::View* footnote_view) {
+  DCHECK(!footnote_view_);
+  footnote_view_ = footnote_view;
+  footnote_view_->set_id(DialogViewId::FOOTNOTE_VIEW);
+}
+
+void SaveCardBubbleViews::AssignIdsToDialogClientView() {
+  auto* ok_button = GetDialogClientView()->ok_button();
+  if (ok_button)
+    ok_button->set_id(DialogViewId::OK_BUTTON);
+  auto* cancel_button = GetDialogClientView()->cancel_button();
+  if (cancel_button)
+    cancel_button->set_id(DialogViewId::CANCEL_BUTTON);
+}
+
 void SaveCardBubbleViews::Init() {
-  SetLayoutManager(new views::BoxLayout(views::BoxLayout::kVertical, 0, 0, 0));
+  SetLayoutManager(
+      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
+  // For server cards, there is an explanation between the title and the
+  // controls; use views::TEXT. For local cards, since there is no explanation,
+  // use views::CONTROL instead.
+  set_margins(ChromeLayoutProvider::Get()->GetDialogInsetsForContentType(
+      controller_->GetExplanatoryMessage().empty() ? views::CONTROL
+                                                   : views::TEXT,
+      GetDialogButtons() == ui::DIALOG_BUTTON_NONE ? views::TEXT
+                                                   : views::CONTROL));
   AddChildView(CreateMainContentView().release());
 }
 

@@ -19,6 +19,7 @@
 #include "content/renderer/pepper/video_decoder_shim.h"
 #include "gpu/ipc/client/command_buffer_proxy_impl.h"
 #include "media/base/limits.h"
+#include "media/base/media_util.h"
 #include "media/gpu/ipc/client/gpu_video_decode_accelerator_host.h"
 #include "media/video/video_decode_accelerator.h"
 #include "ppapi/c/pp_completion_callback.h"
@@ -204,13 +205,10 @@ int32_t PepperVideoDecoderHost::OnHostMsgGetShm(
 
   base::SharedMemoryHandle shm_handle = shm->handle();
   if (shm_id == shm_buffers_.size()) {
-    shm_buffers_.push_back(shm.release());
+    shm_buffers_.push_back(std::move(shm));
     shm_buffer_busy_.push_back(false);
   } else {
-    // Remove the old buffer. Delete manually since ScopedVector won't delete
-    // the existing element if we just assign over it.
-    delete shm_buffers_[shm_id];
-    shm_buffers_[shm_id] = shm.release();
+    shm_buffers_[shm_id] = std::move(shm);
   }
 
   SerializedHandle handle(
@@ -218,7 +216,7 @@ int32_t PepperVideoDecoderHost::OnHostMsgGetShm(
       shm_size);
   ppapi::host::ReplyMessageContext reply_context =
       context->MakeReplyMessageContext();
-  reply_context.params.AppendHandle(handle);
+  reply_context.params.AppendHandle(std::move(handle));
   host()->SendReply(reply_context,
                     PpapiPluginMsg_VideoDecoder_GetShmReply(shm_size));
 
@@ -259,10 +257,32 @@ int32_t PepperVideoDecoderHost::OnHostMsgDecode(
 int32_t PepperVideoDecoderHost::OnHostMsgAssignTextures(
     ppapi::host::HostMessageContext* context,
     const PP_Size& size,
-    const std::vector<uint32_t>& texture_ids) {
+    const std::vector<uint32_t>& texture_ids,
+    const std::vector<gpu::Mailbox>& mailboxes) {
   if (!initialized_)
     return PP_ERROR_FAILED;
+  if (texture_ids.size() != mailboxes.size())
+    return PP_ERROR_FAILED;
   DCHECK(decoder_);
+
+  pending_texture_requests_--;
+  DCHECK_GE(pending_texture_requests_, 0);
+
+  // If |assign_textures_messages_to_dismiss_| is not 0 then decrement it and
+  // dismiss the textures. This is necessary to ensure that after SW decoder
+  // fallback the textures that were requested by the failed HW decoder are not
+  // passed to the SW decoder.
+  if (assign_textures_messages_to_dismiss_ > 0) {
+    assign_textures_messages_to_dismiss_--;
+    PictureBufferMap pictures_pending_dismission;
+    for (auto& texture_id : texture_ids) {
+      host()->SendUnsolicitedReply(
+          pp_resource(),
+          PpapiPluginMsg_VideoDecoder_DismissPicture(texture_id));
+    }
+    picture_buffer_map_.swap(pictures_pending_dismission);
+    return PP_OK;
+  }
 
   // Verify that the new texture IDs are unique and store them in
   // |new_textures|.
@@ -288,6 +308,7 @@ int32_t PepperVideoDecoderHost::OnHostMsgAssignTextures(
         gfx::Size(size.width, size.height), ids);
     picture_buffers.push_back(buffer);
   }
+  texture_mailboxes_ = mailboxes;
   decoder_->AssignPictureBuffers(picture_buffers);
   return PP_OK;
 }
@@ -299,7 +320,7 @@ int32_t PepperVideoDecoderHost::OnHostMsgRecyclePicture(
     return PP_ERROR_FAILED;
   DCHECK(decoder_);
 
-  PictureBufferMap::iterator it = picture_buffer_map_.find(texture_id);
+  auto it = picture_buffer_map_.find(texture_id);
   if (it == picture_buffer_map_.end())
     return PP_ERROR_BADARGUMENT;
 
@@ -359,18 +380,29 @@ void PepperVideoDecoderHost::ProvidePictureBuffers(
     const gfx::Size& dimensions,
     uint32_t texture_target) {
   DCHECK_EQ(1u, textures_per_buffer);
-  RequestTextures(std::max(min_picture_count_, requested_num_of_buffers),
-                  dimensions,
-                  texture_target,
-                  std::vector<gpu::Mailbox>());
+  coded_size_ = dimensions;
+  pending_texture_requests_++;
+  host()->SendUnsolicitedReply(
+      pp_resource(), PpapiPluginMsg_VideoDecoder_RequestTextures(
+                         std::max(min_picture_count_, requested_num_of_buffers),
+                         PP_MakeSize(dimensions.width(), dimensions.height()),
+                         texture_target));
 }
 
 void PepperVideoDecoderHost::PictureReady(const media::Picture& picture) {
-  PictureBufferMap::iterator it =
-      picture_buffer_map_.find(picture.picture_buffer_id());
+  auto it = picture_buffer_map_.find(picture.picture_buffer_id());
   DCHECK(it != picture_buffer_map_.end());
-  DCHECK(it->second == PictureBufferState::ASSIGNED);
+  // VDA might send the same picture multiple times in VP9 video. However the
+  // Pepper client might not able to handle it. Therefore we just catch it here.
+  // https://crbug.com/755887
+  CHECK(it->second == PictureBufferState::ASSIGNED);
   it->second = PictureBufferState::IN_USE;
+
+  if (software_fallback_used_) {
+    media::ReportPepperVideoDecoderOutputPictureCountSW(coded_size_.height());
+  } else {
+    media::ReportPepperVideoDecoderOutputPictureCountHW(coded_size_.height());
+  }
 
   // Don't bother validating the visible rect, since the plugin process is less
   // trusted than the gpu process.
@@ -382,7 +414,7 @@ void PepperVideoDecoderHost::PictureReady(const media::Picture& picture) {
 }
 
 void PepperVideoDecoderHost::DismissPictureBuffer(int32_t picture_buffer_id) {
-  PictureBufferMap::iterator it = picture_buffer_map_.find(picture_buffer_id);
+  auto it = picture_buffer_map_.find(picture_buffer_id);
   DCHECK(it != picture_buffer_map_.end());
 
   // If the texture is still used by the plugin keep it until the plugin
@@ -401,7 +433,7 @@ void PepperVideoDecoderHost::DismissPictureBuffer(int32_t picture_buffer_id) {
 
 void PepperVideoDecoderHost::NotifyEndOfBitstreamBuffer(
     int32_t bitstream_buffer_id) {
-  PendingDecodeList::iterator it = GetPendingDecodeById(bitstream_buffer_id);
+  auto it = GetPendingDecodeById(bitstream_buffer_id);
   if (it == pending_decodes_.end()) {
     NOTREACHED();
     return;
@@ -460,20 +492,6 @@ const uint8_t* PepperVideoDecoderHost::DecodeIdToAddress(uint32_t decode_id) {
   return static_cast<uint8_t*>(shm_buffers_[shm_id]->memory());
 }
 
-void PepperVideoDecoderHost::RequestTextures(
-    uint32_t requested_num_of_buffers,
-    const gfx::Size& dimensions,
-    uint32_t texture_target,
-    const std::vector<gpu::Mailbox>& mailboxes) {
-  host()->SendUnsolicitedReply(
-      pp_resource(),
-      PpapiPluginMsg_VideoDecoder_RequestTextures(
-          requested_num_of_buffers,
-          PP_MakeSize(dimensions.width(), dimensions.height()),
-          texture_target,
-          mailboxes));
-}
-
 bool PepperVideoDecoderHost::TryFallbackToSoftwareDecoder() {
 #if defined(OS_ANDROID)
   return false;
@@ -485,8 +503,10 @@ bool PepperVideoDecoderHost::TryFallbackToSoftwareDecoder() {
                                     min_picture_count_);
   std::unique_ptr<VideoDecoderShim> new_decoder(
       new VideoDecoderShim(this, shim_texture_pool_size));
-  if (!new_decoder->Initialize(profile_, this))
+  if (!new_decoder->Initialize(media::VideoDecodeAccelerator::Config(profile_),
+                               this)) {
     return false;
+  }
 
   software_fallback_used_ = true;
   decoder_.reset(new_decoder.release());
@@ -504,6 +524,10 @@ bool PepperVideoDecoderHost::TryFallbackToSoftwareDecoder() {
     }
   }
   picture_buffer_map_.swap(pictures_pending_dismission);
+
+  // Dismiss all outstanding texture requests.
+  DCHECK_EQ(assign_textures_messages_to_dismiss_, 0);
+  assign_textures_messages_to_dismiss_ = pending_texture_requests_;
 
   // If there was a pending Reset() it can be finished now.
   if (reset_reply_context_.is_valid()) {

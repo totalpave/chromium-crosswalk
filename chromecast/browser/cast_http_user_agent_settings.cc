@@ -7,15 +7,41 @@
 #include "base/i18n/rtl.h"
 #include "base/logging.h"
 #include "build/build_config.h"
+#include "chromecast/app/grit/chromecast_settings.h"
 #include "chromecast/common/cast_content_client.h"
 #include "content/public/browser/browser_thread.h"
-#include "grit/chromecast_settings.h"
 #include "net/http/http_util.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if defined(OS_ANDROID)
 #include "base/android/locale_utils.h"
 #endif  // defined(OS_ANDROID)
+
+namespace {
+
+std::string GetLocale() {
+#if defined(OS_ANDROID)
+  // TODO(byungchul): Use transient locale set when new app starts.
+  return base::android::GetDefaultLocaleString();
+#else
+  return base::i18n::GetConfiguredLocale();
+#endif
+}
+
+std::string LocaleToAcceptLanguage(const std::string locale) {
+  return net::HttpUtil::GenerateAcceptLanguageHeader(
+#if defined(OS_ANDROID)
+      locale
+#else
+      // Ignoring |locale| here is a bit weird, but locale is still used to
+      // avoid a l10n_util::GetStringUTF8() call when GetAcceptLanguage() is
+      // called.
+      l10n_util::GetStringUTF8(IDS_CHROMECAST_SETTINGS_ACCEPT_LANGUAGES)
+#endif
+      );
+}
+
+}  // namespace
 
 namespace chromecast {
 namespace shell {
@@ -30,23 +56,10 @@ CastHttpUserAgentSettings::~CastHttpUserAgentSettings() {
 
 std::string CastHttpUserAgentSettings::GetAcceptLanguage() const {
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-  std::string new_locale(
-#if defined(OS_ANDROID)
-      // TODO(byungchul): Use transient locale set when new app starts.
-      base::android::GetDefaultLocale()
-#else
-      base::i18n::GetConfiguredLocale()
-#endif
-      );
+  std::string new_locale(GetLocale());
   if (new_locale != last_locale_ || accept_language_.empty()) {
     last_locale_ = new_locale;
-    accept_language_ = net::HttpUtil::GenerateAcceptLanguageHeader(
-#if defined(OS_ANDROID)
-        last_locale_
-#else
-        l10n_util::GetStringUTF8(IDS_CHROMECAST_SETTINGS_ACCEPT_LANGUAGES)
-#endif
-        );
+    accept_language_ = LocaleToAcceptLanguage(new_locale);
     LOG(INFO) << "Locale changed: accept_language=" << accept_language_;
   }
   return accept_language_;
@@ -54,6 +67,10 @@ std::string CastHttpUserAgentSettings::GetAcceptLanguage() const {
 
 std::string CastHttpUserAgentSettings::GetUserAgent() const {
   return chromecast::shell::GetUserAgent();
+}
+
+std::string CastHttpUserAgentSettings::AcceptLanguage() {
+  return LocaleToAcceptLanguage(GetLocale());
 }
 
 }  // namespace shell

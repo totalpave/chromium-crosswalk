@@ -2,10 +2,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/jumbo.gni")
 import("//build/config/ui.gni")
 import("//testing/test.gni")
 
-component("wm") {
+jumbo_component("wm") {
   sources = [
     "core/accelerator_delegate.h",
     "core/accelerator_filter.cc",
@@ -29,16 +30,11 @@ component("wm") {
     "core/focus_controller.cc",
     "core/focus_controller.h",
     "core/focus_rules.h",
-    "core/image_grid.cc",
-    "core/image_grid.h",
-    "core/masked_window_targeter.cc",
-    "core/masked_window_targeter.h",
     "core/native_cursor_manager.h",
     "core/native_cursor_manager_delegate.h",
-    "core/shadow.cc",
-    "core/shadow.h",
     "core/shadow_controller.cc",
     "core/shadow_controller.h",
+    "core/shadow_controller_delegate.h",
     "core/shadow_types.cc",
     "core/shadow_types.h",
     "core/transient_window_controller.cc",
@@ -54,43 +50,55 @@ component("wm") {
     "core/window_animations.h",
     "core/window_modality_controller.cc",
     "core/window_modality_controller.h",
+    "core/window_properties.cc",
+    "core/window_properties.h",
     "core/window_util.cc",
     "core/window_util.h",
+    "core/wm_core_export.h",
     "core/wm_core_switches.cc",
     "core/wm_core_switches.h",
     "core/wm_state.cc",
     "core/wm_state.h",
-    "wm_export.h",
   ]
 
   configs += [ "//build/config:precompiled_headers" ]
-  defines = [ "WM_IMPLEMENTATION" ]
+  defines = [ "WM_CORE_IMPLEMENTATION" ]
 
   deps = [
     "//base",
+    "//services/ws/public/mojom",
     "//skia",
     "//ui/aura",
     "//ui/base",
     "//ui/base/ime",
     "//ui/compositor",
+    "//ui/compositor_extra",
     "//ui/display",
     "//ui/events",
     "//ui/events:events_base",
     "//ui/events/devices",
     "//ui/events/platform",
-    "//ui/events/platform",
     "//ui/gfx",
+    "//ui/gfx/animation",
     "//ui/gfx/geometry",
     "//ui/resources",
+    "//ui/wm/public",
   ]
 
   if (use_x11) {
     configs += [ "//build/config/linux:x11" ]
     deps += [ "//ui/events/devices/x11" ]
   }
+
+  if (is_chromeos) {
+    sources += [
+      "core/ime_util_chromeos.cc",
+      "core/ime_util_chromeos.h",
+    ]
+  }
 }
 
-static_library("test_support") {
+jumbo_static_library("test_support") {
   testonly = true
   sources = [
     "test/testing_cursor_client_observer.cc",
@@ -101,6 +109,11 @@ static_library("test_support") {
 
   deps = [
     ":wm",
+    "//services/service_manager/public/cpp",
+    "//services/ws/public/cpp",
+    "//services/ws/public/cpp/input_devices",
+    "//services/ws/public/mojom",
+    "//services/ws/test_ws:mojom",
     "//skia",
     "//ui/aura",
     "//ui/aura:test_support",
@@ -108,6 +121,7 @@ static_library("test_support") {
     "//ui/base/ime",
     "//ui/events",
     "//ui/events:events_base",
+    "//ui/platform_window",
   ]
 }
 
@@ -115,11 +129,10 @@ test("wm_unittests") {
   sources = [
     "core/capture_controller_unittest.cc",
     "core/compound_event_filter_unittest.cc",
+    "core/coordinate_conversion_unittest.cc",
     "core/cursor_manager_unittest.cc",
     "core/focus_controller_unittest.cc",
-    "core/image_grid_unittest.cc",
     "core/shadow_controller_unittest.cc",
-    "core/shadow_unittest.cc",
     "core/transient_window_manager_unittest.cc",
     "core/transient_window_stacking_client_unittest.cc",
     "core/visibility_controller_unittest.cc",
@@ -133,21 +146,30 @@ test("wm_unittests") {
     ":wm",
     "//base",
     "//base/test:test_support",
+    "//mojo/core/embedder",
     "//skia",
     "//testing/gtest",
     "//ui/aura:test_support",
     "//ui/base:test_support",
     "//ui/base/ime",
     "//ui/compositor:test_support",
+    "//ui/compositor_extra",
     "//ui/events:test_support",
     "//ui/events/platform",
     "//ui/gfx",
+    "//ui/gfx/animation",
     "//ui/gfx/geometry",
     "//ui/gl:test_support",
+    "//ui/platform_window",
     "//ui/resources",
+    "//ui/wm/public",
   ]
 
   data_deps = [
     "//ui/resources:ui_test_pak_data",
   ]
+
+  if (is_chromeos) {
+    sources += [ "core/ime_util_chromeos_unittest.cc" ]
+  }
 }

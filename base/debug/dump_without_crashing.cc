@@ -10,7 +10,7 @@ namespace {
 
 // Pointer to the function that's called by DumpWithoutCrashing() to dump the
 // process's memory.
-void (CDECL *dump_without_crashing_function_)() = NULL;
+void(CDECL* dump_without_crashing_function_)() = nullptr;
 
 }  // namespace
 
@@ -18,12 +18,21 @@ namespace base {
 
 namespace debug {
 
-void DumpWithoutCrashing() {
-  if (dump_without_crashing_function_)
+bool DumpWithoutCrashing() {
+  if (dump_without_crashing_function_) {
     (*dump_without_crashing_function_)();
+    return true;
+  }
+  return false;
 }
 
 void SetDumpWithoutCrashingFunction(void (CDECL *function)()) {
+#if !defined(COMPONENT_BUILD)
+  // In component builds, the same base is shared between modules
+  // so might be initialized several times. However in non-
+  // component builds this should never happen.
+  DCHECK(!dump_without_crashing_function_);
+#endif
   dump_without_crashing_function_ = function;
 }
 

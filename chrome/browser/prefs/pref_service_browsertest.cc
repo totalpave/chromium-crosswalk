@@ -10,6 +10,7 @@
 #include "base/json/json_file_value_serializer.h"
 #include "base/path_service.h"
 #include "base/test/test_file_util.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser.h"
@@ -26,7 +27,7 @@
 typedef InProcessBrowserTest PreservedWindowPlacement;
 
 IN_PROC_BROWSER_TEST_F(PreservedWindowPlacement, PRE_Test) {
-  browser()->window()->SetBounds(gfx::Rect(20, 30, 400, 500));
+  browser()->window()->SetBounds(gfx::Rect(20, 30, 600, 600));
 }
 
 // Fails on Chrome OS as the browser thinks it is restarting after a crash, see
@@ -38,7 +39,7 @@ IN_PROC_BROWSER_TEST_F(PreservedWindowPlacement, PRE_Test) {
 #endif
 IN_PROC_BROWSER_TEST_F(PreservedWindowPlacement, MAYBE_Test) {
   gfx::Rect bounds = browser()->window()->GetBounds();
-  gfx::Rect expected_bounds(gfx::Rect(20, 30, 400, 500));
+  gfx::Rect expected_bounds(gfx::Rect(20, 30, 600, 600));
   ASSERT_EQ(expected_bounds.ToString(), bounds.ToString());
 }
 
@@ -46,7 +47,7 @@ class PreferenceServiceTest : public InProcessBrowserTest {
  public:
   bool SetUpUserDataDirectory() override {
     base::FilePath user_data_directory;
-    PathService::Get(chrome::DIR_USER_DATA, &user_data_directory);
+    base::PathService::Get(chrome::DIR_USER_DATA, &user_data_directory);
 
     original_pref_file_ = ui_test_utils::GetTestFilePath(
         base::FilePath()
@@ -87,10 +88,14 @@ IN_PROC_BROWSER_TEST_F(PreferenceServiceTest, Test) {
   // The window should open with the new reference profile, with window
   // placement values stored in the user data directory.
   JSONFileValueDeserializer deserializer(original_pref_file_);
-  std::unique_ptr<base::Value> root = deserializer.Deserialize(NULL, NULL);
+  std::unique_ptr<base::Value> root;
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    root = deserializer.Deserialize(NULL, NULL);
+  }
 
   ASSERT_TRUE(root.get());
-  ASSERT_TRUE(root->IsType(base::Value::TYPE_DICTIONARY));
+  ASSERT_TRUE(root->is_dict());
 
   base::DictionaryValue* root_dict =
       static_cast<base::DictionaryValue*>(root.get());

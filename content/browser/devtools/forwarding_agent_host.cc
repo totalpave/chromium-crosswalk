@@ -4,59 +4,63 @@
 
 #include "content/browser/devtools/forwarding_agent_host.h"
 
-#include "base/bind.h"
-#include "content/browser/devtools/protocol/inspector_handler.h"
+#include "content/browser/devtools/devtools_session.h"
+#include "content/public/browser/devtools_external_agent_proxy_delegate.h"
 
 namespace content {
 
 ForwardingAgentHost::ForwardingAgentHost(
-    DevToolsExternalAgentProxyDelegate* delegate)
-      : delegate_(delegate) {
+    const std::string& id,
+    std::unique_ptr<DevToolsExternalAgentProxyDelegate> delegate)
+      : DevToolsAgentHostImpl(id),
+        delegate_(std::move(delegate)) {
+  NotifyCreated();
 }
 
 ForwardingAgentHost::~ForwardingAgentHost() {
 }
 
-void ForwardingAgentHost::DispatchOnClientHost(const std::string& message) {
-  SendMessageToClient(session_id(), message);
-}
-
-void ForwardingAgentHost::ConnectionClosed() {
-  HostClosed();
-}
-
-void ForwardingAgentHost::Attach() {
-  delegate_->Attach(this);
-}
-
-void ForwardingAgentHost::Detach() {
-  delegate_->Detach();
-}
-
-bool ForwardingAgentHost::DispatchProtocolMessage(
-    const std::string& message) {
-  delegate_->SendMessageToBackend(message);
+bool ForwardingAgentHost::AttachSession(DevToolsSession* session) {
+  session->TurnIntoExternalProxy(delegate_.get());
   return true;
 }
 
-DevToolsAgentHost::Type ForwardingAgentHost::GetType() {
-  return TYPE_EXTERNAL;
+void ForwardingAgentHost::DetachSession(DevToolsSession* session) {}
+
+std::string ForwardingAgentHost::GetType() {
+  return delegate_->GetType();
 }
 
 std::string ForwardingAgentHost::GetTitle() {
-  return "";
+  return delegate_->GetTitle();
 }
 
 GURL ForwardingAgentHost::GetURL() {
-  return GURL();
+  return delegate_->GetURL();
+}
+
+GURL ForwardingAgentHost::GetFaviconURL() {
+  return delegate_->GetFaviconURL();
+}
+
+std::string ForwardingAgentHost::GetFrontendURL() {
+  return delegate_->GetFrontendURL();
 }
 
 bool ForwardingAgentHost::Activate() {
-  return false;
+  return delegate_->Activate();
+}
+
+void ForwardingAgentHost::Reload() {
+  delegate_->Reload();
 }
 
 bool ForwardingAgentHost::Close() {
-  return false;
+  return delegate_->Close();
+}
+
+base::TimeTicks ForwardingAgentHost::GetLastActivityTime() {
+  return delegate_->GetLastActivityTime();
 }
 
 }  // content

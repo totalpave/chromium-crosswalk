@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-source_set("open_from_clipboard") {
+static_library("open_from_clipboard") {
   sources = [
     "clipboard_recent_content.cc",
     "clipboard_recent_content.h",
@@ -11,12 +11,42 @@ source_set("open_from_clipboard") {
   ]
 
   deps = [
+    ":open_from_clipboard_impl",
     "//base",
+    "//components/variations",
+    "//net",
+    "//ui/base:base",
     "//url",
   ]
+
+  if (!is_ios) {
+    sources += [
+      "clipboard_recent_content_generic.cc",
+      "clipboard_recent_content_generic.h",
+    ]
+    deps += [ "//ui/base/clipboard" ]
+  }
 }
 
-source_set("test_support") {
+# Helper classes used by "open_from_clipboard" target. These classes must have
+# no dependencies on "//base:i18n".
+source_set("open_from_clipboard_impl") {
+  sources = [
+    "clipboard_recent_content_impl_ios.h",
+    "clipboard_recent_content_impl_ios.mm",
+  ]
+  deps = [
+    "//base",
+  ]
+  assert_no_deps = [ "//base:i18n" ]
+  if (is_ios) {
+    configs += [ "//build/config/compiler:enable_arc" ]
+
+    libs = [ "MobileCoreServices.framework" ]
+  }
+}
+
+static_library("test_support") {
   testonly = true
   sources = [
     "fake_clipboard_recent_content.cc",
@@ -26,6 +56,7 @@ source_set("test_support") {
   deps = [
     ":open_from_clipboard",
     "//base",
+    "//ui/gfx:gfx",
     "//url",
   ]
 }
@@ -38,7 +69,15 @@ source_set("unit_tests") {
 
   deps = [
     ":open_from_clipboard",
+    ":open_from_clipboard_impl",
     "//base",
     "//testing/gtest",
+    "//ui/base:test_support",
+    "//url",
   ]
+
+  if (!is_ios) {
+    sources += [ "clipboard_recent_content_generic_unittest.cc" ]
+    deps += [ "//ui/base/clipboard:clipboard_test_support" ]
+  }
 }

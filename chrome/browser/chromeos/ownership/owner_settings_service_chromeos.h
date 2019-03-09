@@ -6,19 +6,19 @@
 #define CHROME_BROWSER_CHROMEOS_OWNERSHIP_OWNER_SETTINGS_SERVICE_CHROMEOS_H_
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "base/callback_forward.h"
-#include "base/containers/scoped_ptr_hash_map.h"
 #include "base/macros.h"
 #include "base/values.h"
-#include "chrome/browser/chromeos/policy/proto/chrome_device_policy.pb.h"
 #include "chrome/browser/chromeos/settings/device_settings_service.h"
 #include "chromeos/dbus/session_manager_client.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/ownership/owner_key_util.h"
 #include "components/ownership/owner_settings_service.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
+#include "components/policy/proto/chrome_device_policy.pb.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 
@@ -34,12 +34,10 @@ class OwnerKeyUtil;
 
 namespace chromeos {
 
-class FakeOwnerSettingsService;
-
-// The class is a profile-keyed service which holds public/private
-// keypair corresponds to a profile. The keypair is reloaded automatically when
-// profile is created and TPM token is ready. Note that the private part of a
-// key can be loaded only for the owner.
+// The class is a profile-keyed service which holds public/private keypair
+// corresponds to a profile. The keypair is reloaded automatically when profile
+// is created and TPM token is ready. Note that the private part of a key can be
+// loaded only for the owner.
 //
 // TODO (ygorshenin@): move write path for device settings here
 // (crbug.com/230018).
@@ -54,7 +52,6 @@ class OwnerSettingsServiceChromeOS : public ownership::OwnerSettingsService,
     ManagementSettings();
     ~ManagementSettings();
 
-    policy::ManagementMode management_mode;
     std::string request_token;
     std::string device_id;
   };
@@ -65,9 +62,13 @@ class OwnerSettingsServiceChromeOS : public ownership::OwnerSettingsService,
 
   void OnTPMTokenReady(bool tpm_token_enabled);
 
+  void OnEasyUnlockKeyOpsFinished();
+
   bool HasPendingChanges() const;
 
   // ownership::OwnerSettingsService implementation:
+  bool IsOwner() override;
+  void IsOwnerAsync(const IsOwnerCallback& callback) override;
   bool HandlesSetting(const std::string& setting) override;
   bool Set(const std::string& setting, const base::Value& value) override;
   bool AppendToList(const std::string& setting,
@@ -90,11 +91,6 @@ class OwnerSettingsServiceChromeOS : public ownership::OwnerSettingsService,
   void DeviceSettingsUpdated() override;
   void OnDeviceSettingsServiceShutdown() override;
 
-  // Sets the management related settings.
-  virtual void SetManagementSettings(
-      const ManagementSettings& settings,
-      const OnManagementSettingsSetCallback& callback);
-
   // Checks if the user is the device owner, without the user profile having to
   // been initialized. Should be used only if login state is in safe mode.
   static void IsOwnerForSafeModeAsync(
@@ -107,8 +103,6 @@ class OwnerSettingsServiceChromeOS : public ownership::OwnerSettingsService,
   static std::unique_ptr<enterprise_management::PolicyData> AssemblePolicy(
       const std::string& user_id,
       const enterprise_management::PolicyData* policy_data,
-      bool apply_pending_mangement_settings,
-      const ManagementSettings& pending_management_settings,
       enterprise_management::ChromeDeviceSettingsProto* settings);
 
   // Updates device |settings|.
@@ -172,28 +166,20 @@ class OwnerSettingsServiceChromeOS : public ownership::OwnerSettingsService,
   std::string user_id_;
 
   // Whether profile still needs to be initialized.
-  bool waiting_for_profile_creation_;
+  bool waiting_for_profile_creation_ = true;
 
   // Whether TPM token still needs to be initialized.
-  bool waiting_for_tpm_token_;
+  bool waiting_for_tpm_token_ = true;
+
+  // Whether easy unlock operation is finished.
+  bool waiting_for_easy_unlock_operation_finshed_ = true;
 
   // True if local-owner policy fixups are still pending.
-  bool has_pending_fixups_;
+  bool has_pending_fixups_ = false;
 
   // A set of pending changes to device settings.
-  base::ScopedPtrHashMap<std::string, std::unique_ptr<base::Value>>
+  std::unordered_map<std::string, std::unique_ptr<base::Value>>
       pending_changes_;
-
-  // True if there're pending changes to management settings.
-  bool has_pending_management_settings_;
-
-  // A set of pending changes to management settings.
-  ManagementSettings pending_management_settings_;
-
-  // A set of callbacks that need to be run after management settings
-  // are set and policy is stored.
-  std::vector<OnManagementSettingsSetCallback>
-      pending_management_settings_callbacks_;
 
   // A protobuf containing pending changes to device settings.
   std::unique_ptr<enterprise_management::ChromeDeviceSettingsProto>

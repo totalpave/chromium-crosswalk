@@ -9,11 +9,18 @@
 
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "chrome/browser/extensions/extension_cookie_notifier.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/one_shot_event.h"
 
 class Profile;
-class ValueStore;
+
+#if defined(OS_CHROMEOS)
+namespace chromeos {
+class DeviceLocalAccountManagementPolicyProvider;
+class SigninScreenPolicyProvider;
+}
+#endif  // defined(OS_CHROMEOS)
 
 namespace extensions {
 
@@ -32,6 +39,8 @@ class ValueStoreFactoryImpl;
 // but with a shared instance for incognito) keeps the common services.
 class ExtensionSystemImpl : public ExtensionSystem {
  public:
+  using InstallUpdateCallback = ExtensionSystem::InstallUpdateCallback;
+
   explicit ExtensionSystemImpl(Profile* profile);
   ~ExtensionSystemImpl() override;
 
@@ -39,6 +48,7 @@ class ExtensionSystemImpl : public ExtensionSystem {
   void Shutdown() override;
 
   void InitForRegularProfile(bool extensions_enabled) override;
+  void InitForIncognitoProfile() override;
 
   ExtensionService* extension_service() override;  // shared
   RuntimeData* runtime_data() override;            // shared
@@ -58,14 +68,19 @@ class ExtensionSystemImpl : public ExtensionSystem {
 
   void UnregisterExtensionWithRequestContexts(
       const std::string& extension_id,
-      const UnloadedExtensionInfo::Reason reason) override;
+      const UnloadedExtensionReason reason) override;
 
   const OneShotEvent& ready() const override;
   ContentVerifier* content_verifier() override;  // shared
   std::unique_ptr<ExtensionSet> GetDependentExtensions(
       const Extension* extension) override;
   void InstallUpdate(const std::string& extension_id,
-                     const base::FilePath& temp_dir) override;
+                     const std::string& public_key,
+                     const base::FilePath& unpacked_dir,
+                     bool install_immediately,
+                     InstallUpdateCallback install_update_callback) override;
+  bool FinishDelayedInstallationIfReady(const std::string& extension_id,
+                                        bool install_immediately) override;
 
  private:
   friend class ExtensionSystemSharedFactory;
@@ -134,11 +149,15 @@ class ExtensionSystemImpl : public ExtensionSystem {
 #if defined(OS_CHROMEOS)
     std::unique_ptr<chromeos::DeviceLocalAccountManagementPolicyProvider>
         device_local_account_management_policy_provider_;
+    std::unique_ptr<chromeos::SigninScreenPolicyProvider>
+        signin_screen_policy_provider_;
     std::unique_ptr<InstallGate> kiosk_app_update_install_gate_;
 #endif
 
     OneShotEvent ready_;
   };
+
+  std::unique_ptr<ExtensionCookieNotifier> cookie_notifier_;
 
   Profile* profile_;
 

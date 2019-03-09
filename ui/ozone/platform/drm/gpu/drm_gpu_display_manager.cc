@@ -5,11 +5,12 @@
 #include "ui/ozone/platform/drm/gpu/drm_gpu_display_manager.h"
 
 #include <stddef.h>
+#include <utility>
 
-#include "base/memory/ptr_util.h"
+#include "ui/display/types/display_mode.h"
+#include "ui/display/types/display_snapshot.h"
 #include "ui/display/types/gamma_ramp_rgb_entry.h"
-#include "ui/ozone/common/display_util.h"
-#include "ui/ozone/platform/drm/common/drm_util.h"
+#include "ui/ozone/common/linux/drm_util_linux.h"
 #include "ui/ozone/platform/drm/gpu/drm_device.h"
 #include "ui/ozone/platform/drm/gpu/drm_device_manager.h"
 #include "ui/ozone/platform/drm/gpu/drm_display.h"
@@ -42,19 +43,22 @@ class DisplayComparator {
   uint32_t connector_;
 };
 
+bool MatchMode(const display::DisplayMode& display_mode,
+               const drmModeModeInfo& m) {
+  return display_mode.size() == ModeSize(m) &&
+         display_mode.refresh_rate() == ModeRefreshRate(m) &&
+         display_mode.is_interlaced() == ModeIsInterlaced(m);
+}
+
 bool FindMatchingMode(const std::vector<drmModeModeInfo> modes,
-                      const DisplayMode_Params& mode_params,
+                      const display::DisplayMode& display_mode,
                       drmModeModeInfo* mode) {
   for (const drmModeModeInfo& m : modes) {
-    DisplayMode_Params params = CreateDisplayModeParams(m);
-    if (mode_params.size == params.size &&
-        mode_params.refresh_rate == params.refresh_rate &&
-        mode_params.is_interlaced == params.is_interlaced) {
+    if (MatchMode(display_mode, m)) {
       *mode = m;
       return true;
     }
   }
-
   return false;
 }
 
@@ -68,47 +72,81 @@ DrmGpuDisplayManager::DrmGpuDisplayManager(ScreenManager* screen_manager,
 DrmGpuDisplayManager::~DrmGpuDisplayManager() {
 }
 
-std::vector<DisplaySnapshot_Params> DrmGpuDisplayManager::GetDisplays() {
+MovableDisplaySnapshots DrmGpuDisplayManager::GetDisplays() {
+  MovableDisplaySnapshots params_list;
   std::vector<std::unique_ptr<DrmDisplay>> old_displays;
   old_displays.swap(displays_);
-  std::vector<DisplaySnapshot_Params> params_list;
+  HardwareDisplayControllerInfos old_hardware_infos;
+  old_hardware_infos.swap(hardware_infos_);
 
   const DrmDeviceVector& devices = drm_device_manager_->GetDrmDevices();
   size_t device_index = 0;
   for (const auto& drm : devices) {
-    ScopedVector<HardwareDisplayControllerInfo> display_infos =
-        GetAvailableDisplayControllerInfos(drm->get_fd());
-    for (auto* display_info : display_infos) {
-      auto it = std::find_if(
-          old_displays.begin(), old_displays.end(),
-          DisplayComparator(drm, display_info->crtc()->crtc_id,
-                            display_info->connector()->connector_id));
-      if (it != old_displays.end()) {
-        displays_.push_back(std::move(*it));
-        old_displays.erase(it);
-      } else {
-        displays_.push_back(
-            base::WrapUnique(new DrmDisplay(screen_manager_, drm)));
+    bool support_all_displays;
+    auto display_infos = QueryAvailableDisplayControllerInfos(
+        drm->get_fd(), &support_all_displays);
+
+    // Reallocate crtc with following strategy:
+    // (1) if there exists any display without associated crtc, the most
+    // recently connected display is denied the allocated crtc. Then the
+    // remaining displays are configured with previously assigned crtc which is
+    // recorded in |old_hardware_infos|. (2) if there are sufficient crtcs for
+    // each display, do the normal configuration.
+    if (!support_all_displays) {
+      for (auto& display_info : display_infos) {
+        // Connector id is unique. For each connected display,
+        // check whether it is recently connected with device or not.
+        auto hardware_info_it = std::find_if(
+            old_hardware_infos.begin(), old_hardware_infos.end(),
+            [&display_info](
+                std::unique_ptr<HardwareDisplayControllerInfo>& hardware_info) {
+              return display_info->connector()->connector_id ==
+                     hardware_info->connector()->connector_id;
+            });
+
+        if (hardware_info_it == old_hardware_infos.end()) {
+          // |display_info| corresponds to the most recently connected display.
+          display_info->set_crtc(nullptr);
+        } else {
+          // |display_info| corresponds to the display which has been connected
+          // with device before.
+          auto display_it =
+              std::find_if(old_displays.begin(), old_displays.end(),
+                           DisplayComparator(
+                               drm, (*hardware_info_it)->crtc()->crtc_id,
+                               (*hardware_info_it)->connector()->connector_id));
+          DCHECK(display_it != old_displays.end());
+          displays_.push_back(std::move(*display_it));
+          old_displays.erase(display_it);
+          display_info->set_crtc((*hardware_info_it)->release_crtc());
+          old_hardware_infos.erase(hardware_info_it);
+        }
       }
-      params_list.push_back(
-          displays_.back()->Update(display_info, device_index));
+    } else {
+      for (auto& display_info : display_infos) {
+        auto it = std::find_if(
+            old_displays.begin(), old_displays.end(),
+            DisplayComparator(drm, display_info->crtc()->crtc_id,
+                              display_info->connector()->connector_id));
+        if (it != old_displays.end()) {
+          displays_.push_back(std::move(*it));
+          old_displays.erase(it);
+        } else {
+          displays_.push_back(
+              std::make_unique<DrmDisplay>(screen_manager_, drm));
+        }
+      }
     }
+
+    MovableDisplaySnapshots sub_params_list =
+        GenerateParamsList(display_infos, device_index);
+    std::move(sub_params_list.begin(), sub_params_list.end(),
+              std::back_inserter(params_list));
     device_index++;
   }
 
   NotifyScreenManager(displays_, old_displays);
   return params_list;
-}
-
-void DrmGpuDisplayManager::GetScanoutFormats(
-    gfx::AcceleratedWidget widget,
-    std::vector<gfx::BufferFormat>* scanout_formats) {
-  const std::vector<uint32_t>& fourcc_formats =
-      drm_device_manager_->GetDrmDevice(widget)
-          ->plane_manager()
-          ->GetSupportedFormats();
-  for (auto& fourcc : fourcc_formats)
-    scanout_formats->push_back(GetBufferFormatFromFourCCFormat(fourcc));
 }
 
 bool DrmGpuDisplayManager::TakeDisplayControl() {
@@ -134,7 +172,7 @@ void DrmGpuDisplayManager::RelinquishDisplayControl() {
 
 bool DrmGpuDisplayManager::ConfigureDisplay(
     int64_t display_id,
-    const DisplayMode_Params& mode_param,
+    const display::DisplayMode& display_mode,
     const gfx::Point& origin) {
   DrmDisplay* display = FindDisplay(display_id);
   if (!display) {
@@ -143,23 +181,24 @@ bool DrmGpuDisplayManager::ConfigureDisplay(
   }
 
   drmModeModeInfo mode;
-  bool mode_found = FindMatchingMode(display->modes(), mode_param, &mode);
+  bool mode_found = FindMatchingMode(display->modes(), display_mode, &mode);
   if (!mode_found) {
     // If the display doesn't have the mode natively, then lookup the mode from
     // other displays and try using it on the current display (some displays
     // support panel fitting and they can use different modes even if the mode
     // isn't explicitly declared).
     for (const auto& other_display : displays_) {
-      mode_found = FindMatchingMode(other_display->modes(), mode_param, &mode);
+      mode_found =
+          FindMatchingMode(other_display->modes(), display_mode, &mode);
       if (mode_found)
         break;
     }
   }
 
   if (!mode_found) {
-    LOG(ERROR) << "Failed to find mode: size=" << mode_param.size.ToString()
-               << " is_interlaced=" << mode_param.is_interlaced
-               << " refresh_rate=" << mode_param.refresh_rate;
+    LOG(ERROR) << "Failed to find mode: size=" << display_mode.size().ToString()
+               << " is_interlaced=" << display_mode.is_interlaced()
+               << " refresh_rate=" << display_mode.refresh_rate();
     return false;
   }
 
@@ -176,7 +215,8 @@ bool DrmGpuDisplayManager::DisableDisplay(int64_t display_id) {
   return display->Configure(nullptr, gfx::Point());
 }
 
-bool DrmGpuDisplayManager::GetHDCPState(int64_t display_id, HDCPState* state) {
+bool DrmGpuDisplayManager::GetHDCPState(int64_t display_id,
+                                        display::HDCPState* state) {
   DrmDisplay* display = FindDisplay(display_id);
   if (!display) {
     LOG(ERROR) << "There is no display with ID " << display_id;
@@ -186,7 +226,8 @@ bool DrmGpuDisplayManager::GetHDCPState(int64_t display_id, HDCPState* state) {
   return display->GetHDCPState(state);
 }
 
-bool DrmGpuDisplayManager::SetHDCPState(int64_t display_id, HDCPState state) {
+bool DrmGpuDisplayManager::SetHDCPState(int64_t display_id,
+                                        display::HDCPState state) {
   DrmDisplay* display = FindDisplay(display_id);
   if (!display) {
     LOG(ERROR) << "There is no display with ID " << display_id;
@@ -196,27 +237,71 @@ bool DrmGpuDisplayManager::SetHDCPState(int64_t display_id, HDCPState state) {
   return display->SetHDCPState(state);
 }
 
-void DrmGpuDisplayManager::SetColorCorrection(
+void DrmGpuDisplayManager::SetColorMatrix(
     int64_t display_id,
-    const std::vector<GammaRampRGBEntry>& degamma_lut,
-    const std::vector<GammaRampRGBEntry>& gamma_lut,
-    const std::vector<float>& correction_matrix) {
+    const std::vector<float>& color_matrix) {
   DrmDisplay* display = FindDisplay(display_id);
   if (!display) {
     LOG(ERROR) << "There is no display with ID " << display_id;
     return;
   }
 
-  display->SetColorCorrection(degamma_lut, gamma_lut, correction_matrix);
+  display->SetColorMatrix(color_matrix);
 }
 
-DrmDisplay* DrmGpuDisplayManager::FindDisplay(int64_t display_id) {
-  for (const auto& display : displays_) {
-    if (display->display_id() == display_id)
-      return display.get();
+void DrmGpuDisplayManager::SetBackgroundColor(
+    int64_t display_id,
+    const uint64_t background_color) {
+  DrmDisplay* display = FindDisplay(display_id);
+  if (!display) {
+    LOG(ERROR) << "There is no display with ID" << display_id;
+    return;
   }
 
-  return nullptr;
+  display->SetBackgroundColor(background_color);
+}
+
+void DrmGpuDisplayManager::SetGammaCorrection(
+    int64_t display_id,
+    const std::vector<display::GammaRampRGBEntry>& degamma_lut,
+    const std::vector<display::GammaRampRGBEntry>& gamma_lut) {
+  DrmDisplay* display = FindDisplay(display_id);
+  if (!display) {
+    LOG(ERROR) << "There is no display with ID " << display_id;
+    return;
+  }
+  display->SetGammaCorrection(degamma_lut, gamma_lut);
+}
+
+HardwareDisplayControllerInfos
+DrmGpuDisplayManager::QueryAvailableDisplayControllerInfos(
+    int fd,
+    bool* support_all_displays) const {
+  return GetAvailableDisplayControllerInfos(fd, support_all_displays);
+}
+
+MovableDisplaySnapshots DrmGpuDisplayManager::GenerateParamsList(
+    HardwareDisplayControllerInfos& display_infos,
+    size_t device_index) {
+  MovableDisplaySnapshots params_list;
+  auto drm = drm_device_manager_->GetDrmDevices()[device_index];
+
+  // Generate |param_list| with updated |displays_|. Notice that the display
+  // connection without crtc allocated is not included in |displays_| but
+  // contained in |params_list|. Because Chrome side should be notified of it.
+  size_t display_index = 0;
+  for (auto& display_info : display_infos) {
+    if (display_info->has_associated_crtc()) {
+      params_list.push_back(
+          displays_[display_index++]->Update(display_info.get(), device_index));
+      hardware_infos_.push_back(std::move(display_info));
+    } else {
+      params_list.push_back(std::make_unique<DrmDisplay>(screen_manager_, drm)
+                                ->Update(display_info.get(), device_index));
+    }
+  }
+
+  return params_list;
 }
 
 void DrmGpuDisplayManager::NotifyScreenManager(
@@ -241,6 +326,15 @@ void DrmGpuDisplayManager::NotifyScreenManager(
           new_display->drm(), new_display->crtc(), new_display->connector());
     }
   }
+}
+
+DrmDisplay* DrmGpuDisplayManager::FindDisplay(int64_t display_id) {
+  for (const auto& display : displays_) {
+    if (display->display_id() == display_id)
+      return display.get();
+  }
+
+  return nullptr;
 }
 
 }  // namespace ui

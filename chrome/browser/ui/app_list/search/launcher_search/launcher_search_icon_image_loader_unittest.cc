@@ -4,8 +4,10 @@
 
 #include "chrome/browser/ui/app_list/search/launcher_search/launcher_search_icon_image_loader.h"
 
+#include <utility>
+
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/chromeos/launcher_search_provider/error_reporter.h"
 #include "extensions/common/manifest_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -52,7 +54,8 @@ class LauncherSearchIconImageLoaderTestImpl
   const gfx::ImageSkia& LoadExtensionIcon() override {
     // Returns 32x32 black image.
     extension_icon_ = gfx::ImageSkia(
-        new FillColorImageSource(icon_size_, SK_ColorBLACK), icon_size_);
+        std::make_unique<FillColorImageSource>(icon_size_, SK_ColorBLACK),
+        icon_size_);
     return extension_icon_;
   }
 
@@ -77,6 +80,9 @@ class LauncherSearchIconImageLoaderTestImpl
   }
 
  private:
+  // Ref counted class.
+  ~LauncherSearchIconImageLoaderTestImpl() override = default;
+
   gfx::ImageSkia extension_icon_;
   bool is_load_extension_icon_resource_called_ = false;
 };
@@ -84,25 +90,15 @@ class LauncherSearchIconImageLoaderTestImpl
 // A fake error reporter to test error message.
 class FakeErrorReporter : public ErrorReporter {
  public:
-  FakeErrorReporter() : ErrorReporter(nullptr) {
-    last_message_.reset(new std::string());
-  }
-  explicit FakeErrorReporter(const linked_ptr<std::string>& last_message)
-      : ErrorReporter(nullptr), last_message_(last_message) {}
+  FakeErrorReporter() : ErrorReporter(nullptr) {}
   ~FakeErrorReporter() override {}
-  void Warn(const std::string& message) override {
-    last_message_->clear();
-    last_message_->append(message);
-  }
 
-  const std::string& GetLastWarningMessage() { return *last_message_.get(); }
+  void Warn(const std::string& message) override { last_message_ = message; }
 
-  std::unique_ptr<ErrorReporter> Duplicate() override {
-    return base::WrapUnique(new FakeErrorReporter(last_message_));
-  }
+  const std::string& GetLastWarningMessage() const { return last_message_; }
 
  private:
-  linked_ptr<std::string> last_message_;
+  std::string last_message_;
 
   DISALLOW_COPY_AND_ASSIGN(FakeErrorReporter);
 };
@@ -112,10 +108,10 @@ scoped_refptr<extensions::Extension> CreateTestExtension(
     const std::string& extension_id) {
   base::DictionaryValue manifest;
   std::string error;
-  manifest.SetStringWithoutPathExpansion(extensions::manifest_keys::kVersion,
-                                         "1");
-  manifest.SetStringWithoutPathExpansion(extensions::manifest_keys::kName,
-                                         "TestExtension");
+  manifest.SetKey(extensions::manifest_keys::kVersion, base::Value("1"));
+  manifest.SetKey(extensions::manifest_keys::kManifestVersion, base::Value(2));
+  manifest.SetKey(extensions::manifest_keys::kName,
+                  base::Value("TestExtension"));
   return extensions::Extension::Create(
       base::FilePath(), extensions::Manifest::UNPACKED, manifest,
       extensions::Extension::NO_FLAGS, extension_id, &error);
@@ -125,8 +121,8 @@ scoped_refptr<extensions::Extension> CreateTestExtension(
 bool IsEqual(const gfx::ImageSkia& expected_image,
              const gfx::ImageSkia& result_image) {
   return gfx::test::AreBitmapsEqual(
-      expected_image.GetRepresentation(1.0).sk_bitmap(),
-      result_image.GetRepresentation(1.0).sk_bitmap());
+      expected_image.GetRepresentation(1.0).GetBitmap(),
+      result_image.GetRepresentation(1.0).GetBitmap());
 }
 
 }  // namespace
@@ -136,7 +132,7 @@ class LauncherSearchIconImageLoaderTest : public testing::Test {
   void SetUp() override { extension_ = CreateTestExtension(kTestExtensionId); }
 
   std::unique_ptr<FakeErrorReporter> GetFakeErrorReporter() {
-    return base::WrapUnique(new FakeErrorReporter());
+    return std::make_unique<FakeErrorReporter>();
   }
 
   scoped_refptr<extensions::Extension> extension_;
@@ -144,66 +140,72 @@ class LauncherSearchIconImageLoaderTest : public testing::Test {
 
 TEST_F(LauncherSearchIconImageLoaderTest, WithoutCustomIconSuccessCase) {
   GURL icon_url;  // No custom icon.
-  LauncherSearchIconImageLoaderTestImpl impl(icon_url, nullptr, nullptr, 32,
-                                             GetFakeErrorReporter());
-  impl.LoadResources();
+  auto impl = base::MakeRefCounted<LauncherSearchIconImageLoaderTestImpl>(
+      icon_url, nullptr, nullptr, 32, GetFakeErrorReporter());
+  impl->LoadResources();
 
   // Assert that extension icon image is set to icon image and badge icon image
   // is null.
   gfx::Size icon_size(32, 32);
   gfx::ImageSkia expected_image(
-      new FillColorImageSource(icon_size, SK_ColorBLACK), icon_size);
-  ASSERT_TRUE(IsEqual(expected_image, impl.GetIconImage()));
+      std::make_unique<FillColorImageSource>(icon_size, SK_ColorBLACK),
+      icon_size);
+  ASSERT_TRUE(IsEqual(expected_image, impl->GetIconImage()));
 
-  ASSERT_TRUE(impl.GetBadgeIconImage().isNull());
+  ASSERT_TRUE(impl->GetBadgeIconImage().isNull());
 }
 
 TEST_F(LauncherSearchIconImageLoaderTest, ExtensionIconAsyncLoadSuccessCase) {
   GURL icon_url;  // No custom icon.
-  LauncherSearchIconImageLoaderTestImpl impl(icon_url, nullptr, nullptr, 32,
-                                             GetFakeErrorReporter());
-  impl.LoadResources();
+  auto impl = base::MakeRefCounted<LauncherSearchIconImageLoaderTestImpl>(
+      icon_url, nullptr, nullptr, 32, GetFakeErrorReporter());
+  impl->LoadResources();
 
   // Extension icon is loaded as async.
   gfx::Size icon_size(32, 32);
   gfx::ImageSkia extension_icon(
-      new FillColorImageSource(icon_size, SK_ColorGREEN), icon_size);
-  impl.LoadExtensionIconAsync(extension_icon);
+      std::make_unique<FillColorImageSource>(icon_size, SK_ColorGREEN),
+      icon_size);
+  impl->LoadExtensionIconAsync(extension_icon);
 
   // Assert that the asynchronously loaded image is set to icon image and badge
   // icon image is null.
   gfx::ImageSkia expected_image(
-      new FillColorImageSource(icon_size, SK_ColorGREEN), icon_size);
-  ASSERT_TRUE(IsEqual(expected_image, impl.GetIconImage()));
+      std::make_unique<FillColorImageSource>(icon_size, SK_ColorGREEN),
+      icon_size);
+  ASSERT_TRUE(IsEqual(expected_image, impl->GetIconImage()));
 
-  ASSERT_TRUE(impl.GetBadgeIconImage().isNull());
+  ASSERT_TRUE(impl->GetBadgeIconImage().isNull());
 }
 
 TEST_F(LauncherSearchIconImageLoaderTest, WithCustomIconSuccessCase) {
   GURL icon_url(kTestCustomIconURL);
-  LauncherSearchIconImageLoaderTestImpl impl(
+  auto impl = base::MakeRefCounted<LauncherSearchIconImageLoaderTestImpl>(
       icon_url, nullptr, extension_.get(), 32, GetFakeErrorReporter());
-  ASSERT_FALSE(impl.IsLoadExtensionIconResourceCalled());
-  impl.LoadResources();
+  ASSERT_FALSE(impl->IsLoadExtensionIconResourceCalled());
+  impl->LoadResources();
 
   // Assert that LoadExtensionIconResource is called.
-  ASSERT_TRUE(impl.IsLoadExtensionIconResourceCalled());
+  ASSERT_TRUE(impl->IsLoadExtensionIconResourceCalled());
 
   // Load custom icon as async.
   gfx::Size icon_size(32, 32);
-  gfx::ImageSkia custom_icon(new FillColorImageSource(icon_size, SK_ColorGREEN),
-                             icon_size);
-  impl.CallOnCustomIconLoaded(custom_icon);
+  gfx::ImageSkia custom_icon(
+      std::make_unique<FillColorImageSource>(icon_size, SK_ColorGREEN),
+      icon_size);
+  impl->CallOnCustomIconLoaded(custom_icon);
 
   // Assert that custom icon image is set to icon image and extension icon image
   // is set to badge icon image.
   gfx::ImageSkia expected_image(
-      new FillColorImageSource(icon_size, SK_ColorGREEN), icon_size);
-  ASSERT_TRUE(IsEqual(expected_image, impl.GetIconImage()));
+      std::make_unique<FillColorImageSource>(icon_size, SK_ColorGREEN),
+      icon_size);
+  ASSERT_TRUE(IsEqual(expected_image, impl->GetIconImage()));
 
   gfx::ImageSkia expected_badge_icon_image(
-      new FillColorImageSource(icon_size, SK_ColorBLACK), icon_size);
-  ASSERT_TRUE(IsEqual(expected_badge_icon_image, impl.GetBadgeIconImage()));
+      std::make_unique<FillColorImageSource>(icon_size, SK_ColorBLACK),
+      icon_size);
+  ASSERT_TRUE(IsEqual(expected_badge_icon_image, impl->GetBadgeIconImage()));
 }
 
 TEST_F(LauncherSearchIconImageLoaderTest, InvalidCustomIconUrl) {
@@ -217,11 +219,11 @@ TEST_F(LauncherSearchIconImageLoaderTest, InvalidCustomIconUrl) {
 
   std::unique_ptr<FakeErrorReporter> fake_error_reporter =
       GetFakeErrorReporter();
+  FakeErrorReporter* fake_error_reporter_ptr = fake_error_reporter.get();
   GURL icon_url(invalid_url);
-  LauncherSearchIconImageLoaderTestImpl impl(icon_url, nullptr,
-                                             extension_.get(), 32,
-                                             fake_error_reporter->Duplicate());
-  impl.LoadResources();
+  auto impl = base::MakeRefCounted<LauncherSearchIconImageLoaderTestImpl>(
+      icon_url, nullptr, extension_.get(), 32, std::move(fake_error_reporter));
+  impl->LoadResources();
 
   // Warning message should be provided.
   ASSERT_EQ(
@@ -229,40 +231,41 @@ TEST_F(LauncherSearchIconImageLoaderTest, InvalidCustomIconUrl) {
       "chrome-extension://foo2/bar/"
       "901234567890123456789012345678901234567890123456789012345678901234567..."
       ". Must have a valid URL within chrome-extension://foo.",
-      fake_error_reporter->GetLastWarningMessage());
+      fake_error_reporter_ptr->GetLastWarningMessage());
 
   // LoadExtensionIconResource should not be called.
-  ASSERT_FALSE(impl.IsLoadExtensionIconResourceCalled());
+  ASSERT_FALSE(impl->IsLoadExtensionIconResourceCalled());
 }
 
 TEST_F(LauncherSearchIconImageLoaderTest, FailedToLoadCustomIcon) {
   std::unique_ptr<FakeErrorReporter> fake_error_reporter =
       GetFakeErrorReporter();
+  FakeErrorReporter* fake_error_reporter_ptr = fake_error_reporter.get();
   GURL icon_url(kTestCustomIconURL);
-  LauncherSearchIconImageLoaderTestImpl impl(icon_url, nullptr,
-                                             extension_.get(), 32,
-                                             fake_error_reporter->Duplicate());
-  impl.LoadResources();
-  ASSERT_TRUE(impl.IsLoadExtensionIconResourceCalled());
+  auto impl = base::MakeRefCounted<LauncherSearchIconImageLoaderTestImpl>(
+      icon_url, nullptr, extension_.get(), 32, std::move(fake_error_reporter));
+  impl->LoadResources();
+  ASSERT_TRUE(impl->IsLoadExtensionIconResourceCalled());
 
   // Fails to load custom icon by passing an empty image.
   gfx::ImageSkia custom_icon;
-  impl.CallOnCustomIconLoaded(custom_icon);
+  impl->CallOnCustomIconLoaded(custom_icon);
 
   // Warning message should be shown.
   ASSERT_EQ(
       "[chrome.launcherSearchProvider.setSearchResults] Failed to load icon "
       "URL: chrome-extension://foo/bar",
-      fake_error_reporter->GetLastWarningMessage());
+      fake_error_reporter_ptr->GetLastWarningMessage());
 
   // Assert that extension icon image is set to icon image and badge icon image
   // is null.
   gfx::Size icon_size(32, 32);
   gfx::ImageSkia expected_image(
-      new FillColorImageSource(icon_size, SK_ColorBLACK), icon_size);
-  ASSERT_TRUE(IsEqual(expected_image, impl.GetIconImage()));
+      std::make_unique<FillColorImageSource>(icon_size, SK_ColorBLACK),
+      icon_size);
+  ASSERT_TRUE(IsEqual(expected_image, impl->GetIconImage()));
 
-  ASSERT_TRUE(impl.GetBadgeIconImage().isNull());
+  ASSERT_TRUE(impl->GetBadgeIconImage().isNull());
 }
 
 }  // namespace app_list

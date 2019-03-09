@@ -1,3 +1,0 @@
-include_rules = [
-  "+components/drive/drive_pref_names.h",
-]

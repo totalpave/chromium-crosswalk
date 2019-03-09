@@ -7,7 +7,7 @@
 #include "base/files/file_path.h"
 #include "base/path_service.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
+#include "components/safe_browsing/proto/csd.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace safe_browsing {
@@ -16,7 +16,7 @@ namespace {
 class BinaryFeatureExtractorMacTest : public testing::Test {
  protected:
   void SetUp() override {
-    ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_data_));
+    ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_));
     feature_extractor_ = new BinaryFeatureExtractor();
   }
 

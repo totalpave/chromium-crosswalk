@@ -13,7 +13,9 @@
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "third_party/skia/include/core/SkPaint.h"
+#include "base/no_destructor.h"
+#include "build/build_config.h"
+#include "third_party/skia/include/core/SkFont.h"
 #include "third_party/skia/include/core/SkTypeface.h"
 #include "ui/gfx/render_text.h"
 #include "ui/gfx/skia_util.h"
@@ -32,9 +34,9 @@ typedef std::pair<HarfBuzzFace, GlyphCache> FaceCache;
 // Font data provider for HarfBuzz using Skia. Copied from Blink.
 // TODO(ckocagil): Eliminate the duplication. http://crbug.com/368375
 struct FontData {
-  FontData(GlyphCache* glyph_cache) : glyph_cache_(glyph_cache) {}
+  explicit FontData(GlyphCache* glyph_cache) : glyph_cache_(glyph_cache) {}
 
-  SkPaint paint_;
+  SkFont font_;
   GlyphCache* glyph_cache_;
 };
 
@@ -53,18 +55,17 @@ void DeleteArrayByType(void* data) {
 
 // Outputs the |width| and |extents| of the glyph with index |codepoint| in
 // |paint|'s font.
-void GetGlyphWidthAndExtents(SkPaint* paint,
+void GetGlyphWidthAndExtents(const SkFont& font,
                              hb_codepoint_t codepoint,
                              hb_position_t* width,
                              hb_glyph_extents_t* extents) {
   DCHECK_LE(codepoint, std::numeric_limits<uint16_t>::max());
-  paint->setTextEncoding(SkPaint::kGlyphID_TextEncoding);
 
   SkScalar sk_width;
   SkRect sk_bounds;
   uint16_t glyph = static_cast<uint16_t>(codepoint);
 
-  paint->getTextWidths(&glyph, sizeof(glyph), &sk_width, &sk_bounds);
+  font.getWidths(&glyph, 1, &sk_width, &sk_bounds);
   if (width)
     *width = SkiaScalarToHarfBuzzUnits(sk_width);
   if (extents) {
@@ -89,13 +90,19 @@ hb_bool_t GetGlyph(hb_font_t* font,
   GlyphCache* cache = font_data->glyph_cache_;
 
   bool exists = cache->count(unicode) != 0;
-  if (!exists) {
-    SkPaint* paint = &font_data->paint_;
-    paint->setTextEncoding(SkPaint::kUTF32_TextEncoding);
-    paint->textToGlyphs(&unicode, sizeof(hb_codepoint_t), &(*cache)[unicode]);
-  }
+  if (!exists)
+    (*cache)[unicode] = font_data->font_.unicharToGlyph(unicode);
+
   *glyph = (*cache)[unicode];
   return !!*glyph;
+}
+
+hb_bool_t GetNominalGlyph(hb_font_t* font,
+                          void* data,
+                          hb_codepoint_t unicode,
+                          hb_codepoint_t* glyph,
+                          void* user_data) {
+  return GetGlyph(font, data, unicode, 0, glyph, user_data);
 }
 
 // Returns the horizontal advance value of the |glyph|.
@@ -106,7 +113,7 @@ hb_position_t GetGlyphHorizontalAdvance(hb_font_t* font,
   FontData* font_data = reinterpret_cast<FontData*>(data);
   hb_position_t advance = 0;
 
-  GetGlyphWidthAndExtents(&font_data->paint_, glyph, &advance, 0);
+  GetGlyphWidthAndExtents(font_data->font_, glyph, &advance, 0);
   return advance;
 }
 
@@ -123,7 +130,7 @@ hb_bool_t GetGlyphHorizontalOrigin(hb_font_t* font,
 hb_position_t GetGlyphKerning(FontData* font_data,
                               hb_codepoint_t first_glyph,
                               hb_codepoint_t second_glyph) {
-  SkTypeface* typeface = font_data->paint_.getTypeface();
+  SkTypeface* typeface = font_data->font_.getTypeface();
   const uint16_t glyphs[2] = { static_cast<uint16_t>(first_glyph),
                                static_cast<uint16_t>(second_glyph) };
   int32_t kerning_adjustments[1] = { 0 };
@@ -132,9 +139,9 @@ hb_position_t GetGlyphKerning(FontData* font_data,
     return 0;
 
   SkScalar upm = SkIntToScalar(typeface->getUnitsPerEm());
-  SkScalar size = font_data->paint_.getTextSize();
-  return SkiaScalarToHarfBuzzUnits(
-      SkScalarMulDiv(SkIntToScalar(kerning_adjustments[0]), size, upm));
+  SkScalar size = font_data->font_.getSize();
+  return SkiaScalarToHarfBuzzUnits(SkIntToScalar(kerning_adjustments[0]) *
+                                   size / upm);
 }
 
 hb_position_t GetGlyphHorizontalKerning(hb_font_t* font,
@@ -143,11 +150,6 @@ hb_position_t GetGlyphHorizontalKerning(hb_font_t* font,
                                         hb_codepoint_t right_glyph,
                                         void* user_data) {
   FontData* font_data = reinterpret_cast<FontData*>(data);
-  if (font_data->paint_.isVerticalText()) {
-    // We don't support cross-stream kerning.
-    return 0;
-  }
-
   return GetGlyphKerning(font_data, left_glyph, right_glyph);
 }
 
@@ -157,11 +159,6 @@ hb_position_t GetGlyphVerticalKerning(hb_font_t* font,
                                       hb_codepoint_t bottom_glyph,
                                       void* user_data) {
   FontData* font_data = reinterpret_cast<FontData*>(data);
-  if (!font_data->paint_.isVerticalText()) {
-    // We don't support cross-stream kerning.
-    return 0;
-  }
-
   return GetGlyphKerning(font_data, top_glyph, bottom_glyph);
 }
 
@@ -173,14 +170,15 @@ hb_bool_t GetGlyphExtents(hb_font_t* font,
                           void* user_data) {
   FontData* font_data = reinterpret_cast<FontData*>(data);
 
-  GetGlyphWidthAndExtents(&font_data->paint_, glyph, 0, extents);
+  GetGlyphWidthAndExtents(font_data->font_, glyph, 0, extents);
   return true;
 }
 
 class FontFuncs {
  public:
   FontFuncs() : font_funcs_(hb_font_funcs_create()) {
-    hb_font_funcs_set_glyph_func(font_funcs_, GetGlyph, 0, 0);
+    hb_font_funcs_set_variation_glyph_func(font_funcs_, GetGlyph, 0, 0);
+    hb_font_funcs_set_nominal_glyph_func(font_funcs_, GetNominalGlyph, 0, 0);
     hb_font_funcs_set_glyph_h_advance_func(
         font_funcs_, GetGlyphHorizontalAdvance, 0, 0);
     hb_font_funcs_set_glyph_h_kerning_func(
@@ -224,8 +222,9 @@ hb_blob_t* GetFontTable(hb_face_t* face, hb_tag_t tag, void* user_data) {
     return 0;
 
   char* buffer_raw = buffer.release();
-  return hb_blob_create(buffer_raw, table_size, HB_MEMORY_MODE_WRITABLE,
-                        buffer_raw, DeleteArrayByType<char>);
+  return hb_blob_create(buffer_raw, static_cast<uint32_t>(table_size),
+                        HB_MEMORY_MODE_WRITABLE, buffer_raw,
+                        DeleteArrayByType<char>);
 }
 
 void UnrefSkTypeface(void* data) {
@@ -264,22 +263,26 @@ hb_font_t* CreateHarfBuzzFont(sk_sp<SkTypeface> skia_face,
                               SkScalar text_size,
                               const FontRenderParams& params,
                               bool subpixel_rendering_suppressed) {
-  // TODO(ckocagil): This shouldn't grow indefinitely. Maybe use base::MRUCache?
-  static std::map<SkFontID, FaceCache> face_caches;
+  // TODO(https://crbug.com/890298): This shouldn't grow indefinitely.
+  // Maybe use base::MRUCache?
+  static base::NoDestructor<std::map<SkFontID, FaceCache>> face_caches;
 
-  FaceCache* face_cache = &face_caches[skia_face->uniqueID()];
+  FaceCache* face_cache = &(*face_caches)[skia_face->uniqueID()];
   if (face_cache->first.get() == NULL)
     face_cache->first.Init(skia_face.get());
 
-  hb_font_t* harfbuzz_font = hb_font_create(face_cache->first.get());
+  hb_font_t* harfbuzz_font = nullptr;
+  if (!harfbuzz_font)
+    harfbuzz_font = hb_font_create(face_cache->first.get());
+
   const int scale = SkiaScalarToHarfBuzzUnits(text_size);
   hb_font_set_scale(harfbuzz_font, scale, scale);
   FontData* hb_font_data = new FontData(&face_cache->second);
-  hb_font_data->paint_.setTypeface(std::move(skia_face));
-  hb_font_data->paint_.setTextSize(text_size);
+  hb_font_data->font_.setTypeface(std::move(skia_face));
+  hb_font_data->font_.setSize(text_size);
   // TODO(ckocagil): Do we need to update these params later?
   internal::ApplyRenderParams(params, subpixel_rendering_suppressed,
-                              &hb_font_data->paint_);
+                              &hb_font_data->font_);
   hb_font_set_funcs(harfbuzz_font, g_font_funcs.Get().get(), hb_font_data,
                     DeleteByType<FontData>);
   hb_font_make_immutable(harfbuzz_font);

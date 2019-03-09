@@ -15,18 +15,24 @@ class AnimationDelegate;
 
 // Linear time bounded animation. As the animation progresses AnimateToState is
 // invoked.
-class GFX_EXPORT LinearAnimation : public Animation {
+class ANIMATION_EXPORT LinearAnimation : public Animation {
  public:
+  // Default frame rate (hz).
+  static const int kDefaultFrameRate;
+
   // Initializes everything except the duration.
   //
   // Caller must make sure to call SetDuration() if they use this
   // constructor; it is preferable to use the full one, but sometimes
   // duration can change between calls to Start() and we need to
   // expose this interface.
-  LinearAnimation(int frame_rate, AnimationDelegate* delegate);
+  explicit LinearAnimation(AnimationDelegate* delegate,
+                           int frame_rate = kDefaultFrameRate);
 
   // Initializes all fields.
-  LinearAnimation(int duration, int frame_rate, AnimationDelegate* delegate);
+  LinearAnimation(base::TimeDelta duration,
+                  int frame_rate,
+                  AnimationDelegate* delegate);
 
   // Gets the value for the current state, according to the animation curve in
   // use. This class provides only for a linear relationship, however subclasses
@@ -40,8 +46,14 @@ class GFX_EXPORT LinearAnimation : public Animation {
   void End();
 
   // Changes the length of the animation. This resets the current
-  // state of the animation to the beginning.
-  void SetDuration(int duration);
+  // state of the animation to the beginning. This value will be multiplied by
+  // the currently set scale factor.
+  void SetDuration(base::TimeDelta duration);
+
+  // Sets the duration scale factor. This scale factor will be applied to all
+  // animation durations globally. This value must be >= 0. The default value
+  // is 1.0.
+  static void SetDurationScale(double scale_factor);
 
  protected:
   // Called when the animation progresses. Subclasses override this to
@@ -61,6 +73,8 @@ class GFX_EXPORT LinearAnimation : public Animation {
 
   // Overriden to return true if state is not 1.
   bool ShouldSendCanceledFromStop() override;
+
+  base::TimeDelta duration() const { return duration_; }
 
  private:
   base::TimeDelta duration_;

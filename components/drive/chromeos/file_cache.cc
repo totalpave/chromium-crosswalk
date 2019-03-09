@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/xattr.h>
 
+#include <memory>
 #include <queue>
 #include <vector>
 
@@ -19,11 +20,11 @@
 #include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "build/build_config.h"
 #include "components/drive/drive.pb.h"
 #include "components/drive/drive_api_util.h"
@@ -52,11 +53,35 @@ base::FilePath GetPathForId(const base::FilePath& cache_directory,
       base::FilePath::FromUTF8Unsafe(util::EscapeCacheFileName(id)));
 }
 
+// Returns if the filesystem backing |path| supports file attributes.
+// This will return false if the filesystem is for example tmpfs, which is used
+// for ephemeral mode.
+bool IsFileAttributesSupported(const base::FilePath& path) {
+  if (getxattr(path.value().c_str(), "user.foo", nullptr, 0) >= 0) {
+    return true;
+  }
+  return errno != ENOTSUP;
+}
+
 // Sets extended file attribute as |name| |value| pair.
 bool SetExtendedFileAttributes(const base::FilePath& path,
     const std::string& name, const std::string& value) {
-  return setxattr(path.value().c_str(), name.c_str(), value.c_str(),
-      value.size() + 1, 0) == 0;
+  if (setxattr(path.value().c_str(), name.c_str(), value.c_str(),
+               value.size() + 1, 0) != 0) {
+    PLOG(ERROR) << "setxattr: " << path.value();
+    return false;
+  }
+  return true;
+}
+
+// Remove extended file attribute with |name|.
+bool UnsetExtendedFileAttributes(const base::FilePath& path,
+                                 const std::string& name) {
+  if (removexattr(path.value().c_str(), name.c_str()) != 0) {
+    PLOG_IF(ERROR, errno != ENODATA) << "removexattr: " << path.value();
+    return false;
+  }
+  return true;
 }
 
 // Changes attributes of the file with |flags|, e.g. FS_NODUMP_FL (cryptohome
@@ -92,27 +117,44 @@ FileAttributes GetFileAttributes(const base::FilePath& path) {
   return flags;
 }
 
-// Marks the cache file to be removable by cryptohome.
+// Marks the cache file to be removable by cryptohome, or do nothing if
+// underlying filesystem doesn't support file attributes, as tmpfs for ephemeral
+// mode.
 bool SetRemovable(const base::FilePath& path) {
+  // For ephemeral mode.
+  if (!IsFileAttributesSupported(path)) {
+    return true;
+  }
   FileAttributes flags = GetFileAttributes(path);
-  if (flags < 0) return false;
-  if ((flags & FS_NODUMP_FL) == FS_NODUMP_FL) return true;
-
-  return SetFileAttributes(path, flags | FS_NODUMP_FL);
+  bool xattr = flags >= 0 && SetFileAttributes(path, flags | FS_NODUMP_FL);
+  bool fattr = SetExtendedFileAttributes(
+      path, FileCache::kGCacheRemovableAttribute, "1");
+  return xattr || fattr;
 }
 
-// Marks the cache file to be unremovable by cryptohome.
+// Marks the cache file to be unremovable by cryptohome, or do nothing if
+// underlying filesystem doesn't support file attributes, as tmpfs for ephemeral
+// mode.
 bool UnsetRemovable(const base::FilePath& path) {
+  // For ephemeral mode.
+  if (!IsFileAttributesSupported(path)) {
+    return true;
+  }
   FileAttributes flags = GetFileAttributes(path);
-  if (flags < 0) return false;
-  if ((flags & FS_NODUMP_FL) == 0) return true;
-
-  return SetFileAttributes(path, flags & ~FS_NODUMP_FL);
+  bool xattr = flags >= 0 && SetFileAttributes(path, flags & ~FS_NODUMP_FL);
+  bool fattr =
+      UnsetExtendedFileAttributes(path, FileCache::kGCacheRemovableAttribute);
+  return xattr || fattr;
 }
 
-// Marks |path| as drive cache dir.
-// Returns if the operation succeeded.
+// Marks |path| as drive cache dir, or do nothing if underlying filesystem
+// doesn't support file attributes, as tmpfs for ephemeral mode. Returns if the
+// operation succeeded.
 bool MarkAsDriveCacheDir(const base::FilePath& path) {
+  // For ephemeral mode.
+  if (!IsFileAttributesSupported(path)) {
+    return true;
+  }
   return SetRemovable(path)
       && SetExtendedFileAttributes(path, FileCache::kGCacheFilesAttribute, "");
 }
@@ -137,6 +179,7 @@ const size_t kMaxNumOfEvictedCacheFiles = 30000;
 
 // static
 const char FileCache::kGCacheFilesAttribute[] = "user.GCacheFiles";
+const char FileCache::kGCacheRemovableAttribute[] = "user.GCacheRemovable";
 
 FileCache::FileCache(ResourceMetadataStorage* storage,
                      const base::FilePath& cache_file_directory,
@@ -167,7 +210,7 @@ base::FilePath FileCache::GetCacheFilePath(const std::string& id) const {
 }
 
 void FileCache::AssertOnSequencedWorkerPool() {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 }
 
 bool FileCache::IsUnderFileCacheDirectory(const base::FilePath& path) const {
@@ -448,6 +491,11 @@ FileError FileCache::Unpin(const std::string& id) {
   return FILE_ERROR_OK;
 }
 
+bool FileCache::IsMarkedAsMounted(const std::string& id) {
+  AssertOnSequencedWorkerPool();
+  return mounted_files_.count(id);
+}
+
 FileError FileCache::MarkAsMounted(const std::string& id,
                                    base::FilePath* cache_file_path) {
   AssertOnSequencedWorkerPool();
@@ -509,12 +557,10 @@ FileError FileCache::OpenForWrite(
     return error;
 
   write_opened_files_[id]++;
-  file_closer->reset(new base::ScopedClosureRunner(
-      base::Bind(&google_apis::RunTaskWithTaskRunner,
-                 blocking_task_runner_,
+  *file_closer = std::make_unique<base::ScopedClosureRunner>(
+      base::Bind(&google_apis::RunTaskWithTaskRunner, blocking_task_runner_,
                  base::Bind(&FileCache::CloseForWrite,
-                            weak_ptr_factory_.GetWeakPtr(),
-                            id))));
+                            weak_ptr_factory_.GetWeakPtr(), id)));
   return FILE_ERROR_OK;
 }
 
@@ -656,7 +702,7 @@ bool FileCache::Initialize() {
 }
 
 void FileCache::Destroy() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   in_shutdown_.Set();
 
@@ -664,8 +710,8 @@ void FileCache::Destroy() {
   // Note that base::DeletePointer<> cannot be used as the destructor of this
   // class is private.
   blocking_task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&FileCache::DestroyOnBlockingPool, base::Unretained(this)));
+      FROM_HERE, base::BindOnce(&FileCache::DestroyOnBlockingPool,
+                                base::Unretained(this)));
 }
 
 void FileCache::DestroyOnBlockingPool() {
@@ -728,9 +774,10 @@ bool FileCache::RecoverFilesFromCacheDirectory(
     if (it != recovered_cache_info.end() && !it->second.title.empty()) {
       // We can use a file name recovered from the trashed DB.
       dest_base_name = base::FilePath::FromUTF8Unsafe(it->second.title);
-    } else if (net::SniffMimeType(&content[0], read_result,
-                                  net::FilePathToFileURL(current),
-                                  std::string(), &mime_type) ||
+    } else if (net::SniffMimeType(
+                   &content[0], read_result, net::FilePathToFileURL(current),
+                   std::string(), net::ForceSniffFileUrlsForHtml::kDisabled,
+                   &mime_type) ||
                net::SniffMimeTypeFromLocalData(&content[0], read_result,
                                                &mime_type)) {
       // Change base name for common mime types.
@@ -765,8 +812,8 @@ bool FileCache::RecoverFilesFromCacheDirectory(
       return false;
     }
   }
-  UMA_HISTOGRAM_COUNTS("Drive.NumberOfCacheFilesRecoveredAfterDBCorruption",
-                       file_number - 1);
+  UMA_HISTOGRAM_COUNTS_1M("Drive.NumberOfCacheFilesRecoveredAfterDBCorruption",
+                          file_number - 1);
   return true;
 }
 
@@ -894,8 +941,9 @@ void FileCache::CloseForWrite(const std::string& id) {
                << FileErrorToString(error);
     return;
   }
-  entry.mutable_file_info()->set_last_modified(
-      base::Time::Now().ToInternalValue());
+  int64_t now = base::Time::Now().ToInternalValue();
+  entry.mutable_file_info()->set_last_modified(now);
+  entry.set_last_modified_by_me(now);
   error = storage_->PutEntry(entry);
   if (error != FILE_ERROR_OK) {
     LOG(ERROR) << "Failed to put entry: " << id << ", "

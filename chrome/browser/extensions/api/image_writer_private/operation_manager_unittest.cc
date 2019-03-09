@@ -6,47 +6,30 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/command_line.h"
-#include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/api/image_writer_private/error_messages.h"
 #include "chrome/browser/extensions/api/image_writer_private/test_utils.h"
-#include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/extension_system_factory.h"
-#include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/test/base/testing_profile.h"
-#include "extensions/browser/event_router.h"
-#include "extensions/browser/event_router_factory.h"
-
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
-#endif
+#include "extensions/browser/test_event_router.h"
+#include "services/service_manager/public/cpp/connector.h"
 
 namespace extensions {
 namespace image_writer {
 
-// A fake for the EventRouter. If tests require monitoring of interaction with
-// the event router put the logic here.
-class FakeEventRouter : public extensions::EventRouter {
- public:
-  explicit FakeEventRouter(Profile* profile) : EventRouter(profile, NULL) {}
+namespace {
 
-  void DispatchEventToExtension(
-      const std::string& extension_id,
-      std::unique_ptr<extensions::Event> event) override {
-    // Do nothing with the event as no tests currently care.
+class TestOperationManager : public OperationManager {
+ public:
+  explicit TestOperationManager(content::BrowserContext* context)
+      : OperationManager(context) {}
+
+ private:
+  std::unique_ptr<service_manager::Connector> CreateConnector() override {
+    return nullptr;
   }
 };
-
-// FakeEventRouter factory function
-std::unique_ptr<KeyedService> FakeEventRouterFactoryFunction(
-    content::BrowserContext* context) {
-  return base::WrapUnique(new FakeEventRouter(static_cast<Profile*>(context)));
-}
-
-namespace {
 
 class ImageWriterOperationManagerTest : public ImageWriterUnitTestBase {
  public:
@@ -70,9 +53,7 @@ class ImageWriterOperationManagerTest : public ImageWriterUnitTestBase {
 
   void SetUp() override {
     ImageWriterUnitTestBase::SetUp();
-    event_router_ = static_cast<FakeEventRouter*>(
-        extensions::EventRouterFactory::GetInstance()->SetTestingFactoryAndUse(
-            &test_profile_, &FakeEventRouterFactoryFunction));
+    CreateAndUseTestEventRouter(&test_profile_);
   }
 
   bool started_;
@@ -84,24 +65,16 @@ class ImageWriterOperationManagerTest : public ImageWriterUnitTestBase {
   std::string cancel_error_;
 
   TestingProfile test_profile_;
-  FakeEventRouter* event_router_;
-
-#if defined(OS_CHROMEOS)
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
-  chromeos::ScopedTestUserManager test_user_manager_;
-#endif
 };
 
 TEST_F(ImageWriterOperationManagerTest, WriteFromFile) {
-  OperationManager manager(&test_profile_);
+  TestOperationManager manager(&test_profile_);
 
   manager.StartWriteFromFile(
-      kDummyExtensionId,
-      test_utils_.GetImagePath(),
+      kDummyExtensionId, test_utils_.GetImagePath(),
       test_utils_.GetDevicePath().AsUTF8Unsafe(),
-      base::Bind(&ImageWriterOperationManagerTest::StartCallback,
-                 base::Unretained(this)));
+      base::BindOnce(&ImageWriterOperationManagerTest::StartCallback,
+                     base::Unretained(this)));
 
   EXPECT_TRUE(started_);
   EXPECT_TRUE(start_success_);
@@ -109,24 +82,23 @@ TEST_F(ImageWriterOperationManagerTest, WriteFromFile) {
 
   manager.CancelWrite(
       kDummyExtensionId,
-      base::Bind(&ImageWriterOperationManagerTest::CancelCallback,
-                 base::Unretained(this)));
+      base::BindOnce(&ImageWriterOperationManagerTest::CancelCallback,
+                     base::Unretained(this)));
 
   EXPECT_TRUE(cancelled_);
   EXPECT_TRUE(cancel_success_);
   EXPECT_EQ("", cancel_error_);
 
-  base::RunLoop().RunUntilIdle();
+  content::RunAllTasksUntilIdle();
 }
 
 TEST_F(ImageWriterOperationManagerTest, DestroyPartitions) {
-  OperationManager manager(&test_profile_);
+  TestOperationManager manager(&test_profile_);
 
   manager.DestroyPartitions(
-      kDummyExtensionId,
-      test_utils_.GetDevicePath().AsUTF8Unsafe(),
-      base::Bind(&ImageWriterOperationManagerTest::StartCallback,
-                 base::Unretained(this)));
+      kDummyExtensionId, test_utils_.GetDevicePath().AsUTF8Unsafe(),
+      base::BindOnce(&ImageWriterOperationManagerTest::StartCallback,
+                     base::Unretained(this)));
 
   EXPECT_TRUE(started_);
   EXPECT_TRUE(start_success_);
@@ -134,14 +106,14 @@ TEST_F(ImageWriterOperationManagerTest, DestroyPartitions) {
 
   manager.CancelWrite(
       kDummyExtensionId,
-      base::Bind(&ImageWriterOperationManagerTest::CancelCallback,
-                 base::Unretained(this)));
+      base::BindOnce(&ImageWriterOperationManagerTest::CancelCallback,
+                     base::Unretained(this)));
 
   EXPECT_TRUE(cancelled_);
   EXPECT_TRUE(cancel_success_);
   EXPECT_EQ("", cancel_error_);
 
-  base::RunLoop().RunUntilIdle();
+  content::RunAllTasksUntilIdle();
 }
 
 } // namespace

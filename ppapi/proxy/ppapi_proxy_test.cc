@@ -4,7 +4,6 @@
 
 #include "ppapi/proxy/ppapi_proxy_test.h"
 
-#include <sstream>
 #include <tuple>
 
 #include "base/bind.h"
@@ -30,7 +29,7 @@ namespace {
 // do-nothing implementation.
 void PluginCrashed(PP_Module module) {
   NOTREACHED();
-};
+}
 
 PP_Instance GetInstanceForResource(PP_Resource resource) {
   // If a test relies on this, we need to implement it.
@@ -65,13 +64,11 @@ PPB_Proxy_Private ppb_proxy_private = {
 // for the PluginProxyTestHarness and should only respond for PPP interfaces,
 // and the other handler is for the HostProxyTestHarness which should only
 // ever respond for PPB interfaces.
-base::ObserverList<ProxyTestHarnessBase> get_interface_handlers_;
+base::ObserverList<ProxyTestHarnessBase>::Unchecked get_interface_handlers_;
 
 const void* MockGetInterface(const char* name) {
-  base::ObserverList<ProxyTestHarnessBase>::Iterator it(
-      &get_interface_handlers_);
-  while (ProxyTestHarnessBase* observer = it.GetNext()) {
-    const void* interface = observer->GetInterface(name);
+  for (auto& observer : get_interface_handlers_) {
+    const void* interface = observer.GetInterface(name);
     if (interface)
       return interface;
   }
@@ -264,6 +261,20 @@ PluginProxyTestHarness::PluginDelegateMock::ShareSharedMemoryHandleWithRemote(
   return base::SharedMemory::DuplicateHandle(handle);
 }
 
+base::UnsafeSharedMemoryRegion PluginProxyTestHarness::PluginDelegateMock::
+    ShareUnsafeSharedMemoryRegionWithRemote(
+        const base::UnsafeSharedMemoryRegion& region,
+        base::ProcessId /* remote_pid */) {
+  return region.Duplicate();
+}
+
+base::ReadOnlySharedMemoryRegion PluginProxyTestHarness::PluginDelegateMock::
+    ShareReadOnlySharedMemoryRegionWithRemote(
+        const base::ReadOnlySharedMemoryRegion& region,
+        base::ProcessId /* remote_pid */) {
+  return region.Duplicate();
+}
+
 std::set<PP_Instance>*
 PluginProxyTestHarness::PluginDelegateMock::GetGloballySeenInstanceIDSet() {
   return &instance_id_set_;
@@ -379,8 +390,8 @@ void PluginProxyMultiThreadTest::CheckOnThread(ThreadType thread_type) {
 
 void PluginProxyMultiThreadTest::PostQuitForMainThread() {
   main_thread_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&PluginProxyMultiThreadTest::QuitNestedLoop,
-                            base::Unretained(this)));
+      FROM_HERE, base::BindOnce(&PluginProxyMultiThreadTest::QuitNestedLoop,
+                                base::Unretained(this)));
 }
 
 void PluginProxyMultiThreadTest::PostQuitForSecondaryThread() {
@@ -454,9 +465,9 @@ void HostProxyTestHarness::SetUpHarnessWithChannel(
       &MockGetInterface,
       PpapiPermissions::AllPermissions()));
   ppapi::Preferences preferences;
-  host_dispatcher_->InitHostWithChannel(&delegate_mock_,
-                                        base::kNullProcessId, channel_handle,
-                                        is_client, preferences);
+  host_dispatcher_->InitHostWithChannel(&delegate_mock_, base::kNullProcessId,
+                                        channel_handle, is_client, preferences,
+                                        base::ThreadTaskRunnerHandle::Get());
   HostDispatcher::SetForInstance(pp_instance(), host_dispatcher_.get());
 }
 
@@ -499,6 +510,20 @@ HostProxyTestHarness::DelegateMock::ShareSharedMemoryHandleWithRemote(
     const base::SharedMemoryHandle& handle,
     base::ProcessId /*remote_pid*/) {
   return base::SharedMemory::DuplicateHandle(handle);
+}
+
+base::UnsafeSharedMemoryRegion
+HostProxyTestHarness::DelegateMock::ShareUnsafeSharedMemoryRegionWithRemote(
+    const base::UnsafeSharedMemoryRegion& region,
+    base::ProcessId /*remote_pid*/) {
+  return region.Duplicate();
+}
+
+base::ReadOnlySharedMemoryRegion
+HostProxyTestHarness::DelegateMock::ShareReadOnlySharedMemoryRegionWithRemote(
+    const base::ReadOnlySharedMemoryRegion& region,
+    base::ProcessId /*remote_pid*/) {
+  return region.Duplicate();
 }
 
 // HostProxyTest ---------------------------------------------------------------
@@ -550,21 +575,18 @@ void TwoWayTest::SetUp() {
   io_thread_.StartWithOptions(options);
   plugin_thread_.Start();
 
-  // Construct the IPC handle name using the process ID so we can safely run
-  // multiple |TwoWayTest|s concurrently.
-  std::ostringstream handle_name;
-  handle_name << "TwoWayTestChannel" << base::GetCurrentProcId();
-  IPC::ChannelHandle handle(handle_name.str());
+  mojo::MessagePipe pipe;
   base::WaitableEvent remote_harness_set_up(
       base::WaitableEvent::ResetPolicy::MANUAL,
       base::WaitableEvent::InitialState::NOT_SIGNALED);
   plugin_thread_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(&SetUpRemoteHarness, remote_harness_, handle,
-                            base::RetainedRef(io_thread_.task_runner()),
-                            &shutdown_event_, &remote_harness_set_up));
+      FROM_HERE, base::BindOnce(&SetUpRemoteHarness, remote_harness_,
+                                pipe.handle0.release(),
+                                base::RetainedRef(io_thread_.task_runner()),
+                                &shutdown_event_, &remote_harness_set_up));
   remote_harness_set_up.Wait();
   local_harness_->SetUpHarnessWithChannel(
-      handle, io_thread_.task_runner().get(), &shutdown_event_,
+      pipe.handle1.release(), io_thread_.task_runner().get(), &shutdown_event_,
       true);  // is_client
 }
 
@@ -573,8 +595,8 @@ void TwoWayTest::TearDown() {
       base::WaitableEvent::ResetPolicy::MANUAL,
       base::WaitableEvent::InitialState::NOT_SIGNALED);
   plugin_thread_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(&TearDownRemoteHarness, remote_harness_,
-                            &remote_harness_torn_down));
+      FROM_HERE, base::BindOnce(&TearDownRemoteHarness, remote_harness_,
+                                &remote_harness_torn_down));
   remote_harness_torn_down.Wait();
 
   local_harness_->TearDownHarness();
@@ -587,7 +609,7 @@ void TwoWayTest::PostTaskOnRemoteHarness(const base::Closure& task) {
       base::WaitableEvent::ResetPolicy::MANUAL,
       base::WaitableEvent::InitialState::NOT_SIGNALED);
   plugin_thread_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(&RunTaskOnRemoteHarness, task, &task_complete));
+      FROM_HERE, base::BindOnce(&RunTaskOnRemoteHarness, task, &task_complete));
   task_complete.Wait();
 }
 

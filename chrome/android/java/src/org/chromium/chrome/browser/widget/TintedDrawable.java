@@ -4,19 +4,19 @@
 
 package org.chromium.chrome.browser.widget;
 
+import android.content.Context;
 import android.content.res.ColorStateList;
-import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.PorterDuff;
 import android.graphics.drawable.BitmapDrawable;
+import android.support.v7.content.res.AppCompatResources;
 
-import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.chrome.R;
 
 /**
  * Implementation of BitmapDrawable that allows to tint the color of the drawable for all
- * bitmap drawable states using chrome:tint attribute in XML.
+ * bitmap drawable states.
  */
 public class TintedDrawable extends BitmapDrawable {
     /**
@@ -24,9 +24,9 @@ public class TintedDrawable extends BitmapDrawable {
      */
     protected ColorStateList mTint;
 
-    public TintedDrawable(Resources res, Bitmap bitmap) {
-        super(res, bitmap);
-        mTint = ApiCompatibilityUtils.getColorStateList(res, R.color.dark_mode_tint);
+    public TintedDrawable(Context context, Bitmap bitmap) {
+        super(context.getResources(), bitmap);
+        mTint = AppCompatResources.getColorStateList(context, R.color.standard_mode_tint);
     }
 
     @Override
@@ -54,26 +54,19 @@ public class TintedDrawable extends BitmapDrawable {
     /**
      * Factory method for creating a {@link TintedDrawable} with a resource id.
      */
-    public static TintedDrawable constructTintedDrawable(Resources res, int drawableId) {
-        Bitmap icon = BitmapFactory.decodeResource(res, drawableId);
-        return new TintedDrawable(res, icon);
+    public static TintedDrawable constructTintedDrawable(Context context, int drawableId) {
+        Bitmap icon = BitmapFactory.decodeResource(context.getResources(), drawableId);
+        return new TintedDrawable(context, icon);
     }
 
     /**
      * Factory method for creating a {@link TintedDrawable} with a resource id and specific tint.
      */
     public static TintedDrawable constructTintedDrawable(
-            Resources res, int drawableId, int tintColorId) {
-        TintedDrawable drawable = constructTintedDrawable(res,  drawableId);
-        drawable.setTint(ApiCompatibilityUtils.getColorStateList(res, tintColorId));
+            Context context, int drawableId, int tintColorId) {
+        TintedDrawable drawable = constructTintedDrawable(context, drawableId);
+        drawable.setTint(AppCompatResources.getColorStateList(context, tintColorId));
         return drawable;
-    }
-
-    /**
-     * Factory method for creating a {@link TintedDrawable} with a {@link Bitmap} icon.
-     */
-    public static TintedDrawable constructTintedDrawable(Resources res, Bitmap icon) {
-        return new TintedDrawable(res, icon);
     }
 
     private boolean updateTintColor() {

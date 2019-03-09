@@ -6,6 +6,8 @@
 
 #include <stdint.h>
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
@@ -25,21 +27,28 @@ SystemSaltGetter* g_system_salt_getter = NULL;
 SystemSaltGetter::SystemSaltGetter() : weak_ptr_factory_(this) {
 }
 
-SystemSaltGetter::~SystemSaltGetter() {
-}
+SystemSaltGetter::~SystemSaltGetter() = default;
 
 void SystemSaltGetter::GetSystemSalt(
     const GetSystemSaltCallback& callback) {
   if (!system_salt_.empty()) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(callback, system_salt_));
+        FROM_HERE, base::BindOnce(callback, system_salt_));
     return;
   }
 
   DBusThreadManager::Get()->GetCryptohomeClient()->WaitForServiceToBeAvailable(
-      base::Bind(&SystemSaltGetter::DidWaitForServiceToBeAvailable,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 callback));
+      base::BindOnce(&SystemSaltGetter::DidWaitForServiceToBeAvailable,
+                     weak_ptr_factory_.GetWeakPtr(), callback));
+}
+
+void SystemSaltGetter::AddOnSystemSaltReady(const base::Closure& closure) {
+  if (!raw_salt_.empty()) {
+    closure.Run();
+    return;
+  }
+
+  on_system_salt_ready_.push_back(closure);
 }
 
 void SystemSaltGetter::AddOnSystemSaltReady(const base::Closure& closure) {
@@ -69,20 +78,17 @@ void SystemSaltGetter::DidWaitForServiceToBeAvailable(
     return;
   }
   DBusThreadManager::Get()->GetCryptohomeClient()->GetSystemSalt(
-      base::Bind(&SystemSaltGetter::DidGetSystemSalt,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 callback));
+      base::BindOnce(&SystemSaltGetter::DidGetSystemSalt,
+                     weak_ptr_factory_.GetWeakPtr(), callback));
 }
 
 void SystemSaltGetter::DidGetSystemSalt(
     const GetSystemSaltCallback& callback,
-    DBusMethodCallStatus call_status,
-    const std::vector<uint8_t>& system_salt) {
-  if (call_status == DBUS_METHOD_CALL_SUCCESS &&
-      !system_salt.empty() &&
-      system_salt.size() % 2 == 0U) {
-      raw_salt_ = system_salt;
-    system_salt_ = ConvertRawSaltToHexString(system_salt);
+    base::Optional<std::vector<uint8_t>> system_salt) {
+  if (system_salt.has_value() && !system_salt->empty() &&
+      system_salt->size() % 2 == 0U) {
+    raw_salt_ = std::move(system_salt).value();
+    system_salt_ = ConvertRawSaltToHexString(raw_salt_);
 
     std::vector<base::Closure> callbacks;
     callbacks.swap(on_system_salt_ready_);

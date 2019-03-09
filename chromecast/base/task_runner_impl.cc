@@ -12,7 +12,11 @@
 namespace chromecast {
 
 TaskRunnerImpl::TaskRunnerImpl()
-    : runner_(base::ThreadTaskRunnerHandle::Get()) {
+    : TaskRunnerImpl(base::ThreadTaskRunnerHandle::Get()) {}
+
+TaskRunnerImpl::TaskRunnerImpl(
+    scoped_refptr<base::SingleThreadTaskRunner> runner)
+    : runner_(std::move(runner)) {
   DCHECK(runner_.get());
 }
 
@@ -23,7 +27,7 @@ bool TaskRunnerImpl::PostTask(Task* task, uint64_t delay_milliseconds) {
   // TODO(halliwell): FROM_HERE is misleading, we should consider a macro for
   // vendor backends to send the callsite info.
   return runner_->PostDelayedTask(
-      FROM_HERE, base::Bind(&Task::Run, base::Owned(task)),
+      FROM_HERE, base::BindOnce(&Task::Run, base::Owned(task)),
       base::TimeDelta::FromMilliseconds(delay_milliseconds));
 }
 

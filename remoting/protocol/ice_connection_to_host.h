@@ -12,7 +12,8 @@
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
+#include "base/single_thread_task_runner.h"
 #include "remoting/proto/internal.pb.h"
 #include "remoting/protocol/channel_dispatcher_base.h"
 #include "remoting/protocol/clipboard_filter.h"
@@ -27,6 +28,7 @@
 namespace remoting {
 namespace protocol {
 
+class AudioDecodeScheduler;
 class AudioReader;
 class ClientControlDispatcher;
 class ClientEventDispatcher;
@@ -35,8 +37,7 @@ class ClientVideoDispatcher;
 class IceConnectionToHost : public ConnectionToHost,
                             public Session::EventHandler,
                             public IceTransport::EventHandler,
-                            public ChannelDispatcherBase::EventHandler,
-                            public base::NonThreadSafe {
+                            public ChannelDispatcherBase::EventHandler {
  public:
   IceConnectionToHost();
   ~IceConnectionToHost() override;
@@ -45,7 +46,9 @@ class IceConnectionToHost : public ConnectionToHost,
   void set_client_stub(ClientStub* client_stub) override;
   void set_clipboard_stub(ClipboardStub* clipboard_stub) override;
   void set_video_renderer(VideoRenderer* video_renderer) override;
-  void set_audio_stub(AudioStub* audio_stub) override;
+  void InitializeAudio(
+      scoped_refptr<base::SingleThreadTaskRunner> audio_decode_task_runner,
+      base::WeakPtr<AudioStub> audio_stub) override;
   void Connect(std::unique_ptr<Session> session,
                scoped_refptr<TransportContext> transport_context,
                HostEventCallback* event_callback) override;
@@ -66,6 +69,7 @@ class IceConnectionToHost : public ConnectionToHost,
 
   // ChannelDispatcherBase::EventHandler interface.
   void OnChannelInitialized(ChannelDispatcherBase* channel_dispatcher) override;
+  void OnChannelClosed(ChannelDispatcherBase* channel_dispatcher) override;
 
   // MonitoredVideoStub::EventHandler interface.
   virtual void OnVideoChannelStatus(bool active);
@@ -83,7 +87,8 @@ class IceConnectionToHost : public ConnectionToHost,
   ClientStub* client_stub_ = nullptr;
   ClipboardStub* clipboard_stub_ = nullptr;
   VideoRenderer* video_renderer_ = nullptr;
-  AudioStub* audio_stub_ = nullptr;
+
+  std::unique_ptr<AudioDecodeScheduler> audio_decode_scheduler_;
 
   std::unique_ptr<Session> session_;
   std::unique_ptr<IceTransport> transport_;
@@ -101,6 +106,8 @@ class IceConnectionToHost : public ConnectionToHost,
   ErrorCode error_ = OK;
 
  private:
+  SEQUENCE_CHECKER(sequence_checker_);
+
   DISALLOW_COPY_AND_ASSIGN(IceConnectionToHost);
 };
 

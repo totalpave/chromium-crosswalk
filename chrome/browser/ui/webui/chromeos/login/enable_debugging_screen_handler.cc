@@ -6,16 +6,17 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/chromeos/login/oobe_screen.h"
 #include "chrome/browser/chromeos/login/ui/login_web_dialog.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/webui/chromeos/login/oobe_screen.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/dbus/cryptohome_client.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/debug_daemon_client.h"
@@ -23,7 +24,8 @@
 #include "components/login/localized_values_builder.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "grit/components_strings.h"
+#include "components/strings/grit/components_strings.h"
+#include "third_party/cros_system_api/dbus/service_constants.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -34,23 +36,20 @@ const char kJsScreenPath[] = "login.EnableDebuggingScreen";
 
 namespace chromeos {
 
-EnableDebuggingScreenHandler::EnableDebuggingScreenHandler()
-    : BaseScreenHandler(kJsScreenPath),
-      delegate_(NULL),
-      show_on_init_(false),
+EnableDebuggingScreenHandler::EnableDebuggingScreenHandler(
+    JSCallsContainer* js_calls_container)
+    : BaseScreenHandler(kScreenId, js_calls_container),
       weak_ptr_factory_(this) {
+  set_call_js_prefix(kJsScreenPath);
 }
 
 EnableDebuggingScreenHandler::~EnableDebuggingScreenHandler() {
   if (delegate_)
-    delegate_->OnActorDestroyed(this);
-}
-
-void EnableDebuggingScreenHandler::PrepareToShow() {
+    delegate_->OnViewDestroyed(this);
 }
 
 void EnableDebuggingScreenHandler::ShowWithParams() {
-  ShowScreen(OobeScreen::SCREEN_OOBE_ENABLE_DEBUGGING);
+  ShowScreen(kScreenId);
 
   UpdateUIState(UI_STATE_WAIT);
 
@@ -226,7 +225,9 @@ void EnableDebuggingScreenHandler::OnRemoveRootfsVerification(bool success) {
   PrefService* prefs = g_browser_process->local_state();
   prefs->SetBoolean(prefs::kDebuggingFeaturesRequested, true);
   prefs->CommitPendingWrite();
-  chromeos::DBusThreadManager::Get()->GetPowerManagerClient()->RequestRestart();
+  chromeos::PowerManagerClient::Get()->RequestRestart(
+      power_manager::REQUEST_RESTART_OTHER,
+      "login debugging screen removing rootfs verification");
 }
 
 void EnableDebuggingScreenHandler::OnEnableDebuggingFeatures(bool success) {
@@ -273,9 +274,7 @@ void EnableDebuggingScreenHandler::UpdateUIState(
     prefs->CommitPendingWrite();
   }
 
-  web_ui()->CallJavascriptFunctionUnsafe(
-      "login.EnableDebuggingScreen.updateState",
-      base::FundamentalValue(static_cast<int>(state)));
+  CallJS("login.EnableDebuggingScreen.updateState", static_cast<int>(state));
 }
 
 void EnableDebuggingScreenHandler::HandleOnLearnMore() {

@@ -7,26 +7,20 @@
 
 #if !defined(OS_WIN)
 
-#include <stddef.h>
-
 #include <memory>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "components/crash/content/app/crash_reporter_client.h"
 
-namespace browser_watcher {
-class CrashReportingMetrics;
-}  // namespace browser_watcher
-
 class ChromeCrashReporterClient : public crash_reporter::CrashReporterClient {
  public:
-  ChromeCrashReporterClient();
-  ~ChromeCrashReporterClient() override;
+  static void Create();
 
   // crash_reporter::CrashReporterClient implementation.
-#if !defined(OS_MACOSX)
+#if !defined(OS_MACOSX) && !defined(OS_ANDROID)
   void SetCrashReporterClientIdFromGUID(
       const std::string& client_guid) override;
 #endif
@@ -34,12 +28,17 @@ class ChromeCrashReporterClient : public crash_reporter::CrashReporterClient {
 #if defined(OS_POSIX) && !defined(OS_MACOSX)
   void GetProductNameAndVersion(const char** product_name,
                                 const char** version) override;
+  void GetProductNameAndVersion(std::string* product_name,
+                                std::string* version,
+                                std::string* channel) override;
   base::FilePath GetReporterLogFilename() override;
 #endif
 
   bool GetCrashDumpLocation(base::FilePath* crash_dir) override;
 
-  size_t RegisterCrashKeys() override;
+#if defined(OS_MACOSX)
+  bool GetCrashMetricsLocation(base::FilePath* metrics_dir) override;
+#endif
 
   bool IsRunningUnattended() override;
 
@@ -53,9 +52,18 @@ class ChromeCrashReporterClient : public crash_reporter::CrashReporterClient {
   int GetAndroidMinidumpDescriptor() override;
 #endif
 
+#if defined(OS_MACOSX)
+  bool ShouldMonitorCrashHandlerExpensively() override;
+#endif
+
   bool EnableBreakpadForProcess(const std::string& process_type) override;
 
  private:
+  friend class base::NoDestructor<ChromeCrashReporterClient>;
+
+  ChromeCrashReporterClient();
+  ~ChromeCrashReporterClient() override;
+
   DISALLOW_COPY_AND_ASSIGN(ChromeCrashReporterClient);
 };
 

@@ -5,118 +5,106 @@
 #include "remoting/protocol/webrtc_data_stream_adapter.h"
 
 #include <stdint.h>
+#include <utility>
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/callback.h"
 #include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/threading/thread_task_runner_handle.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "net/base/net_errors.h"
 #include "remoting/base/compound_buffer.h"
-#include "remoting/protocol/message_pipe.h"
 #include "remoting/protocol/message_serialization.h"
 
 namespace remoting {
 namespace protocol {
 
-class WebrtcDataStreamAdapter::Channel : public MessagePipe,
-                                         public webrtc::DataChannelObserver {
- public:
-  explicit Channel(base::WeakPtr<WebrtcDataStreamAdapter> adapter);
-  ~Channel() override;
+WebrtcDataStreamAdapter::WebrtcDataStreamAdapter(
+    rtc::scoped_refptr<webrtc::DataChannelInterface> channel)
+    : channel_(channel.get()), weak_ptr_factory_(this) {
+  channel_->RegisterObserver(this);
+  DCHECK_EQ(channel_->state(), webrtc::DataChannelInterface::kConnecting);
+}
 
-  void Start(rtc::scoped_refptr<webrtc::DataChannelInterface> channel);
-
-  std::string name() { return channel_->label(); }
-
-  // MessagePipe interface.
-  void StartReceiving(const MessageReceivedCallback& callback) override;
-  void Send(google::protobuf::MessageLite* message,
-            const base::Closure& done) override;
-
- private:
-  enum class State { CONNECTING, OPEN, CLOSED };
-
-  // webrtc::DataChannelObserver interface.
-  void OnStateChange() override;
-  void OnMessage(const webrtc::DataBuffer& buffer) override;
-
-  void OnConnected();
-
-  void OnError();
-
-  base::WeakPtr<WebrtcDataStreamAdapter> adapter_;
-
-  rtc::scoped_refptr<webrtc::DataChannelInterface> channel_;
-
-  MessageReceivedCallback message_received_callback_;
-
-  State state_ = State::CONNECTING;
-
-  DISALLOW_COPY_AND_ASSIGN(Channel);
-};
-
-WebrtcDataStreamAdapter::Channel::Channel(
-    base::WeakPtr<WebrtcDataStreamAdapter> adapter)
-    : adapter_(adapter) {}
-
-WebrtcDataStreamAdapter::Channel::~Channel() {
+WebrtcDataStreamAdapter::~WebrtcDataStreamAdapter() {
   if (channel_) {
     channel_->UnregisterObserver();
     channel_->Close();
+
+    // Destroy |channel_| asynchronously as it may be on stack.
+    base::SequencedTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE,
+        base::BindOnce(base::DoNothing::Once<
+                           rtc::scoped_refptr<webrtc::DataChannelInterface>>(),
+                       std::move(channel_)));
   }
 }
 
-void WebrtcDataStreamAdapter::Channel::Start(
-    rtc::scoped_refptr<webrtc::DataChannelInterface> channel) {
-  DCHECK(!channel_);
+void WebrtcDataStreamAdapter::Start(EventHandler* event_handler) {
+  DCHECK(!event_handler_);
+  DCHECK(event_handler);
 
-  channel_ = channel;
-  channel_->RegisterObserver(this);
-
-   if (channel_->state() == webrtc::DataChannelInterface::kOpen) {
-    OnConnected();
-  } else {
-    DCHECK_EQ(channel_->state(), webrtc::DataChannelInterface::kConnecting);
-  }
+  event_handler_ = event_handler;
 }
 
-void WebrtcDataStreamAdapter::Channel::StartReceiving(
-    const MessageReceivedCallback& callback) {
-  DCHECK(message_received_callback_.is_null());
-  DCHECK(!callback.is_null());
+void WebrtcDataStreamAdapter::Send(google::protobuf::MessageLite* message,
+                                   base::OnceClosure done) {
+  DCHECK(state_ == State::OPEN);
 
-  message_received_callback_ = callback;
-}
-
-void WebrtcDataStreamAdapter::Channel::Send(
-    google::protobuf::MessageLite* message,
-    const base::Closure& done) {
   rtc::CopyOnWriteBuffer buffer;
   buffer.SetSize(message->ByteSize());
   message->SerializeWithCachedSizesToArray(
       reinterpret_cast<uint8_t*>(buffer.data()));
-  webrtc::DataBuffer data_buffer(std::move(buffer), true /* binary */);
-  if (!channel_->Send(data_buffer)) {
-    OnError();
-    return;
-  }
+  pending_messages_.emplace(
+      webrtc::DataBuffer(std::move(buffer), true /* binary */),
+      std::move(done));
 
-  if (!done.is_null())
-    done.Run();
+  // Send asynchronously to avoid nested calls to Send.
+  base::SequencedTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(&WebrtcDataStreamAdapter::SendMessagesIfReady,
+                                weak_ptr_factory_.GetWeakPtr()));
 }
 
-void WebrtcDataStreamAdapter::Channel::OnStateChange() {
+void WebrtcDataStreamAdapter::SendMessagesIfReady() {
+  // We use our own send queue instead of queuing multiple messages in the
+  // data-channel queue so we can invoke the done callback as close to the
+  // message actually being sent as possible and avoid overrunning the data-
+  // channel queue. There is also lower-level buffering beneath the data-channel
+  // queue, which we do want to keep full to ensure the link is fully utilized.
+
+  // Send messages to the data channel until it has to add one to its own queue.
+  // This ensures that the lower-level buffers remain full.
+  while (channel_->buffered_amount() == 0 && !pending_messages_.empty()) {
+    PendingMessage message = std::move(pending_messages_.front());
+    pending_messages_.pop();
+    if (!channel_->Send(std::move(message.buffer))) {
+      LOG(ERROR) << "Send failed on data channel " << channel_->label();
+      channel_->Close();
+      return;
+    }
+
+    if (message.done_callback) {
+      std::move(message.done_callback).Run();
+    }
+  }
+}
+
+void WebrtcDataStreamAdapter::OnStateChange() {
   switch (channel_->state()) {
     case webrtc::DataChannelInterface::kOpen:
-      OnConnected();
+      DCHECK(state_ == State::CONNECTING);
+      state_ = State::OPEN;
+      event_handler_->OnMessagePipeOpen();
       break;
 
     case webrtc::DataChannelInterface::kClosing:
-      // Currently channels are not expected to be closed.
-      OnError();
+      if (state_ != State::CLOSED) {
+        state_ = State::CLOSED;
+        event_handler_->OnMessagePipeClosed();
+      }
       break;
 
     case webrtc::DataChannelInterface::kConnecting:
@@ -125,115 +113,39 @@ void WebrtcDataStreamAdapter::Channel::OnStateChange() {
   }
 }
 
-void WebrtcDataStreamAdapter::Channel::OnConnected() {
-  CHECK(state_ == State::CONNECTING);
-  state_ = State::OPEN;
-  adapter_->OnChannelConnected(this);
-}
-
-void WebrtcDataStreamAdapter::Channel::OnError() {
-  if (state_ == State::CLOSED)
+void WebrtcDataStreamAdapter::OnMessage(const webrtc::DataBuffer& rtc_buffer) {
+  if (state_ != State::OPEN) {
+    LOG(ERROR) << "Dropping a message received when the channel is not open.";
     return;
+  }
 
-  state_ = State::CLOSED;
-
-  // Notify the adapter about the error asychronously.
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&WebrtcDataStreamAdapter::OnChannelError, adapter_));
-}
-
-void WebrtcDataStreamAdapter::Channel::OnMessage(
-    const webrtc::DataBuffer& rtc_buffer) {
   std::unique_ptr<CompoundBuffer> buffer(new CompoundBuffer());
   buffer->AppendCopyOf(reinterpret_cast<const char*>(rtc_buffer.data.data()),
                        rtc_buffer.data.size());
   buffer->Lock();
-  message_received_callback_.Run(std::move(buffer));
+  event_handler_->OnMessageReceived(std::move(buffer));
 }
 
-struct WebrtcDataStreamAdapter::PendingChannel {
-  PendingChannel() {}
-  PendingChannel(std::unique_ptr<Channel> channel,
-                 const ChannelCreatedCallback& connected_callback)
-      : channel(std::move(channel)), connected_callback(connected_callback) {}
-  PendingChannel(PendingChannel&& other)
-      : channel(std::move(other.channel)),
-        connected_callback(std::move(other.connected_callback)) {}
-  PendingChannel& operator=(PendingChannel&& other) {
-    channel = std::move(other.channel);
-    connected_callback = std::move(other.connected_callback);
-    return *this;
-  }
-
-  std::unique_ptr<Channel> channel;
-  ChannelCreatedCallback connected_callback;
-};
-
-WebrtcDataStreamAdapter::WebrtcDataStreamAdapter(
-    bool outgoing,
-    const ErrorCallback& error_callback)
-    : outgoing_(outgoing),
-      error_callback_(error_callback),
-      weak_factory_(this) {}
-
-WebrtcDataStreamAdapter::~WebrtcDataStreamAdapter() {
-  DCHECK(pending_channels_.empty());
+void WebrtcDataStreamAdapter::OnBufferedAmountChange(uint64_t previous_amount) {
+  // WebRTC explicitly doesn't support sending from observer callbacks, so post
+  // a task to let the stack unwind.
+  base::SequencedTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(&WebrtcDataStreamAdapter::SendMessagesIfReady,
+                                weak_ptr_factory_.GetWeakPtr()));
 }
 
-void WebrtcDataStreamAdapter::Initialize(
-    rtc::scoped_refptr<webrtc::PeerConnectionInterface> peer_connection) {
-  peer_connection_ = peer_connection;
-}
+WebrtcDataStreamAdapter::PendingMessage::PendingMessage(
+    webrtc::DataBuffer buffer,
+    base::OnceClosure done_callback)
+    : buffer(std::move(buffer)), done_callback(std::move(done_callback)) {}
 
-void WebrtcDataStreamAdapter::OnIncomingDataChannel(
-    webrtc::DataChannelInterface* data_channel) {
-  DCHECK(!outgoing_);
+WebrtcDataStreamAdapter::PendingMessage&
+WebrtcDataStreamAdapter::PendingMessage::operator=(PendingMessage&&) = default;
 
-  auto it = pending_channels_.find(data_channel->label());
-  if (it == pending_channels_.end()) {
-    LOG(ERROR) << "Received unexpected data channel " << data_channel->label();
-    return;
-  }
-  it->second.channel->Start(data_channel);
-}
+WebrtcDataStreamAdapter::PendingMessage::PendingMessage(PendingMessage&&) =
+    default;
 
-void WebrtcDataStreamAdapter::CreateChannel(
-    const std::string& name,
-    const ChannelCreatedCallback& callback) {
-  DCHECK(peer_connection_);
-  DCHECK(pending_channels_.find(name) == pending_channels_.end());
-
-  Channel* channel = new Channel(weak_factory_.GetWeakPtr());
-  pending_channels_[name] = PendingChannel(base::WrapUnique(channel), callback);
-
-  if (outgoing_) {
-    webrtc::DataChannelInit config;
-    config.reliable = true;
-    channel->Start(peer_connection_->CreateDataChannel(name, &config));
-  }
-}
-
-void WebrtcDataStreamAdapter::CancelChannelCreation(const std::string& name) {
-  auto it = pending_channels_.find(name);
-  DCHECK(it != pending_channels_.end());
-  pending_channels_.erase(it);
-}
-
-void WebrtcDataStreamAdapter::OnChannelConnected(Channel* channel) {
-  auto it = pending_channels_.find(channel->name());
-  DCHECK(it != pending_channels_.end());
-  PendingChannel pending_channel = std::move(it->second);
-  pending_channels_.erase(it);
-
-  // Once the channel is connected its ownership  is passed to the
-  // |connected_callback|.
-  pending_channel.connected_callback.Run(std::move(pending_channel.channel));
-}
-
-void WebrtcDataStreamAdapter::OnChannelError() {
-  error_callback_.Run(CHANNEL_CONNECTION_ERROR);
-}
+WebrtcDataStreamAdapter::PendingMessage::~PendingMessage() = default;
 
 }  // namespace protocol
 }  // namespace remoting

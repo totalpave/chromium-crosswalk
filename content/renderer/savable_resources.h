@@ -11,14 +11,13 @@
 #include "base/macros.h"
 #include "content/common/content_export.h"
 #include "content/common/savable_subframe.h"
-#include "third_party/WebKit/public/platform/WebReferrerPolicy.h"
+#include "services/network/public/mojom/referrer_policy.mojom.h"
 #include "url/gurl.h"
 
 namespace blink {
 class WebElement;
-class WebFrame;
+class WebLocalFrame;
 class WebString;
-class WebView;
 }
 
 // A collection of operations that access the underlying WebKit DOM directly.
@@ -46,13 +45,12 @@ struct SavableResourcesResult {
   DISALLOW_COPY_AND_ASSIGN(SavableResourcesResult);
 };
 
-// Get all savable resource links from specified webframe.
+// Get all the savable resource links from the specified |frame|.
 // Returns true if the saved resources links have been saved successfully.
 // Otherwise returns false (i.e. if the frame contains a non-savable content).
 CONTENT_EXPORT bool GetSavableResourceLinksForFrame(
-    blink::WebFrame* frame,
-    SavableResourcesResult* result,
-    const char** savable_schemes);
+    blink::WebLocalFrame* frame,
+    SavableResourcesResult* result);
 
 // Returns the value in an elements resource url attribute. For IMG, SCRIPT or
 // INPUT TYPE=image, returns the value in "src". For LINK TYPE=text/css, returns

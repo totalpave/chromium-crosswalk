@@ -5,16 +5,15 @@
 package org.chromium.chrome.browser.tabmodel.document;
 
 import android.content.Context;
-import android.os.AsyncTask;
 import android.util.SparseArray;
-
-import com.google.protobuf.nano.MessageNano;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.StreamUtil;
-import org.chromium.chrome.browser.TabState;
+import org.chromium.base.task.AsyncTask;
+import org.chromium.base.task.BackgroundOnlyAsyncTask;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.chrome.browser.tabmodel.TabPersister;
 import org.chromium.chrome.browser.tabmodel.document.DocumentTabModel.Entry;
 import org.chromium.chrome.browser.tabmodel.document.DocumentTabModelInfo.DocumentEntry;
@@ -46,7 +45,7 @@ public class StorageDelegate extends TabPersister {
 
     /** Cached base state directory to prevent main-thread filesystem access in getStateDirectory().
      */
-    private static AsyncTask<Void, Void, File> sBaseStateDirectoryFetchTask;
+    private static AsyncTask<File> sBaseStateDirectoryFetchTask;
 
     public StorageDelegate() {
         // Warm up the state directory to prevent it from using filesystem on main thread in the
@@ -57,7 +56,7 @@ public class StorageDelegate extends TabPersister {
     /**
      * Reads the file containing the minimum info required to restore the state of the
      * {@link DocumentTabModel}.
-     * @param encrypted Whether or not the file corresponds to an OffTheRecord TabModel.
+     * @param encrypted Whether or not the file corresponds to an Incognito TabModel.
      * @return Byte buffer containing the task file's data, or null if it wasn't read.
      */
     protected byte[] readMetadataFileBytes(boolean encrypted) {
@@ -117,9 +116,9 @@ public class StorageDelegate extends TabPersister {
     private void preloadStateDirectory() {
         if (sBaseStateDirectoryFetchTask != null) return;
 
-        sBaseStateDirectoryFetchTask = new AsyncTask<Void, Void, File>() {
+        sBaseStateDirectoryFetchTask = new BackgroundOnlyAsyncTask<File>() {
             @Override
-            protected File doInBackground(Void... params) {
+            protected File doInBackground() {
                 return ContextUtils.getApplicationContext().getDir(
                         STATE_DIRECTORY, Context.MODE_PRIVATE);
             }
@@ -151,7 +150,7 @@ public class StorageDelegate extends TabPersister {
 
     /**
      * Return the filename of the persisted TabModel state.
-     * @param encrypted Whether or not the state belongs to an OffTheRecordDocumentTabModel.
+     * @param encrypted Whether or not the state belongs to an IncognitoDocumentTabModel.
      * @return String pointing at the TabModel's persisted state.
      */
     private String getFilename(boolean encrypted) {
@@ -169,15 +168,15 @@ public class StorageDelegate extends TabPersister {
         if (metadataBytes != null) {
             DocumentList list = null;
             try {
-                list = MessageNano.mergeFrom(new DocumentList(), metadataBytes);
+                list = DocumentList.parseFrom(metadataBytes);
             } catch (IOException e) {
                 Log.e(TAG, "I/O exception", e);
             }
             if (list == null) return;
 
-            for (int i = 0; i < list.entries.length; i++) {
-                DocumentEntry savedEntry = list.entries[i];
-                int tabId = savedEntry.tabId;
+            for (int i = 0; i < list.getEntriesCount(); i++) {
+                DocumentEntry savedEntry = list.getEntries(i);
+                int tabId = savedEntry.getTabId();
 
                 // If the tab ID isn't in the list, it must have been closed after Chrome died.
                 if (entryMap.indexOfKey(tabId) < 0) {
@@ -186,7 +185,7 @@ public class StorageDelegate extends TabPersister {
                 }
 
                 // Restore information about the Tab.
-                entryMap.get(tabId).canGoBack = savedEntry.canGoBack;
+                entryMap.get(tabId).canGoBack = savedEntry.getCanGoBack();
             }
         }
     }
@@ -221,9 +220,9 @@ public class StorageDelegate extends TabPersister {
             entry.canGoBack = true;
         }
 
-        new AsyncTask<Void, Void, byte[]>() {
+        new AsyncTask<byte[]>() {
             @Override
-            protected byte[] doInBackground(Void... params) {
+            protected byte[] doInBackground() {
                 return readMetadataFileBytes(isIncognito);
             }
 
@@ -231,7 +230,8 @@ public class StorageDelegate extends TabPersister {
             protected void onPostExecute(byte[] metadataBytes) {
                 updateTabEntriesFromMetadata(metadataBytes, entryMap, recentlyClosedTabIdList);
             }
-        // Run on serial executor to ensure that this is done before other start-up tasks.
-        }.executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
+            // Run on serial executor to ensure that this is done before other start-up tasks.
+        }
+                .executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
     }
 }

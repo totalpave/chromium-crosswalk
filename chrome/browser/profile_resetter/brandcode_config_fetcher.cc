@@ -5,34 +5,35 @@
 #include "chrome/browser/profile_resetter/brandcode_config_fetcher.h"
 
 #include <stddef.h>
+#include <vector>
 
-#include "base/macros.h"
+#include "base/bind.h"
+#include "base/callback_helpers.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profile_resetter/brandcoded_default_settings.h"
 #include "libxml/parser.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_response_headers.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_request_status.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
 
 namespace {
 
 const int kDownloadTimeoutSec = 10;
 const char kPostXml[] =
-"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-"<request version=\"1.3.17.0\" protocol=\"3.0\" testsource=\"dev\" "
-    "shell_version=\"1.2.3.5\">\n"
-"  <os platform=\"win\" version=\"6.1\" sp=\"\" arch=\"x86\" />\n"
-"  <app\n"
-"    appid=\"{8A69D345-D564-463C-AFF1-A69D9E530F96}\"\n"
-"    version=\"0.0.0.0\"\n"
-"      >\n"
-"    <updatecheck />\n"
-"    <data name=\"install\" "
-    "index=\"__BRANDCODE_PLACEHOLDER__\" />\n"
-"  </app>\n"
-"</request>";
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<request"
+    "    version=\"chromeprofilereset-1.1\""
+    "    protocol=\"3.0\""
+    "    installsource=\"profilereset\">"
+    "  <app appid=\"{8A69D345-D564-463C-AFF1-A69D9E530F96}\">"
+    "    <data name=\"install\" index=\"__BRANDCODE_PLACEHOLDER__\"/>"
+    "  </app>"
+    "</request>";
 
 // Returns the query to the server which can be used to retrieve the config.
 // |brand| is a brand code, it mustn't be empty.
@@ -134,27 +135,56 @@ void XmlConfigParser::CharactersImpl(void* ctx, const xmlChar* ch, int len) {
 
 bool XmlConfigParser::IsParsingData() const {
   const std::string data_path[] = {"response", "app", "data"};
-  return elements_.size() == arraysize(data_path) &&
+  return elements_.size() == base::size(data_path) &&
          std::equal(elements_.begin(), elements_.end(), data_path);
 }
 
-} // namespace
+}  // namespace
 
-BrandcodeConfigFetcher::BrandcodeConfigFetcher(const FetchCallback& callback,
-                                               const GURL& url,
-                                               const std::string& brandcode)
+BrandcodeConfigFetcher::BrandcodeConfigFetcher(
+    network::mojom::URLLoaderFactory* url_loader_factory,
+    const FetchCallback& callback,
+    const GURL& url,
+    const std::string& brandcode)
     : fetch_callback_(callback) {
   DCHECK(!brandcode.empty());
-  config_fetcher_ = net::URLFetcher::Create(0 /* ID used for testing */, url,
-                                            net::URLFetcher::POST, this);
-  config_fetcher_->SetRequestContext(
-      g_browser_process->system_request_context());
-  config_fetcher_->SetUploadData("text/xml", GetUploadData(brandcode));
-  config_fetcher_->AddExtraRequestHeader("Accept: text/xml");
-  config_fetcher_->SetLoadFlags(net::LOAD_DO_NOT_SEND_COOKIES |
-                                net::LOAD_DO_NOT_SAVE_COOKIES |
-                                net::LOAD_DISABLE_CACHE);
-  config_fetcher_->Start();
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("brandcode_config", R"(
+        semantics {
+          sender: "Brandcode Configuration Fetcher"
+          description:
+            "Chrome installation can be non-organic. That means that Chrome "
+            "is distributed by partners and it has a brand code associated "
+            "with that partner. For the settings reset operation, Chrome needs "
+            "to know the default settings which are partner specific."
+          trigger: "'Reset Settings' invocation from Chrome settings."
+          data: "Brandcode."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "This feature cannot be disabled and is only invoked by user "
+            "request."
+          policy_exception_justification:
+            "Not implemented, considered not useful as enterprises don't need "
+            "to install Chrome in a non-organic fashion."
+        })");
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = url;
+  resource_request->load_flags = net::LOAD_DO_NOT_SEND_COOKIES |
+                                 net::LOAD_DO_NOT_SAVE_COOKIES |
+                                 net::LOAD_DISABLE_CACHE;
+  resource_request->method = "POST";
+  resource_request->headers.SetHeader("Accept", "text/xml");
+  simple_url_loader_ = network::SimpleURLLoader::Create(
+      std::move(resource_request), traffic_annotation);
+  simple_url_loader_->AttachStringForUpload(GetUploadData(brandcode),
+                                            "text/xml");
+  simple_url_loader_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      url_loader_factory,
+      base::BindOnce(&BrandcodeConfigFetcher::OnSimpleLoaderComplete,
+                     base::Unretained(this)));
   // Abort the download attempt if it takes too long.
   download_timer_.Start(FROM_HERE,
                         base::TimeDelta::FromSeconds(kDownloadTimeoutSec),
@@ -168,31 +198,22 @@ void BrandcodeConfigFetcher::SetCallback(const FetchCallback& callback) {
   fetch_callback_ = callback;
 }
 
-void BrandcodeConfigFetcher::OnURLFetchComplete(const net::URLFetcher* source) {
-  if (source != config_fetcher_.get()) {
-    NOTREACHED() << "Callback from foreign URL fetcher";
-    return;
-  }
-  std::string response_string;
-  std::string mime_type;
-  if (config_fetcher_ &&
-      config_fetcher_->GetStatus().is_success() &&
-      config_fetcher_->GetResponseCode() == 200 &&
-      config_fetcher_->GetResponseHeaders()->GetMimeType(&mime_type) &&
-      mime_type == "text/xml" &&
-      config_fetcher_->GetResponseAsString(&response_string)) {
+void BrandcodeConfigFetcher::OnSimpleLoaderComplete(
+    std::unique_ptr<std::string> response_body) {
+  if (response_body && simple_url_loader_->ResponseInfo() &&
+      simple_url_loader_->ResponseInfo()->mime_type == "text/xml") {
     std::string master_prefs;
-    XmlConfigParser::Parse(response_string, &master_prefs);
+    XmlConfigParser::Parse(*response_body, &master_prefs);
     default_settings_.reset(new BrandcodedDefaultSettings(master_prefs));
   }
-  config_fetcher_.reset();
+  simple_url_loader_.reset();
   download_timer_.Stop();
-  fetch_callback_.Run();
+  base::ResetAndReturn(&fetch_callback_).Run();
 }
 
 void BrandcodeConfigFetcher::OnDownloadTimeout() {
-  if (config_fetcher_) {
-    config_fetcher_.reset();
-    fetch_callback_.Run();
+  if (simple_url_loader_) {
+    simple_url_loader_.reset();
+    base::ResetAndReturn(&fetch_callback_).Run();
   }
 }

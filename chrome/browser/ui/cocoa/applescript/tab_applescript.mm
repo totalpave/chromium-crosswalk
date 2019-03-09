@@ -10,6 +10,7 @@
 #import "base/mac/scoped_nsobject.h"
 #include "base/strings/sys_string_conversions.h"
 #include "chrome/browser/printing/print_view_manager.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_tab_helper.h"
 #include "chrome/browser/ui/cocoa/applescript/apple_event_util.h"
 #include "chrome/browser/ui/cocoa/applescript/error_applescript.h"
@@ -59,10 +60,9 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
 
 @synthesize tempURL = tempURL_;
 
-- (id)init {
+- (instancetype)init {
   if ((self = [super init])) {
-    SessionID session;
-    SessionID::id_type futureSessionIDOfTab = session.id() + 1;
+    SessionID::id_type futureSessionIDOfTab = SessionID::NewUnique().id() + 1;
     // Holds the SessionID that the new tab is going to get.
     base::scoped_nsobject<NSNumber> numID(
         [[NSNumber alloc] initWithInt:futureSessionIDOfTab]);
@@ -76,7 +76,7 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
   [super dealloc];
 }
 
-- (id)initWithWebContents:(content::WebContents*)webContents {
+- (instancetype)initWithWebContents:(content::WebContents*)webContents {
   if (!webContents) {
     [self release];
     return nil;
@@ -87,6 +87,7 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
     // the AppleScript runtime calls tabs in AppleScriptWindow and this
     // particular tab is never returned.
     webContents_ = webContents;
+    profile_ = Profile::FromBrowserContext(webContents->GetBrowserContext());
     SessionTabHelper* session_tab_helper =
         SessionTabHelper::FromWebContents(webContents);
     base::scoped_nsobject<NSNumber> numID(
@@ -104,6 +105,7 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
   webContents_ = webContents;
   SessionTabHelper* session_tab_helper =
       SessionTabHelper::FromWebContents(webContents);
+  profile_ = Profile::FromBrowserContext(webContents->GetBrowserContext());
   base::scoped_nsobject<NSNumber> numID(
       [[NSNumber alloc] initWithInt:session_tab_helper->session_id().id()]);
   [self setUniqueID:numID];
@@ -126,14 +128,21 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
 }
 
 - (void)setURL:(NSString*)aURL {
-  // If a scripter sets a URL before the node is added save it at a temporary
-  // location.
-  if (!webContents_) {
+  // If a scripter sets a URL before |webContents_| or |profile_| is set, save
+  // it at a temporary location. Once they're set, -setURL: will be call again
+  // with the temporary URL.
+  if (!profile_ || !webContents_) {
     [self setTempURL:aURL];
     return;
   }
 
   GURL url(base::SysNSStringToUTF8(aURL));
+  if (!chrome::mac::IsJavaScriptEnabledForProfile(profile_) &&
+      url.SchemeIs(url::kJavaScriptScheme)) {
+    AppleScript::SetError(AppleScript::errJavaScriptUnsupported);
+    return;
+  }
+
   // check for valid url.
   if (!url.is_empty() && !url.is_valid()) {
     AppleScript::SetError(AppleScript::errInvalidURL);
@@ -147,10 +156,8 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
   const GURL& previousURL = entry->GetVirtualURL();
   webContents_->OpenURL(OpenURLParams(
       url,
-      content::Referrer(previousURL, blink::WebReferrerPolicyDefault),
-      CURRENT_TAB,
-      ui::PAGE_TRANSITION_TYPED,
-      false));
+      content::Referrer(previousURL, network::mojom::ReferrerPolicy::kDefault),
+      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED, false));
 }
 
 - (NSString*)title {
@@ -217,7 +224,7 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
   AppleScript::LogAppleScriptUMA(AppleScript::AppleScriptCommand::TAB_RELOAD);
   NavigationController& navigationController = webContents_->GetController();
   const bool checkForRepost = true;
-  navigationController.Reload(checkForRepost);
+  navigationController.Reload(content::ReloadType::NORMAL, checkForRepost);
 }
 
 - (void)handlesStopScriptCommand:(NSScriptCommand*)command {
@@ -227,8 +234,8 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
 
 - (void)handlesPrintScriptCommand:(NSScriptCommand*)command {
   AppleScript::LogAppleScriptUMA(AppleScript::AppleScriptCommand::TAB_PRINT);
-  bool initiated =
-      printing::PrintViewManager::FromWebContents(webContents_)->PrintNow();
+  bool initiated = printing::PrintViewManager::FromWebContents(webContents_)
+                       ->PrintNow(webContents_->GetMainFrame());
   if (!initiated) {
     AppleScript::SetError(AppleScript::errInitiatePrinting);
   }
@@ -284,16 +291,20 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
     webContents_->OpenURL(
         OpenURLParams(GURL(content::kViewSourceScheme + std::string(":") +
                            entry->GetURL().spec()),
-                      Referrer(),
-                      NEW_FOREGROUND_TAB,
-                      ui::PAGE_TRANSITION_LINK,
-                      false));
+                      Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                      ui::PAGE_TRANSITION_LINK, false));
   }
 }
 
 - (id)handlesExecuteJavascriptScriptCommand:(NSScriptCommand*)command {
   AppleScript::LogAppleScriptUMA(
       AppleScript::AppleScriptCommand::TAB_EXECUTE_JAVASCRIPT);
+
+  if (!chrome::mac::IsJavaScriptEnabledForProfile(profile_)) {
+    AppleScript::SetError(AppleScript::errJavaScriptUnsupported);
+    return nil;
+  }
+
   content::RenderFrameHost* frame = webContents_->GetMainFrame();
   if (!frame) {
     NOTREACHED();
@@ -308,8 +319,8 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
 
   base::string16 script = base::SysNSStringToUTF16(
       [[command evaluatedArguments] objectForKey:@"javascript"]);
-  frame->ExecuteJavaScriptInIsolatedWorld(
-      script, callback, chrome::ISOLATED_WORLD_ID_APPLESCRIPT);
+  frame->ExecuteJavaScriptInIsolatedWorld(script, callback,
+                                          ISOLATED_WORLD_ID_APPLESCRIPT);
 
   return nil;
 }

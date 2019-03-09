@@ -14,8 +14,9 @@
 #include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/posix/eintr_wrapper.h"
+#include "base/stl_util.h"
 #include "tools/android/forwarder2/forwarder.h"
 #include "tools/android/forwarder2/socket.h"
 
@@ -38,9 +39,9 @@ void ForwardersManager::CreateAndStartNewForwarder(
   // which is the only thread from which it's accessed.
   thread_.task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(&ForwardersManager::CreateNewForwarderOnInternalThread,
-                 base::Unretained(this), base::Passed(&socket1),
-                 base::Passed(&socket2)));
+      base::BindOnce(&ForwardersManager::CreateNewForwarderOnInternalThread,
+                     base::Unretained(this), std::move(socket1),
+                     std::move(socket2)));
 
   // Guarantees that the CreateNewForwarderOnInternalThread callback posted to
   // the internal thread gets executed immediately.
@@ -50,19 +51,20 @@ void ForwardersManager::CreateAndStartNewForwarder(
 void ForwardersManager::CreateNewForwarderOnInternalThread(
     std::unique_ptr<Socket> socket1,
     std::unique_ptr<Socket> socket2) {
-  DCHECK(thread_.task_runner()->RunsTasksOnCurrentThread());
-  forwarders_.push_back(new Forwarder(std::move(socket1), std::move(socket2)));
+  DCHECK(thread_.task_runner()->RunsTasksInCurrentSequence());
+  forwarders_.push_back(
+      std::make_unique<Forwarder>(std::move(socket1), std::move(socket2)));
 }
 
 void ForwardersManager::WaitForEventsOnInternalThreadSoon() {
   thread_.task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(&ForwardersManager::WaitForEventsOnInternalThread,
-                 base::Unretained(this)));
+      base::BindOnce(&ForwardersManager::WaitForEventsOnInternalThread,
+                     base::Unretained(this)));
 }
 
 void ForwardersManager::WaitForEventsOnInternalThread() {
-  DCHECK(thread_.task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(thread_.task_runner()->RunsTasksInCurrentSequence());
   fd_set read_fds;
   fd_set write_fds;
 
@@ -71,18 +73,15 @@ void ForwardersManager::WaitForEventsOnInternalThread() {
 
   // Populate the file descriptor sets.
   int max_fd = -1;
-  for (ScopedVector<Forwarder>::iterator it = forwarders_.begin();
-       it != forwarders_.end(); ++it) {
-    Forwarder* const forwarder = *it;
+  for (const auto& forwarder : forwarders_)
     forwarder->RegisterFDs(&read_fds, &write_fds, &max_fd);
-  }
 
   const int notifier_fds[] = {
     wakeup_notifier_.receiver_fd(),
     deletion_notifier_.receiver_fd(),
   };
 
-  for (size_t i = 0; i < arraysize(notifier_fds); ++i) {
+  for (size_t i = 0; i < base::size(notifier_fds); ++i) {
     const int notifier_fd = notifier_fds[i];
     DCHECK_GT(notifier_fd, -1);
     FD_SET(notifier_fd, &read_fds);
@@ -114,7 +113,7 @@ void ForwardersManager::WaitForEventsOnInternalThread() {
 
   // Notify the Forwarder instances and remove the ones that are closed.
   for (size_t i = 0; i < forwarders_.size(); ) {
-    Forwarder* const forwarder = forwarders_[i];
+    Forwarder* const forwarder = forwarders_[i].get();
     forwarder->ProcessEvents(read_fds, write_fds);
 
     if (must_shutdown)

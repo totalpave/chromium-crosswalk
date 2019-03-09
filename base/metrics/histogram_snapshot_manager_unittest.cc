@@ -19,29 +19,17 @@ namespace base {
 
 class HistogramFlattenerDeltaRecorder : public HistogramFlattener {
  public:
-  HistogramFlattenerDeltaRecorder() {}
+  HistogramFlattenerDeltaRecorder() = default;
 
   void RecordDelta(const HistogramBase& histogram,
                    const HistogramSamples& snapshot) override {
     recorded_delta_histogram_names_.push_back(histogram.histogram_name());
-    ASSERT_FALSE(ContainsKey(recorded_delta_histogram_sum_,
-                             histogram.histogram_name()));
+    // Use CHECK instead of ASSERT to get full stack-trace and thus origin.
+    CHECK(!ContainsKey(recorded_delta_histogram_sum_,
+                       histogram.histogram_name()));
     // Keep pointer to snapshot for testing. This really isn't ideal but the
     // snapshot-manager keeps the snapshot alive until it's "forgotten".
     recorded_delta_histogram_sum_[histogram.histogram_name()] = snapshot.sum();
-  }
-
-  void InconsistencyDetected(HistogramBase::Inconsistency problem) override {
-    ASSERT_TRUE(false);
-  }
-
-  void UniqueInconsistencyDetected(
-      HistogramBase::Inconsistency problem) override {
-    ASSERT_TRUE(false);
-  }
-
-  void InconsistencyDetectedInLoggedCount(int amount) override {
-    ASSERT_TRUE(false);
   }
 
   void Reset() {
@@ -71,7 +59,7 @@ class HistogramSnapshotManagerTest : public testing::Test {
       : statistics_recorder_(StatisticsRecorder::CreateTemporaryForTesting()),
         histogram_snapshot_manager_(&histogram_flattener_delta_recorder_) {}
 
-  ~HistogramSnapshotManagerTest() override {}
+  ~HistogramSnapshotManagerTest() override = default;
 
   std::unique_ptr<StatisticsRecorder> statistics_recorder_;
   HistogramFlattenerDeltaRecorder histogram_flattener_delta_recorder_;
@@ -83,9 +71,9 @@ TEST_F(HistogramSnapshotManagerTest, PrepareDeltasNoFlagsFilter) {
   UMA_HISTOGRAM_ENUMERATION("UmaHistogram", 1, 4);
   UMA_STABILITY_HISTOGRAM_ENUMERATION("UmaStabilityHistogram", 1, 2);
 
-  histogram_snapshot_manager_.PrepareDeltas(
-      StatisticsRecorder::begin(false), StatisticsRecorder::end(),
-      HistogramBase::kNoFlags, HistogramBase::kNoFlags);
+  StatisticsRecorder::PrepareDeltas(false, HistogramBase::kNoFlags,
+                                    HistogramBase::kNoFlags,
+                                    &histogram_snapshot_manager_);
 
   const std::vector<std::string>& histograms =
       histogram_flattener_delta_recorder_.GetRecordedDeltaHistogramNames();
@@ -99,9 +87,9 @@ TEST_F(HistogramSnapshotManagerTest, PrepareDeltasUmaHistogramFlagFilter) {
   UMA_HISTOGRAM_ENUMERATION("UmaHistogram", 1, 4);
   UMA_STABILITY_HISTOGRAM_ENUMERATION("UmaStabilityHistogram", 1, 2);
 
-  histogram_snapshot_manager_.PrepareDeltas(
-      StatisticsRecorder::begin(false), StatisticsRecorder::end(),
-      HistogramBase::kNoFlags, HistogramBase::kUmaTargetedHistogramFlag);
+  StatisticsRecorder::PrepareDeltas(false, HistogramBase::kNoFlags,
+                                    HistogramBase::kUmaTargetedHistogramFlag,
+                                    &histogram_snapshot_manager_);
 
   const std::vector<std::string>& histograms =
       histogram_flattener_delta_recorder_.GetRecordedDeltaHistogramNames();
@@ -115,45 +103,14 @@ TEST_F(HistogramSnapshotManagerTest,
   UMA_HISTOGRAM_ENUMERATION("UmaHistogram", 1, 4);
   UMA_STABILITY_HISTOGRAM_ENUMERATION("UmaStabilityHistogram", 1, 2);
 
-  histogram_snapshot_manager_.PrepareDeltas(
-      StatisticsRecorder::begin(false), StatisticsRecorder::end(),
-      HistogramBase::kNoFlags, HistogramBase::kUmaStabilityHistogramFlag);
+  StatisticsRecorder::PrepareDeltas(false, HistogramBase::kNoFlags,
+                                    HistogramBase::kUmaStabilityHistogramFlag,
+                                    &histogram_snapshot_manager_);
 
   const std::vector<std::string>& histograms =
       histogram_flattener_delta_recorder_.GetRecordedDeltaHistogramNames();
   EXPECT_EQ(1U, histograms.size());
   EXPECT_EQ("UmaStabilityHistogram", histograms[0]);
-}
-
-TEST_F(HistogramSnapshotManagerTest, CheckMerge) {
-  UMA_HISTOGRAM_ENUMERATION("UmaHistogram", 1, 4);
-  UMA_STABILITY_HISTOGRAM_ENUMERATION("UmaStabilityHistogram", 1, 2);
-
-  base::HistogramBase* h1 = base::LinearHistogram::FactoryGet(
-      "UmaHistogram", 1, 4, 5, 0);
-  ASSERT_TRUE(h1);
-  base::HistogramBase* h2 = base::LinearHistogram::FactoryGet(
-      "UmaStabilityHistogram", 1, 2, 3, 0);
-  ASSERT_TRUE(h2);
-
-  histogram_snapshot_manager_.StartDeltas();
-  histogram_snapshot_manager_.PrepareDelta(h1);
-  histogram_snapshot_manager_.PrepareDelta(h1);  // Delta will be zero.
-  histogram_snapshot_manager_.PrepareDelta(h2);
-  h1->Add(2);
-  h2->Add(1);
-  histogram_snapshot_manager_.PrepareDelta(h2);
-  histogram_snapshot_manager_.PrepareDelta(h1);
-  histogram_snapshot_manager_.FinishDeltas();
-  {
-    const std::vector<std::string> histograms =
-        histogram_flattener_delta_recorder_.GetRecordedDeltaHistogramNames();
-    EXPECT_EQ(2U, histograms.size());
-    EXPECT_EQ(3, histogram_flattener_delta_recorder_.
-                     GetRecordedDeltaHistogramSum("UmaHistogram"));
-    EXPECT_EQ(2, histogram_flattener_delta_recorder_.
-                     GetRecordedDeltaHistogramSum("UmaStabilityHistogram"));
-  }
 }
 
 }  // namespace base

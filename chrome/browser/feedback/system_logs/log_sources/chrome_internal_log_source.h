@@ -7,7 +7,11 @@
 
 #include "base/macros.h"
 #include "build/build_config.h"
-#include "chrome/browser/feedback/system_logs/system_logs_fetcher_base.h"
+#include "components/feedback/system_logs/system_logs_source.h"
+
+#if defined(OS_CHROMEOS)
+#include "ash/public/interfaces/cros_display_config.mojom.h"
+#endif
 
 namespace system_logs {
 
@@ -18,11 +22,12 @@ class ChromeInternalLogSource : public SystemLogsSource {
   ~ChromeInternalLogSource() override;
 
   // SystemLogsSource override.
-  void Fetch(const SysLogsSourceCallback& request) override;
+  void Fetch(SysLogsSourceCallback request) override;
 
  private:
   void PopulateSyncLogs(SystemLogsResponse* response);
   void PopulateExtensionInfoLogs(SystemLogsResponse* response);
+  void PopulatePowerApiLogs(SystemLogsResponse* response);
   void PopulateDataReductionProxyLogs(SystemLogsResponse* response);
 
 #if defined(OS_CHROMEOS)
@@ -31,6 +36,12 @@ class ChromeInternalLogSource : public SystemLogsSource {
 
 #if defined(OS_WIN)
   void PopulateUsbKeyboardDetected(SystemLogsResponse* response);
+  void PopulateEnrolledToDomain(SystemLogsResponse* response);
+  void PopulateInstallerBrandCode(SystemLogsResponse* response);
+#endif
+
+#if defined(OS_CHROMEOS)
+  ash::mojom::CrosDisplayConfigControllerPtr cros_display_config_ptr_;
 #endif
 
   DISALLOW_COPY_AND_ASSIGN(ChromeInternalLogSource);

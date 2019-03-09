@@ -10,8 +10,8 @@
 #include "base/bind_helpers.h"
 #include "base/callback.h"
 #include "base/files/file_path.h"
-#include "base/macros.h"
 #include "base/path_service.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -144,28 +144,60 @@ TEST(BookmarkHTMLReaderTest, CanImportURLAsSearchEngineTest) {
   struct TestCase {
     const std::string url;
     const bool can_be_imported_as_search_engine;
+    const std::string expected_search_engine_url;
   } test_cases[] = {
-    { "http://www.example.%s.com", true },
-    { "http://www.example.%S.com", true },
-    { "http://www.example.%x.com", false },
-    { "http://www.example.com", false },
-    { "http://%s.example.com", true },
-    { "http://www.example.%s.test.%s.com", true },
-    { "http://www.test&test.%s.com", true },
-    { "http://www.example.com?q=%s&foo=bar", true },
-    { "http://www.example.com/%s/?q=%s&foo=bar", true },
-    { "http//google.com", false },
-    { "path", false },
-    { "http:/path/%s/", true },
-    { "path", false },
-    { "", false },
+      {"http://www.example.%s.com", true,
+       "http://www.example.{searchTerms}.com/"},
+      {"http://www.example.%S.com", true,
+       "http://www.example.{searchTerms}.com/"},
+      {"http://www.example.%x.com", false, "http://www.example.%x.com/"},
+      {"http://www.example.com", false, ""},
+      {"http://%s.example.com", true, "http://{searchTerms}.example.com/"},
+      {"http://www.example.%s.test.%s.com", true,
+       "http://www.example.{searchTerms}.test.{searchTerms}.com/"},
+      // Illegal characters in the host get escaped.
+      {"http://www.test&test.%s.com", true,
+       "http://www.test%26test.{searchTerms}.com/"},
+      {"http://www.example.com?q=%s&foo=bar", true,
+       "http://www.example.com/?q={searchTerms}&foo=bar"},
+      {"http://www.example.com/%s/?q=%s&foo=bar", true,
+       "http://www.example.com/{searchTerms}/?q={searchTerms}&foo=bar"},
+      {"http//google.com", false, ""},
+      {"path", false, ""},
+      {"http:/path/%s/", true, "http://path/{searchTerms}/"},
+      {"path", false, ""},
+      {"", false, ""},
+      // Cases with other percent-encoded characters.
+      {"http://www.example.com/search%3Fpage?q=%s&v=foo%26bar", true,
+       "http://www.example.com/search%3Fpage?q={searchTerms}&v=foo%26bar"},
+      // Encoded percent symbol.
+      {"http://www.example.com/search?q=%s&v=foo%25bar", true,
+       "http://www.example.com/search?q={searchTerms}&v=foo%25bar"},
+      // Literal "%s", escaped so as to not represent a replacement slot.
+      // Note: This is buggy due to the fact that the GURL constructor doesn't
+      // distinguish "%s" from "%25s", and can't be fixed without changing the
+      // interface to this function. https://crbug.com/868214.
+      {"http://www.example.com/search?q=%s&v=pepper%25salt", true,
+       "http://www.example.com/"
+       "search?q={searchTerms}&v=pepper{searchTerms}alt"},
+      // Encoded Unicode character (U+2014).
+      {"http://www.example.com/search?q=%s&v=foo%E2%80%94bar", true,
+       "http://www.example.com/search?q={searchTerms}&v=foo%E2%80%94bar"},
+      // Non-encoded Unicode character (U+2014) (should be auto-encoded).
+      {"http://www.example.com/search?q=%s&v=foo—bar", true,
+       "http://www.example.com/search?q={searchTerms}&v=foo%E2%80%94bar"},
+      // Invalid characters that should be auto-encoded.
+      {"http://www.example.com/{search}?q=%s", true,
+       "http://www.example.com/%7Bsearch%7D?q={searchTerms}"},
   };
 
   std::string search_engine_url;
-  for (size_t i = 0; i < arraysize(test_cases); ++i) {
+  for (size_t i = 0; i < base::size(test_cases); ++i) {
     EXPECT_EQ(test_cases[i].can_be_imported_as_search_engine,
         CanImportURLAsSearchEngine(GURL(test_cases[i].url),
                                    &search_engine_url));
+    if (test_cases[i].can_be_imported_as_search_engine)
+      EXPECT_EQ(test_cases[i].expected_search_engine_url, search_engine_url);
   }
 }
 
@@ -188,12 +220,14 @@ class BookmarkHTMLReaderTestWithData : public testing::Test {
       const importer::SearchEngineInfo& info);
   void ExpectSecondFirefoxBookmarkWithKeyword(
       const importer::SearchEngineInfo& info);
+  void ExpectFirstEmptyFolderBookmark(const ImportedBookmarkEntry& entry);
+  void ExpectSecondEmptyFolderBookmark(const ImportedBookmarkEntry& entry);
 
   base::FilePath test_data_path_;
 };
 
 void BookmarkHTMLReaderTestWithData::SetUp() {
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_data_path_));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_path_));
   test_data_path_ = test_data_path_.AppendASCII("bookmark_html_reader");
 }
 
@@ -286,6 +320,27 @@ void BookmarkHTMLReaderTestWithData::ExpectSecondFirefoxBookmarkWithKeyword(
   EXPECT_EQ(ASCIIToUTF16("BookmarkName"), info.display_name);
 }
 
+void BookmarkHTMLReaderTestWithData::ExpectFirstEmptyFolderBookmark(
+    const ImportedBookmarkEntry& entry) {
+  EXPECT_EQ(base::string16(), entry.title);
+  EXPECT_TRUE(entry.is_folder);
+  EXPECT_EQ(base::Time::FromTimeT(1295938143), entry.creation_time);
+  EXPECT_EQ(1U, entry.path.size());
+  if (entry.path.size() == 1)
+    EXPECT_EQ(ASCIIToUTF16("Empty's Parent"), entry.path.front());
+}
+
+void BookmarkHTMLReaderTestWithData::ExpectSecondEmptyFolderBookmark(
+    const ImportedBookmarkEntry& entry) {
+  EXPECT_EQ(ASCIIToUTF16("[Tamura Yukari.com]"), entry.title);
+  EXPECT_FALSE(entry.is_folder);
+  EXPECT_EQ(base::Time::FromTimeT(1234567890), entry.creation_time);
+  EXPECT_EQ(1U, entry.path.size());
+  if (entry.path.size() == 1)
+    EXPECT_EQ(base::string16(), entry.path.front());
+  EXPECT_EQ("http://www.tamurayukari.com/", entry.url.spec());
+}
+
 }  // namespace
 
 TEST_F(BookmarkHTMLReaderTestWithData, Firefox2BookmarkFileImport) {
@@ -341,6 +396,20 @@ TEST_F(BookmarkHTMLReaderTestWithData, FirefoxBookmarkFileWithKeywordImport) {
   ASSERT_EQ(2U, search_engines.size());
   ExpectFirstFirefoxBookmarkWithKeyword(search_engines[0]);
   ExpectSecondFirefoxBookmarkWithKeyword(search_engines[1]);
+}
+
+TEST_F(BookmarkHTMLReaderTestWithData, EmptyFolderImport) {
+  base::FilePath path = test_data_path_.AppendASCII("empty_folder.html");
+
+  std::vector<ImportedBookmarkEntry> bookmarks;
+  ImportBookmarksFile(base::Callback<bool(void)>(),
+                      base::Callback<bool(const GURL&)>(), path, &bookmarks,
+                      NULL, NULL);
+
+  ASSERT_EQ(3U, bookmarks.size());
+  ExpectFirstEmptyFolderBookmark(bookmarks[0]);
+  ExpectSecondEmptyFolderBookmark(bookmarks[1]);
+  ExpectThirdFirefox2Bookmark(bookmarks[2]);
 }
 
 TEST_F(BookmarkHTMLReaderTestWithData,

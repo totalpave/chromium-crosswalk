@@ -9,7 +9,6 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/single_thread_task_runner.h"
 
 namespace remoting {
@@ -23,22 +22,26 @@ class AutoThreadTaskRunner : public base::SingleThreadTaskRunner {
   // |stop_task| is posted to |task_runner| when the last reference to
   // the AutoThreadTaskRunner is dropped.
   AutoThreadTaskRunner(scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-                       const base::Closure& stop_task);
+                       base::OnceClosure stop_task);
 
   // SingleThreadTaskRunner implementation
-  bool PostDelayedTask(const tracked_objects::Location& from_here,
-                       const base::Closure& task,
+  bool PostDelayedTask(const base::Location& from_here,
+                       base::OnceClosure task,
                        base::TimeDelta delay) override;
-  bool PostNonNestableDelayedTask(const tracked_objects::Location& from_here,
-                                  const base::Closure& task,
+  bool PostNonNestableDelayedTask(const base::Location& from_here,
+                                  base::OnceClosure task,
                                   base::TimeDelta delay) override;
-  bool RunsTasksOnCurrentThread() const override;
+  bool RunsTasksInCurrentSequence() const override;
+
+  const scoped_refptr<base::SingleThreadTaskRunner>& task_runner() {
+    return task_runner_;
+  }
 
  private:
   ~AutoThreadTaskRunner() override;
 
   // Task posted to |task_runner_| to notify the caller that it may be stopped.
-  base::Closure stop_task_;
+  base::OnceClosure stop_task_;
 
   // The wrapped task runner.
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;

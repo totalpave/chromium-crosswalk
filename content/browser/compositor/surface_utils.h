@@ -7,30 +7,33 @@
 
 #include <memory>
 
+#include "base/memory/scoped_refptr.h"
+#include "base/single_thread_task_runner.h"
+#include "components/viz/common/surfaces/frame_sink_id.h"
 #include "content/common/content_export.h"
-#include "content/public/browser/readback_types.h"
-#include "third_party/skia/include/core/SkImageInfo.h"
-#include "ui/gfx/geometry/size.h"
 
-namespace cc {
-class CopyOutputResult;
-class SurfaceIdAllocator;
-class SurfaceManager;
-}  // namespace cc
+namespace viz {
+class FrameSinkManagerImpl;
+class HostFrameSinkManager;
+}
 
 namespace content {
 
-CONTENT_EXPORT
-std::unique_ptr<cc::SurfaceIdAllocator> CreateSurfaceIdAllocator();
+CONTENT_EXPORT viz::FrameSinkId AllocateFrameSinkId();
 
-CONTENT_EXPORT
-cc::SurfaceManager* GetSurfaceManager();
+CONTENT_EXPORT viz::FrameSinkManagerImpl* GetFrameSinkManager();
 
-void CopyFromCompositingSurfaceHasResult(
-    const gfx::Size& dst_size_in_pixel,
-    const SkColorType color_type,
-    const ReadbackRequestCallback& callback,
-    std::unique_ptr<cc::CopyOutputResult> result);
+CONTENT_EXPORT viz::HostFrameSinkManager* GetHostFrameSinkManager();
+
+namespace surface_utils {
+
+// Directly connects HostFrameSinkManager to FrameSinkManagerImpl without Mojo.
+CONTENT_EXPORT void ConnectWithLocalFrameSinkManager(
+    viz::HostFrameSinkManager* host_frame_sink_manager,
+    viz::FrameSinkManagerImpl* frame_sink_manager_impl,
+    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner = nullptr);
+
+}  // namespace surface_utils
 
 }  // namespace content
 

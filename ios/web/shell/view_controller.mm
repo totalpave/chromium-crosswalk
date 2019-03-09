@@ -11,16 +11,11 @@
 #include <memory>
 #include <utility>
 
-#import "base/mac/scoped_nsobject.h"
 #include "base/strings/sys_string_conversions.h"
-#include "ios/net/cookies/cookie_store_ios.h"
-#import "ios/net/crn_http_protocol_handler.h"
-#import "ios/net/empty_nsurlcache.h"
-#import "ios/net/request_tracker.h"
 #import "ios/web/public/navigation_manager.h"
 #include "ios/web/public/referrer.h"
 #import "ios/web/public/web_state/context_menu_params.h"
-#include "ios/web/public/web_state/web_state.h"
+#import "ios/web/public/web_state/web_state.h"
 #import "ios/web/public/web_state/web_state_delegate_bridge.h"
 #import "ios/web/public/web_state/web_state_observer_bridge.h"
 #import "net/base/mac/url_conversions.h"
@@ -64,8 +59,11 @@ using web::NavigationManager;
 }
 
 - (void)dealloc {
-  net::HTTPProtocolHandlerDelegate::SetInstance(nullptr);
-  net::RequestTracker::SetRequestTrackerFactory(nullptr);
+  if (_webState) {
+    _webState->RemoveObserver(_webStateObserver.get());
+    _webStateObserver.reset();
+    _webState.reset();
+  }
 }
 
 - (void)viewDidLoad {
@@ -93,31 +91,23 @@ using web::NavigationManager;
   [self.view addSubview:_containerView];
 
   // Set up the toolbar buttons.
-  UIButton* back = [UIButton buttonWithType:UIButtonTypeCustom];
-  [back setImage:[UIImage imageNamed:@"toolbar_back"]
-        forState:UIControlStateNormal];
-  [back setFrame:CGRectMake(0, 0, 44, 44)];
-  [back setImageEdgeInsets:UIEdgeInsetsMake(5, 5, 4, 4)];
-  [back setAutoresizingMask:UIViewAutoresizingFlexibleRightMargin];
-  [back addTarget:self
-                action:@selector(back)
-      forControlEvents:UIControlEventTouchUpInside];
+  UIBarButtonItem* back = [[UIBarButtonItem alloc]
+      initWithImage:[UIImage imageNamed:@"toolbar_back"]
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(back)];
   [back setAccessibilityLabel:kWebShellBackButtonAccessibilityLabel];
 
-  UIButton* forward = [UIButton buttonWithType:UIButtonTypeCustom];
-  [forward setImage:[UIImage imageNamed:@"toolbar_forward"]
-           forState:UIControlStateNormal];
-  [forward setFrame:CGRectMake(44, 0, 44, 44)];
-  [forward setImageEdgeInsets:UIEdgeInsetsMake(5, 5, 4, 4)];
-  [forward setAutoresizingMask:UIViewAutoresizingFlexibleRightMargin];
-  [forward addTarget:self
-                action:@selector(forward)
-      forControlEvents:UIControlEventTouchUpInside];
+  UIBarButtonItem* forward = [[UIBarButtonItem alloc]
+      initWithImage:[UIImage imageNamed:@"toolbar_forward"]
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(forward)];
   [forward setAccessibilityLabel:kWebShellForwardButtonAccessibilityLabel];
 
-  base::scoped_nsobject<UITextField> field([[UITextField alloc]
+  UITextField* field = [[UITextField alloc]
       initWithFrame:CGRectMake(88, 6, CGRectGetWidth([_toolbarView frame]) - 98,
-                               31)]);
+                               31)];
   [field setDelegate:self];
   [field setBackground:[[UIImage imageNamed:@"textfield_background"]
                            resizableImageWithCapInsets:UIEdgeInsetsMake(
@@ -129,29 +119,22 @@ using web::NavigationManager;
   [field setClearButtonMode:UITextFieldViewModeWhileEditing];
   self.field = field;
 
-  [_toolbarView addSubview:back];
-  [_toolbarView addSubview:forward];
-  [_toolbarView addSubview:field];
-
-  // Set up the network stack before creating the WebState.
-  [self setUpNetworkStack];
+  [_toolbarView setItems:@[
+    back, forward, [[UIBarButtonItem alloc] initWithCustomView:field]
+  ]];
 
   web::WebState::CreateParams webStateCreateParams(_browserState);
   _webState = web::WebState::Create(webStateCreateParams);
-  _webState->SetWebUsageEnabled(true);
 
-  _webStateObserver.reset(
-      new web::WebStateObserverBridge(_webState.get(), self));
-  _webStateDelegate.reset(new web::WebStateDelegateBridge(self));
+  _webStateObserver = std::make_unique<web::WebStateObserverBridge>(self);
+  _webState->AddObserver(_webStateObserver.get());
+
+  _webStateDelegate = std::make_unique<web::WebStateDelegateBridge>(self);
   _webState->SetDelegate(_webStateDelegate.get());
 
   UIView* view = _webState->GetView();
   [view setFrame:[_containerView bounds]];
   [_containerView addSubview:view];
-
-  NavigationManager::WebLoadParams params(GURL("https://dev.chromium.org/"));
-  params.transition_type = ui::PAGE_TRANSITION_TYPED;
-  self.navigationManager->LoadURLWithParams(params);
 }
 
 - (NavigationManager*)navigationManager {
@@ -160,12 +143,6 @@ using web::NavigationManager;
 
 - (web::WebState*)webState {
   return _webState.get();
-}
-
-- (void)setUpNetworkStack {
-  // Disable the default cache.
-  [NSURLCache setSharedURLCache:[EmptyNSURLCache emptyNSURLCache]];
-  net::CookieStoreIOS::SetCookiePolicy(net::CookieStoreIOS::ALLOW);
 }
 
 - (void)didReceiveMemoryWarning {
@@ -273,16 +250,17 @@ using web::NavigationManager;
 // -----------------------------------------------------------------------
 // WebStateObserver implementation.
 
-- (void)didStartProvisionalNavigationForURL:(const GURL&)URL {
+- (void)webState:(web::WebState*)webState
+    didStartNavigation:(web::NavigationContext*)navigation {
   [self updateToolbar];
 }
 
-- (void)didCommitNavigationWithDetails:
-    (const web::LoadCommittedDetails&)details {
+- (void)webState:(web::WebState*)webState
+    didFinishNavigation:(web::NavigationContext*)navigation {
   [self updateToolbar];
 }
 
-- (void)webStateDidLoadPage:(web::WebState*)webState {
+- (void)webState:(web::WebState*)webState didLoadPageWithSuccess:(BOOL)success {
   DCHECK_EQ(_webState.get(), webState);
   [self updateToolbar];
 }
@@ -290,11 +268,11 @@ using web::NavigationManager;
 // -----------------------------------------------------------------------
 // WebStateDelegate implementation.
 
-- (BOOL)webState:(web::WebState*)webState
+- (void)webState:(web::WebState*)webState
     handleContextMenu:(const web::ContextMenuParams&)params {
   GURL link = params.link_url;
   if (!link.is_valid()) {
-    return NO;
+    return;
   }
 
   UIAlertController* alert = [UIAlertController
@@ -313,7 +291,7 @@ using web::NavigationManager;
     };
     [[UIPasteboard generalPasteboard] setItems:@[ item ]];
   };
-  [alert addAction:[UIAlertAction actionWithTitle:@"Copy"
+  [alert addAction:[UIAlertAction actionWithTitle:@"Copy Link"
                                             style:UIAlertActionStyleDefault
                                           handler:handler]];
 
@@ -322,8 +300,13 @@ using web::NavigationManager;
                                           handler:nil]];
 
   [self presentViewController:alert animated:YES completion:nil];
+}
 
-  return YES;
+- (void)webStateDestroyed:(web::WebState*)webState {
+  // The WebState is owned by the current instance, and the observer bridge
+  // is unregistered before the WebState is destroyed, so this event should
+  // never happen.
+  NOTREACHED();
 }
 
 @end

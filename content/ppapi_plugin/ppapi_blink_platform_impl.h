@@ -13,6 +13,11 @@
 #include "build/build_config.h"
 #include "content/child/blink_platform_impl.h"
 
+#if defined(OS_LINUX)
+#include "components/services/font/public/cpp/font_loader.h"
+#include "third_party/skia/include/core/SkRefCnt.h"
+#endif
+
 namespace content {
 
 class PpapiBlinkPlatformImpl : public BlinkPlatformImpl {
@@ -24,40 +29,25 @@ class PpapiBlinkPlatformImpl : public BlinkPlatformImpl {
   void Shutdown();
 
   // BlinkPlatformImpl methods:
-  blink::WebThread* currentThread() override;
-  blink::WebClipboard* clipboard() override;
-  blink::WebMimeRegistry* mimeRegistry() override;
-  blink::WebFileUtilities* fileUtilities() override;
-  blink::WebSandboxSupport* sandboxSupport() override;
-  virtual bool sandboxEnabled();
-  unsigned long long visitedLinkHash(const char* canonicalURL,
+  blink::WebSandboxSupport* GetSandboxSupport() override;
+  unsigned long long VisitedLinkHash(const char* canonical_url,
                                      size_t length) override;
-  bool isLinkVisited(unsigned long long linkHash) override;
-  void createMessageChannel(blink::WebMessagePortChannel** channel1,
-                            blink::WebMessagePortChannel** channel2) override;
-  virtual void setCookies(const blink::WebURL& url,
-                          const blink::WebURL& first_party_for_cookies,
-                          const blink::WebString& value);
-  virtual blink::WebString cookies(
-      const blink::WebURL& url,
-      const blink::WebURL& first_party_for_cookies);
-  blink::WebString defaultLocale() override;
-  blink::WebThemeEngine* themeEngine() override;
-  blink::WebURLLoader* createURLLoader() override;
-  void getPluginList(bool refresh, blink::WebPluginListBuilder*) override;
-  blink::WebData loadResource(const char* name) override;
-  blink::WebStorageNamespace* createLocalStorageNamespace() override;
-  virtual void dispatchStorageEvent(const blink::WebString& key,
-      const blink::WebString& oldValue, const blink::WebString& newValue,
-      const blink::WebString& origin, const blink::WebURL& url,
-      bool isLocalStorage);
-  int databaseDeleteFile(const blink::WebString& vfs_file_name,
+  bool IsLinkVisited(unsigned long long link_hash) override;
+  blink::WebString DefaultLocale() override;
+  blink::WebThemeEngine* ThemeEngine() override;
+  blink::WebData GetDataResource(const char* name) override;
+  std::unique_ptr<blink::WebStorageNamespace> CreateLocalStorageNamespace()
+      override;
+  int DatabaseDeleteFile(const blink::WebString& vfs_file_name,
                          bool sync_dir) override;
 
  private:
-#if !defined(OS_ANDROID) && !defined(OS_WIN)
-  class SandboxSupport;
-  std::unique_ptr<SandboxSupport> sandbox_support_;
+#if defined(OS_LINUX) || defined(OS_MACOSX)
+  std::unique_ptr<blink::WebSandboxSupport> sandbox_support_;
+#endif
+
+#if defined(OS_LINUX)
+  sk_sp<font_service::FontLoader> font_loader_;
 #endif
 
   DISALLOW_COPY_AND_ASSIGN(PpapiBlinkPlatformImpl);

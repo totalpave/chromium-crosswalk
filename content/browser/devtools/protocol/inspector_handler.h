@@ -6,40 +6,44 @@
 #define CONTENT_BROWSER_DEVTOOLS_PROTOCOL_INSPECTOR_HANDLER_H_
 
 #include "base/macros.h"
-#include "content/browser/devtools/protocol/devtools_protocol_dispatcher.h"
+#include "content/browser/devtools/protocol/devtools_domain_handler.h"
+#include "content/browser/devtools/protocol/inspector.h"
 
 namespace content {
 
+class DevToolsAgentHostImpl;
 class RenderFrameHostImpl;
 
-namespace devtools {
-namespace inspector {
+namespace protocol {
 
-class InspectorHandler {
+class InspectorHandler : public DevToolsDomainHandler,
+                         public Inspector::Backend {
  public:
-  using Response = DevToolsProtocolClient::Response;
-
   InspectorHandler();
-  virtual ~InspectorHandler();
+  ~InspectorHandler() override;
 
-  void SetClient(std::unique_ptr<Client> client);
-  void SetRenderFrameHost(RenderFrameHostImpl* host);
+  static std::vector<InspectorHandler*> ForAgentHost(
+      DevToolsAgentHostImpl* host);
+
+  void Wire(UberDispatcher* dispatcher) override;
+  void SetRenderer(int process_host_id,
+                   RenderFrameHostImpl* frame_host) override;
 
   void TargetCrashed();
+  void TargetReloadedAfterCrash();
   void TargetDetached(const std::string& reason);
 
-  Response Enable();
-  Response Disable();
+  Response Enable() override;
+  Response Disable() override;
 
  private:
-  std::unique_ptr<Client> client_;
+  std::unique_ptr<Inspector::Frontend> frontend_;
   RenderFrameHostImpl* host_;
 
   DISALLOW_COPY_AND_ASSIGN(InspectorHandler);
 };
 
-}  // namespace inspector
-}  // namespace devtools
+}  // namespace protocol
 }  // namespace content
 
 #endif  // CONTENT_BROWSER_DEVTOOLS_PROTOCOL_INSPECTOR_HANDLER_H_

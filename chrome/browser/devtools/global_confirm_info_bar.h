@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_DEVTOOLS_GLOBAL_CONFIRM_INFO_BAR_H_
 
 #include <map>
+#include <memory>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
@@ -27,7 +28,13 @@ class GlobalConfirmInfoBar : public TabStripModelObserver,
  public:
   static base::WeakPtr<GlobalConfirmInfoBar> Show(
       std::unique_ptr<ConfirmInfoBarDelegate> delegate);
+
+  // Closes all the infobars.
   void Close();
+
+  // infobars::InfoBarManager::Observer:
+  void OnInfoBarRemoved(infobars::InfoBar* info_bar, bool animate) override;
+  void OnManagerShuttingDown(infobars::InfoBarManager* manager) override;
 
  private:
   explicit GlobalConfirmInfoBar(
@@ -36,20 +43,24 @@ class GlobalConfirmInfoBar : public TabStripModelObserver,
   class DelegateProxy;
 
   // TabStripModelObserver:
-  void TabInsertedAt(content::WebContents* web_contents,
-                     int index,
-                     bool foreground) override;
+  void OnTabStripModelChanged(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection) override;
   void TabChangedAt(content::WebContents* web_contents,
                     int index,
                     TabChangeType change_type) override;
 
-  // infobars::InfoBarManager::Observer:
-  void OnInfoBarRemoved(infobars::InfoBar* info_bar, bool animate) override;
-  void OnManagerShuttingDown(infobars::InfoBarManager* manager) override;
+  // Adds the info bar to the tab if it is missing.
+  void MaybeAddInfoBar(content::WebContents* web_contents);
 
   std::unique_ptr<ConfirmInfoBarDelegate> delegate_;
   std::map<infobars::InfoBarManager*, DelegateProxy*> proxies_;
   BrowserTabStripTracker browser_tab_strip_tracker_;
+
+  // Indicates if the global infobar is currently in the process of shutting
+  // down.
+  bool is_closing_;
 
   base::WeakPtrFactory<GlobalConfirmInfoBar> weak_factory_;
 

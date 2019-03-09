@@ -2,9 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// MSVC++ requires this to be set before any other includes to get M_PI.
-#define _USE_MATH_DEFINES
-
 #include "media/filters/wsola_internals.h"
 
 #include <algorithm>
@@ -13,7 +10,17 @@
 #include <memory>
 
 #include "base/logging.h"
+#include "base/numerics/math_constants.h"
+#include "build/build_config.h"
 #include "media/base/audio_bus.h"
+
+#if defined(ARCH_CPU_X86_FAMILY)
+#define USE_SIMD 1
+#include <xmmintrin.h>
+#elif defined(ARCH_CPU_ARM_FAMILY) && defined(USE_NEON)
+#define USE_SIMD 1
+#include <arm_neon.h>
+#endif
 
 namespace media {
 
@@ -30,8 +37,8 @@ float MultiChannelSimilarityMeasure(const float* dot_prod_a_b,
   const float kEpsilon = 1e-12f;
   float similarity_measure = 0.0f;
   for (int n = 0; n < channels; ++n) {
-    similarity_measure += dot_prod_a_b[n] / sqrt(energy_a[n] * energy_b[n] +
-                                                 kEpsilon);
+    similarity_measure +=
+        dot_prod_a_b[n] / std::sqrt(energy_a[n] * energy_b[n] + kEpsilon);
   }
   return similarity_measure;
 }
@@ -48,13 +55,55 @@ void MultiChannelDotProduct(const AudioBus* a,
   DCHECK_LE(frame_offset_a + num_frames, a->frames());
   DCHECK_LE(frame_offset_b + num_frames, b->frames());
 
+// SIMD optimized variants can provide a massive speedup to this operation.
+#if defined(USE_SIMD)
+  const int rem = num_frames % 4;
+  const int last_index = num_frames - rem;
+  const int channels = a->channels();
+  for (int ch = 0; ch < channels; ++ch) {
+    const float* a_src = a->channel(ch) + frame_offset_a;
+    const float* b_src = b->channel(ch) + frame_offset_b;
+
+#if defined(ARCH_CPU_X86_FAMILY)
+    // First sum all components.
+    __m128 m_sum = _mm_setzero_ps();
+    for (int s = 0; s < last_index; s += 4) {
+      m_sum = _mm_add_ps(
+          m_sum, _mm_mul_ps(_mm_loadu_ps(a_src + s), _mm_loadu_ps(b_src + s)));
+    }
+
+    // Reduce to a single float for this channel. Sadly, SSE1,2 doesn't have a
+    // horizontal sum function, so we have to condense manually.
+    m_sum = _mm_add_ps(_mm_movehl_ps(m_sum, m_sum), m_sum);
+    _mm_store_ss(dot_product + ch,
+                 _mm_add_ss(m_sum, _mm_shuffle_ps(m_sum, m_sum, 1)));
+#elif defined(ARCH_CPU_ARM_FAMILY)
+    // First sum all components.
+    float32x4_t m_sum = vmovq_n_f32(0);
+    for (int s = 0; s < last_index; s += 4)
+      m_sum = vmlaq_f32(m_sum, vld1q_f32(a_src + s), vld1q_f32(b_src + s));
+
+    // Reduce to a single float for this channel.
+    float32x2_t m_half = vadd_f32(vget_high_f32(m_sum), vget_low_f32(m_sum));
+    dot_product[ch] = vget_lane_f32(vpadd_f32(m_half, m_half), 0);
+#endif
+  }
+
+  if (!rem)
+    return;
+  num_frames = rem;
+  frame_offset_a += last_index;
+  frame_offset_b += last_index;
+#else
   memset(dot_product, 0, sizeof(*dot_product) * a->channels());
+#endif  // defined(USE_SIMD)
+
+  // C version is required to handle remainder of frames (% 4 != 0)
   for (int k = 0; k < a->channels(); ++k) {
     const float* ch_a = a->channel(k) + frame_offset_a;
     const float* ch_b = b->channel(k) + frame_offset_b;
-    for (int n = 0; n < num_frames; ++n) {
+    for (int n = 0; n < num_frames; ++n)
       dot_product[k] += *ch_a++ * *ch_b++;
-    }
   }
 }
 
@@ -259,9 +308,9 @@ int OptimalIndex(const AudioBus* search_block,
 }
 
 void GetSymmetricHanningWindow(int window_length, float* window) {
-  const float scale = 2.0f * M_PI / window_length;
+  const float scale = 2.0f * base::kPiFloat / window_length;
   for (int n = 0; n < window_length; ++n)
-    window[n] = 0.5f * (1.0f - cosf(n * scale));
+    window[n] = 0.5f * (1.0f - std::cos(n * scale));
 }
 
 }  // namespace internal

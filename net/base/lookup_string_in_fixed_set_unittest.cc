@@ -5,8 +5,19 @@
 #include "net/base/lookup_string_in_fixed_set.h"
 
 #include <string.h>
-#include <ostream>
 
+#include <algorithm>
+#include <limits>
+#include <ostream>
+#include <utility>
+#include <vector>
+
+#include "base/base_paths.h"
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/path_service.h"
+#include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -56,9 +67,47 @@ const Expectation kBasicTestCases[] = {
     {"bar.jp", 2}, {"pref.bar.jp", 1}, {"c", 2},  {"b.c", 1},  {"priv.no", 4},
 };
 
-INSTANTIATE_TEST_CASE_P(LookupStringInFixedSetTest,
-                        Dafsa1Test,
-                        ::testing::ValuesIn(kBasicTestCases));
+// Helper function for EnumerateDafsaLanaguage.
+void RecursivelyEnumerateDafsaLanguage(const FixedSetIncrementalLookup& lookup,
+                                       std::vector<char>* sequence,
+                                       std::vector<std::string>* language) {
+  int result = lookup.GetResultForCurrentSequence();
+  if (result != kDafsaNotFound) {
+    std::string line(sequence->begin(), sequence->end());
+    line += base::StringPrintf(", %d", result);
+    language->emplace_back(std::move(line));
+  }
+  // Try appending each char value.
+  for (char c = std::numeric_limits<char>::min();; ++c) {
+    FixedSetIncrementalLookup continued_lookup = lookup;
+    if (continued_lookup.Advance(c)) {
+      sequence->push_back(c);
+      size_t saved_language_size = language->size();
+      RecursivelyEnumerateDafsaLanguage(continued_lookup, sequence, language);
+      CHECK_LT(saved_language_size, language->size())
+          << "DAFSA includes a branch to nowhere at node: "
+          << std::string(sequence->begin(), sequence->end());
+      sequence->pop_back();
+    }
+    if (c == std::numeric_limits<char>::max())
+      break;
+  }
+}
+
+// Uses FixedSetIncrementalLookup to build a vector of every string in the
+// language of the DAFSA.
+template <typename Graph>
+std::vector<std::string> EnumerateDafsaLanguage(const Graph& graph) {
+  FixedSetIncrementalLookup query(graph, sizeof(Graph));
+  std::vector<char> sequence;
+  std::vector<std::string> language;
+  RecursivelyEnumerateDafsaLanguage(query, &sequence, &language);
+  return language;
+}
+
+INSTANTIATE_TEST_SUITE_P(LookupStringInFixedSetTest,
+                         Dafsa1Test,
+                         ::testing::ValuesIn(kBasicTestCases));
 
 class Dafsa3Test : public LookupStringInFixedSetTest {};
 
@@ -83,9 +132,9 @@ const Expectation kTwoByteOffsetTestCases[] = {
      -1},
 };
 
-INSTANTIATE_TEST_CASE_P(LookupStringInFixedSetTest,
-                        Dafsa3Test,
-                        ::testing::ValuesIn(kTwoByteOffsetTestCases));
+INSTANTIATE_TEST_SUITE_P(LookupStringInFixedSetTest,
+                         Dafsa3Test,
+                         ::testing::ValuesIn(kTwoByteOffsetTestCases));
 
 class Dafsa4Test : public LookupStringInFixedSetTest {};
 
@@ -116,9 +165,9 @@ const Expectation kThreeByteOffsetTestCases[] = {
      -1},
 };
 
-INSTANTIATE_TEST_CASE_P(LookupStringInFixedSetTest,
-                        Dafsa4Test,
-                        ::testing::ValuesIn(kThreeByteOffsetTestCases));
+INSTANTIATE_TEST_SUITE_P(LookupStringInFixedSetTest,
+                         Dafsa4Test,
+                         ::testing::ValuesIn(kThreeByteOffsetTestCases));
 
 class Dafsa5Test : public LookupStringInFixedSetTest {};
 
@@ -135,9 +184,9 @@ const Expectation kJoinedPrefixesTestCases[] = {
     {"aaa", -1}, {"bbb", -1}, {"aaaam", 0}, {"bbbbn", 0},
 };
 
-INSTANTIATE_TEST_CASE_P(LookupStringInFixedSetTest,
-                        Dafsa5Test,
-                        ::testing::ValuesIn(kJoinedPrefixesTestCases));
+INSTANTIATE_TEST_SUITE_P(LookupStringInFixedSetTest,
+                         Dafsa5Test,
+                         ::testing::ValuesIn(kJoinedPrefixesTestCases));
 
 class Dafsa6Test : public LookupStringInFixedSetTest {};
 
@@ -154,9 +203,49 @@ const Expectation kJoinedSuffixesTestCases[] = {
     {"aaa", -1}, {"bbb", -1}, {"maaaa", 0}, {"nbbbb", 0},
 };
 
-INSTANTIATE_TEST_CASE_P(LookupStringInFixedSetTest,
-                        Dafsa6Test,
-                        ::testing::ValuesIn(kJoinedSuffixesTestCases));
+INSTANTIATE_TEST_SUITE_P(LookupStringInFixedSetTest,
+                         Dafsa6Test,
+                         ::testing::ValuesIn(kJoinedSuffixesTestCases));
+
+// Validates that the generated DAFSA contains exactly the same information as
+// effective_tld_names_unittest1.gperf.
+TEST(LookupStringInFixedSetTest, Dafsa1EnumerateLanguage) {
+  auto language = EnumerateDafsaLanguage(test1::kDafsa);
+
+  // These are the lines of effective_tld_names_unittest1.gperf, in sorted
+  // order.
+  std::vector<std::string> expected_language = {
+      "ac.jp, 0",       "b.c, 1",     "bar.baz.com, 0", "bar.jp, 2",
+      "baz.bar.jp, 2",  "c, 2",       "jp, 0",          "no, 0",
+      "pref.bar.jp, 1", "priv.no, 4", "private, 4",     "xn--fiqs8s, 0",
+  };
+
+  EXPECT_EQ(expected_language, language);
+}
+
+// Validates that the generated DAFSA contains exactly the same information as
+// effective_tld_names_unittest5.gperf.
+TEST(LookupStringInFixedSetTest, Dafsa5EnumerateLanguage) {
+  auto language = EnumerateDafsaLanguage(test5::kDafsa);
+
+  std::vector<std::string> expected_language = {
+      "aaaam, 0", "aak, 0", "ai, 0", "bbbbn, 0", "bbl, 4", "bj, 4",
+  };
+
+  EXPECT_EQ(expected_language, language);
+}
+
+// Validates that the generated DAFSA contains exactly the same information as
+// effective_tld_names_unittest6.gperf.
+TEST(LookupStringInFixedSetTest, Dafsa6EnumerateLanguage) {
+  auto language = EnumerateDafsaLanguage(test6::kDafsa);
+
+  std::vector<std::string> expected_language = {
+      "ia, 0", "jb, 4", "kaa, 0", "lbb, 4", "maaaa, 0", "nbbbb, 0",
+  };
+
+  EXPECT_EQ(expected_language, language);
+}
 
 }  // namespace
 }  // namespace net

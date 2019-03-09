@@ -314,12 +314,17 @@
 			</array>
 		</dict>
 	</array>
+	<key>LSEnvironment</key>
+	<dict>
+		<key>MallocNanoZone</key>
+		<string>0</string>
+	</dict>
 	<key>LSFileQuarantineEnabled</key>
 	<true/>
 	<key>LSHasLocalizedDisplayName</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>10.9.0</string>
+	<string>${CHROMIUM_MIN_SYSTEM_VERSION}</string>
 	<key>NSPrincipalClass</key>
 	<string>BrowserCrApplication</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
@@ -348,7 +353,9 @@
 			</dict>
 		</dict>
 	</array>
-        <key>NSUserNotificationAlertStyle</key>
-        <string>banner</string>
+	<key>NSUserNotificationAlertStyle</key>
+	<string>banner</string>
+	<key>NSRequiresAquaSystemAppearance</key>
+	<false/>
 </dict>
 </plist>

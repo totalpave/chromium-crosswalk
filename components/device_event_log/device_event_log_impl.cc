@@ -32,6 +32,8 @@ const char* kLogTypeLoginDesc = "Login";
 const char* kLogTypeBluetoothDesc = "Bluetooth";
 const char* kLogTypeUsbDesc = "USB";
 const char* kLogTypeHidDesc = "HID";
+const char* kLogTypeMemoryDesc = "Memory";
+const char* kLogTypePrinterDesc = "Printer";
 
 std::string GetLogTypeString(LogType type) {
   switch (type) {
@@ -47,10 +49,27 @@ std::string GetLogTypeString(LogType type) {
       return kLogTypeUsbDesc;
     case LOG_TYPE_HID:
       return kLogTypeHidDesc;
-    default:
-      NOTREACHED();
-      return "Unknown";
+    case LOG_TYPE_MEMORY:
+      return kLogTypeMemoryDesc;
+    case LOG_TYPE_PRINTER:
+      return kLogTypePrinterDesc;
+    case LOG_TYPE_UNKNOWN:
+      break;
   }
+  NOTREACHED();
+  return "Unknown";
+}
+
+LogType GetLogTypeFromString(const std::string& desc) {
+  std::string desc_lc = base::ToLowerASCII(desc);
+  for (int i = 0; i < LOG_TYPE_UNKNOWN; ++i) {
+    auto type = static_cast<LogType>(i);
+    std::string log_desc_lc = base::ToLowerASCII(GetLogTypeString(type));
+    if (desc_lc == log_desc_lc)
+      return type;
+  }
+  NOTREACHED() << "Unrecogized LogType: " << desc;
+  return LOG_TYPE_UNKNOWN;
 }
 
 std::string DateAndTimeWithMicroseconds(const base::Time& time) {
@@ -188,18 +207,6 @@ void GetFormat(const std::string& format_string,
   }
 }
 
-LogType LogTypeFromString(const std::string& desc) {
-  std::string desc_lc = base::ToLowerASCII(desc);
-  if (desc_lc == "network")
-    return LOG_TYPE_NETWORK;
-  if (desc_lc == "power")
-    return LOG_TYPE_POWER;
-  if (desc_lc == "login")
-    return LOG_TYPE_LOGIN;
-  NOTREACHED() << "Unrecogized LogType: " << desc;
-  return LOG_TYPE_UNKNOWN;
-}
-
 void GetLogTypes(const std::string& types,
                  std::set<LogType>* include_types,
                  std::set<LogType>* exclude_types) {
@@ -207,11 +214,11 @@ void GetLogTypes(const std::string& types,
   while (tokens.GetNext()) {
     std::string tok(tokens.token());
     if (tok.substr(0, 4) == "non-") {
-      LogType type = LogTypeFromString(tok.substr(4));
+      LogType type = GetLogTypeFromString(tok.substr(4));
       if (type != LOG_TYPE_UNKNOWN)
         exclude_types->insert(type);
     } else {
-      LogType type = LogTypeFromString(tok);
+      LogType type = GetLogTypeFromString(tok);
       if (type != LOG_TYPE_UNKNOWN)
         include_types->insert(type);
     }
@@ -255,17 +262,34 @@ void DeviceEventLogImpl::AddEntry(const char* file,
                                   LogLevel log_level,
                                   const std::string& event) {
   LogEntry entry(file, file_line, log_type, log_level, event);
-  if (!task_runner_->RunsTasksOnCurrentThread()) {
-    task_runner_->PostTask(FROM_HERE,
-                           base::Bind(&DeviceEventLogImpl::AddLogEntry,
-                                      weak_ptr_factory_.GetWeakPtr(), entry));
+  if (!task_runner_->RunsTasksInCurrentSequence()) {
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&DeviceEventLogImpl::AddLogEntry,
+                                  weak_ptr_factory_.GetWeakPtr(), entry));
+    return;
+  }
+  AddLogEntry(entry);
+}
+
+void DeviceEventLogImpl::AddEntryWithTimestampForTesting(
+    const char* file,
+    int file_line,
+    LogType log_type,
+    LogLevel log_level,
+    const std::string& event,
+    base::Time time) {
+  LogEntry entry(file, file_line, log_type, log_level, event, time);
+  if (!task_runner_->RunsTasksInCurrentSequence()) {
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&DeviceEventLogImpl::AddLogEntry,
+                                  weak_ptr_factory_.GetWeakPtr(), entry));
     return;
   }
   AddLogEntry(entry);
 }
 
 void DeviceEventLogImpl::AddLogEntry(const LogEntry& entry) {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
   if (!entries_.empty()) {
     LogEntry& last = entries_.back();
     if (LogEntryMatches(last, entry)) {
@@ -285,8 +309,7 @@ void DeviceEventLogImpl::RemoveEntry() {
   // Remove the first (oldest) non-error entry, or the oldest entry if more
   // than half the entries are errors.
   size_t error_count = 0;
-  for (LogEntryList::iterator iter = entries_.begin(); iter != entries_.end();
-       ++iter) {
+  for (auto iter = entries_.begin(); iter != entries_.end(); ++iter) {
     if (iter->log_level != LOG_LEVEL_ERROR) {
       entries_.erase(iter);
       return;
@@ -303,7 +326,7 @@ std::string DeviceEventLogImpl::GetAsString(StringOrder order,
                                             const std::string& types,
                                             LogLevel max_level,
                                             size_t max_events) {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
   if (entries_.empty())
     return "No Log Entries.";
 
@@ -378,6 +401,17 @@ std::string DeviceEventLogImpl::GetAsString(StringOrder order,
   return result;
 }
 
+void DeviceEventLogImpl::Clear(const base::Time& begin, const base::Time& end) {
+  auto begin_it = std::find_if(
+      entries_.begin(), entries_.end(),
+      [begin](const LogEntry& entry) { return entry.time >= begin; });
+  auto end_rev_it =
+      std::find_if(entries_.rbegin(), entries_.rend(),
+                   [end](const LogEntry& entry) { return entry.time <= end; });
+
+  entries_.erase(begin_it, end_rev_it.base());
+}
+
 DeviceEventLogImpl::LogEntry::LogEntry(const char* filedesc,
                                        int file_line,
                                        LogType log_type,
@@ -396,6 +430,16 @@ DeviceEventLogImpl::LogEntry::LogEntry(const char* filedesc,
       file.erase(0, last_slash_pos + 1);
     }
   }
+}
+
+DeviceEventLogImpl::LogEntry::LogEntry(const char* filedesc,
+                                       int file_line,
+                                       LogType log_type,
+                                       LogLevel log_level,
+                                       const std::string& event,
+                                       base::Time time_for_testing)
+    : LogEntry(filedesc, file_line, log_type, log_level, event) {
+  time = time_for_testing;
 }
 
 DeviceEventLogImpl::LogEntry::LogEntry(const LogEntry& other) = default;

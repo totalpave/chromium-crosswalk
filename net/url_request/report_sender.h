@@ -5,13 +5,15 @@
 #ifndef NET_URL_REQUEST_REPORT_SENDER_H_
 #define NET_URL_REQUEST_REPORT_SENDER_H_
 
+#include <map>
 #include <memory>
-#include <set>
 #include <string>
 
 #include "base/callback.h"
 #include "base/macros.h"
+#include "net/base/net_export.h"
 #include "net/http/transport_security_state.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/url_request.h"
 
 class GURL;
@@ -29,48 +31,35 @@ class NET_EXPORT ReportSender
     : public URLRequest::Delegate,
       public TransportSecurityState::ReportSenderInterface {
  public:
-  using ErrorCallback = base::Callback<void(const GURL&, int)>;
+  static const int kLoadFlags;
 
-  // Represents whether or not to send cookies along with reports.
-  enum CookiesPreference { SEND_COOKIES, DO_NOT_SEND_COOKIES };
-
-  // Constructs a ReportSender that sends reports with the
-  // given |request_context| and includes or excludes cookies based on
-  // |cookies_preference|. |request_context| must outlive the
-  // ReportSender.
-  ReportSender(URLRequestContext* request_context,
-               CookiesPreference cookies_preference);
+  using SuccessCallback = base::Callback<void()>;
+  using ErrorCallback = base::Callback<
+      void(const GURL&, int /* net_error */, int /* http_response_code */)>;
 
   // Constructs a ReportSender that sends reports with the
-  // given |request_context| and includes or excludes cookies based on
-  // |cookies_preference|. |request_context| must outlive the
-  // ReportSender. When sending a report results in an error,
-  // |error_callback| is called with the report URI and net error as
-  // arguments.
-  ReportSender(URLRequestContext* request_context,
-               CookiesPreference cookies_preference,
-               const ErrorCallback& error_callback);
+  // given |request_context|, always excluding cookies. |request_context| must
+  // outlive the ReportSender.
+  explicit ReportSender(URLRequestContext* request_context,
+                        net::NetworkTrafficAnnotationTag traffic_annotation);
 
   ~ReportSender() override;
 
   // TransportSecurityState::ReportSenderInterface implementation.
-  void Send(const GURL& report_uri, const std::string& report) override;
-  void SetErrorCallback(const ErrorCallback& error_callback) override;
+  void Send(const GURL& report_uri,
+            base::StringPiece content_type,
+            base::StringPiece report,
+            const SuccessCallback& success_callback,
+            const ErrorCallback& error_callback) override;
 
   // net::URLRequest::Delegate implementation.
-  void OnResponseStarted(URLRequest* request) override;
+  void OnResponseStarted(URLRequest* request, int net_error) override;
   void OnReadCompleted(URLRequest* request, int bytes_read) override;
 
  private:
   net::URLRequestContext* const request_context_;
-
-  CookiesPreference cookies_preference_;
-
-  // Owns the contained requests.
-  std::set<URLRequest*> inflight_requests_;
-
-  // Called when a sent report results in an error.
-  ErrorCallback error_callback_;
+  std::map<URLRequest*, std::unique_ptr<URLRequest>> inflight_requests_;
+  const net::NetworkTrafficAnnotationTag traffic_annotation_;
 
   DISALLOW_COPY_AND_ASSIGN(ReportSender);
 };

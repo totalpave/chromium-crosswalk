@@ -26,62 +26,23 @@
 #include "url/gurl.h"
 
 namespace storage {
-using BlobState = BlobStorageRegistry::BlobState;
-
-namespace {
-
-class FileStreamReaderProviderImpl
-    : public BlobReader::FileStreamReaderProvider {
- public:
-  explicit FileStreamReaderProviderImpl(FileSystemContext* file_system_context)
-      : file_system_context_(file_system_context) {}
-  ~FileStreamReaderProviderImpl() override {}
-
-  std::unique_ptr<FileStreamReader> CreateForLocalFile(
-      base::TaskRunner* task_runner,
-      const base::FilePath& file_path,
-      int64_t initial_offset,
-      const base::Time& expected_modification_time) override {
-    return base::WrapUnique(FileStreamReader::CreateForLocalFile(
-        task_runner, file_path, initial_offset, expected_modification_time));
-  }
-
-  std::unique_ptr<FileStreamReader> CreateFileStreamReader(
-      const GURL& filesystem_url,
-      int64_t offset,
-      int64_t max_bytes_to_read,
-      const base::Time& expected_modification_time) override {
-    return file_system_context_->CreateFileStreamReader(
-        storage::FileSystemURL(file_system_context_->CrackURL(filesystem_url)),
-        offset, max_bytes_to_read, expected_modification_time);
-  }
-
- private:
-  scoped_refptr<FileSystemContext> file_system_context_;
-  DISALLOW_COPY_AND_ASSIGN(FileStreamReaderProviderImpl);
-};
-
-}  // namespace
 
 BlobDataHandle::BlobDataHandleShared::BlobDataHandleShared(
     const std::string& uuid,
     const std::string& content_type,
     const std::string& content_disposition,
+    uint64_t size,
     BlobStorageContext* context)
     : uuid_(uuid),
       content_type_(content_type),
       content_disposition_(content_disposition),
+      size_(size),
       context_(context->AsWeakPtr()) {
   context_->IncrementBlobRefCount(uuid);
 }
 
-std::unique_ptr<BlobReader> BlobDataHandle::CreateReader(
-    FileSystemContext* file_system_context,
-    base::SequencedTaskRunner* file_task_runner) const {
-  return std::unique_ptr<BlobReader>(new BlobReader(
-      this, std::unique_ptr<BlobReader::FileStreamReaderProvider>(
-                new FileStreamReaderProviderImpl(file_system_context)),
-      file_task_runner));
+std::unique_ptr<BlobReader> BlobDataHandle::CreateReader() const {
+  return base::WrapUnique(new BlobReader(this));
 }
 
 BlobDataHandle::BlobDataHandleShared::~BlobDataHandleShared() {
@@ -92,57 +53,71 @@ BlobDataHandle::BlobDataHandleShared::~BlobDataHandleShared() {
 BlobDataHandle::BlobDataHandle(const std::string& uuid,
                                const std::string& content_type,
                                const std::string& content_disposition,
+                               uint64_t size,
                                BlobStorageContext* context,
                                base::SequencedTaskRunner* io_task_runner)
     : io_task_runner_(io_task_runner),
       shared_(new BlobDataHandleShared(uuid,
                                        content_type,
                                        content_disposition,
+                                       size,
                                        context)) {
   DCHECK(io_task_runner_.get());
-  DCHECK(io_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
 }
 
-BlobDataHandle::BlobDataHandle(const BlobDataHandle& other) {
-  io_task_runner_ = other.io_task_runner_;
-  shared_ = other.shared_;
-}
+BlobDataHandle::BlobDataHandle(const BlobDataHandle& other) = default;
 
 BlobDataHandle::~BlobDataHandle() {
-  if (!io_task_runner_->RunsTasksOnCurrentThread()) {
-    BlobDataHandleShared* raw = shared_.get();
-    raw->AddRef();
-    shared_ = nullptr;
-    io_task_runner_->ReleaseSoon(FROM_HERE, raw);
+  if (!io_task_runner_->RunsTasksInCurrentSequence()) {
+    io_task_runner_->ReleaseSoon(FROM_HERE, std::move(shared_));
   }
 }
 
+BlobDataHandle& BlobDataHandle::operator=(
+    const BlobDataHandle& other) = default;
+
 bool BlobDataHandle::IsBeingBuilt() const {
-  DCHECK(io_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
   if (!shared_->context_)
     return false;
-  return shared_->context_->IsBeingBuilt(shared_->uuid_);
+  return BlobStatusIsPending(GetBlobStatus());
 }
 
 bool BlobDataHandle::IsBroken() const {
-  DCHECK(io_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
   if (!shared_->context_)
     return true;
-  return shared_->context_->IsBroken(shared_->uuid_);
+  return BlobStatusIsError(GetBlobStatus());
 }
 
-void BlobDataHandle::RunOnConstructionComplete(
-    const BlobConstructedCallback& done) {
-  DCHECK(io_task_runner_->RunsTasksOnCurrentThread());
+BlobStatus BlobDataHandle::GetBlobStatus() const {
+  DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
+  if (!shared_->context_)
+    return BlobStatus::ERR_REFERENCED_BLOB_BROKEN;
+  return shared_->context_->GetBlobStatus(shared_->uuid_);
+}
+
+void BlobDataHandle::RunOnConstructionComplete(BlobStatusCallback done) {
+  DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
   if (!shared_->context_.get()) {
-    done.Run(false, IPCBlobCreationCancelCode::UNKNOWN);
+    std::move(done).Run(BlobStatus::ERR_INVALID_CONSTRUCTION_ARGUMENTS);
     return;
   }
-  shared_->context_->RunOnConstructionComplete(shared_->uuid_, done);
+  shared_->context_->RunOnConstructionComplete(shared_->uuid_, std::move(done));
+}
+
+void BlobDataHandle::RunOnConstructionBegin(BlobStatusCallback done) {
+  DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
+  if (!shared_->context_.get()) {
+    std::move(done).Run(BlobStatus::ERR_INVALID_CONSTRUCTION_ARGUMENTS);
+    return;
+  }
+  shared_->context_->RunOnConstructionBegin(shared_->uuid_, std::move(done));
 }
 
 std::unique_ptr<BlobDataSnapshot> BlobDataHandle::CreateSnapshot() const {
-  DCHECK(io_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
   if (!shared_->context_.get())
     return nullptr;
   return shared_->context_->CreateSnapshot(shared_->uuid_);
@@ -158,6 +133,10 @@ const std::string& BlobDataHandle::content_type() const {
 
 const std::string& BlobDataHandle::content_disposition() const {
   return shared_->content_disposition_;
+}
+
+uint64_t BlobDataHandle::size() const {
+  return shared_->size_;
 }
 
 }  // namespace storage

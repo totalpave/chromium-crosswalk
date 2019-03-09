@@ -42,16 +42,14 @@ bool ReturnsValidPath(int dir_type) {
   if (dir_type == DIR_USER_DESKTOP)
     check_path_exists = false;
 #endif
-#if defined(OS_WIN)
-  if (dir_type == DIR_TASKBAR_PINS) {
-    // There is no pinned-to-taskbar shortcuts prior to Win7.
-    if (base::win::GetVersion() < base::win::VERSION_WIN7)
-      check_path_exists = false;
-  }
+#if defined(OS_IOS)
+  // Bundled unittests on iOS may not have Resources directory in the bundle.
+  if (dir_type == DIR_ASSETS)
+    check_path_exists = false;
 #endif
 #if defined(OS_MACOSX)
-  if (dir_type != DIR_EXE && dir_type != DIR_MODULE &&
-      dir_type != FILE_EXE && dir_type != FILE_MODULE) {
+  if (dir_type != DIR_EXE && dir_type != DIR_MODULE && dir_type != FILE_EXE &&
+      dir_type != FILE_MODULE) {
     if (path.ReferencesParent())
       return false;
   }
@@ -91,7 +89,11 @@ TEST_F(PathServiceTest, Get) {
       continue;  // Android doesn't implement these.
 #elif defined(OS_IOS)
     if (key == DIR_USER_DESKTOP)
-      continue;  // iOS doesn't implement DIR_USER_DESKTOP;
+      continue;  // iOS doesn't implement DIR_USER_DESKTOP.
+#elif defined(OS_FUCHSIA)
+    if (key == DIR_USER_DESKTOP || key == FILE_MODULE || key == DIR_MODULE)
+      continue;  // Fuchsia doesn't implement DIR_USER_DESKTOP, FILE_MODULE and
+                 // DIR_MODULE.
 #endif
     EXPECT_PRED1(ReturnsValidPath, key);
   }
@@ -129,13 +131,13 @@ TEST_F(PathServiceTest, Override) {
   int my_special_key = 666;
   ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  FilePath fake_cache_dir(temp_dir.path().AppendASCII("cache"));
+  FilePath fake_cache_dir(temp_dir.GetPath().AppendASCII("cache"));
   // PathService::Override should always create the path provided if it doesn't
   // exist.
   EXPECT_TRUE(PathService::Override(my_special_key, fake_cache_dir));
   EXPECT_TRUE(PathExists(fake_cache_dir));
 
-  FilePath fake_cache_dir2(temp_dir.path().AppendASCII("cache2"));
+  FilePath fake_cache_dir2(temp_dir.GetPath().AppendASCII("cache2"));
   // PathService::OverrideAndCreateIfNeeded should obey the |create| parameter.
   PathService::OverrideAndCreateIfNeeded(my_special_key,
                                          fake_cache_dir2,
@@ -150,7 +152,7 @@ TEST_F(PathServiceTest, Override) {
 
 #if defined(OS_POSIX)
   FilePath non_existent(
-      MakeAbsoluteFilePath(temp_dir.path()).AppendASCII("non_existent"));
+      MakeAbsoluteFilePath(temp_dir.GetPath()).AppendASCII("non_existent"));
   EXPECT_TRUE(non_existent.IsAbsolute());
   EXPECT_FALSE(PathExists(non_existent));
 #if !defined(OS_ANDROID)
@@ -181,12 +183,12 @@ TEST_F(PathServiceTest, OverrideMultiple) {
   int my_special_key = 666;
   ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  FilePath fake_cache_dir1(temp_dir.path().AppendASCII("1"));
+  FilePath fake_cache_dir1(temp_dir.GetPath().AppendASCII("1"));
   EXPECT_TRUE(PathService::Override(my_special_key, fake_cache_dir1));
   EXPECT_TRUE(PathExists(fake_cache_dir1));
   ASSERT_EQ(1, WriteFile(fake_cache_dir1.AppendASCII("t1"), ".", 1));
 
-  FilePath fake_cache_dir2(temp_dir.path().AppendASCII("2"));
+  FilePath fake_cache_dir2(temp_dir.GetPath().AppendASCII("2"));
   EXPECT_TRUE(PathService::Override(my_special_key + 1, fake_cache_dir2));
   EXPECT_TRUE(PathExists(fake_cache_dir2));
   ASSERT_EQ(1, WriteFile(fake_cache_dir2.AppendASCII("t2"), ".", 1));
@@ -211,7 +213,7 @@ TEST_F(PathServiceTest, RemoveOverride) {
 
   ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  EXPECT_TRUE(PathService::Override(DIR_TEMP, temp_dir.path()));
+  EXPECT_TRUE(PathService::Override(DIR_TEMP, temp_dir.GetPath()));
   FilePath new_user_data_dir;
   EXPECT_TRUE(PathService::Get(DIR_TEMP, &new_user_data_dir));
   EXPECT_NE(original_user_data_dir, new_user_data_dir);

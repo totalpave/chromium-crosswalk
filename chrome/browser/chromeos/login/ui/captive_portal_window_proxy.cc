@@ -6,8 +6,9 @@
 
 #include "base/metrics/histogram_macros.h"
 #include "chrome/browser/chromeos/login/ui/captive_portal_view.h"
-#include "chrome/browser/chromeos/login/ui/proxy_settings_dialog.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
+#include "chrome/browser/ui/webui/chromeos/internet_detail_dialog.h"
+#include "components/constrained_window/constrained_window_views.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
@@ -25,7 +26,6 @@ views::Widget* CreateWindowAsFramelessChild(views::WidgetDelegate* delegate,
   params.delegate = delegate;
   params.child = true;
   params.parent = parent;
-  params.remove_standard_frame = true;
   params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
 
   widget->Init(params);
@@ -62,8 +62,8 @@ void CaptivePortalWindowProxy::ShowIfRedirected() {
 }
 
 void CaptivePortalWindowProxy::Show() {
-  if (ProxySettingsDialog::IsShown()) {
-    // ProxySettingsDialog is being shown, don't cover it.
+  if (InternetDetailDialog::IsShown()) {
+    // InternetDetailDialog is being shown, don't cover it.
     Close();
     return;
   }
@@ -71,17 +71,20 @@ void CaptivePortalWindowProxy::Show() {
   if (GetState() == STATE_DISPLAYED)  // Dialog is already shown, do nothing.
     return;
 
+  for (auto& observer : observers_)
+    observer.OnBeforeCaptivePortalShown();
+
   InitCaptivePortalView();
 
   CaptivePortalView* portal = captive_portal_view_.release();
-  auto manager =
+  auto* manager =
       web_modal::WebContentsModalDialogManager::FromWebContents(web_contents_);
   widget_ = CreateWindowAsFramelessChild(
       portal,
       manager->delegate()->GetWebContentsModalDialogHost()->GetHostView());
   portal->Init();
   widget_->AddObserver(this);
-  manager->ShowModalDialog(widget_->GetNativeView());
+  constrained_window::ShowModalDialog(widget_->GetNativeView(), web_contents_);
 }
 
 void CaptivePortalWindowProxy::Close() {
@@ -107,21 +110,24 @@ void CaptivePortalWindowProxy::OnOriginalURLLoaded() {
   Close();
 }
 
-void CaptivePortalWindowProxy::OnWidgetClosing(views::Widget* widget) {
+void CaptivePortalWindowProxy::AddObserver(Observer* observer) {
+  observers_.AddObserver(observer);
+}
+
+void CaptivePortalWindowProxy::RemoveObserver(Observer* observer) {
+  observers_.RemoveObserver(observer);
+}
+
+void CaptivePortalWindowProxy::OnWidgetDestroyed(views::Widget* widget) {
   DCHECK(GetState() == STATE_DISPLAYED);
   DCHECK(widget == widget_);
 
   DetachFromWidget(widget);
 
   DCHECK(GetState() == STATE_IDLE);
-}
 
-void CaptivePortalWindowProxy::OnWidgetDestroying(views::Widget* widget) {
-  DetachFromWidget(widget);
-}
-
-void CaptivePortalWindowProxy::OnWidgetDestroyed(views::Widget* widget) {
-  DetachFromWidget(widget);
+  for (auto& observer : observers_)
+    observer.OnAfterCaptivePortalHidden();
 }
 
 void CaptivePortalWindowProxy::InitCaptivePortalView() {

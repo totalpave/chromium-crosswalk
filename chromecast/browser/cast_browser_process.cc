@@ -8,20 +8,21 @@
 
 #include "base/logging.h"
 #include "build/build_config.h"
-#include "chromecast/base/metrics/cast_metrics_helper.h"
 #include "chromecast/browser/cast_browser_context.h"
-#include "chromecast/browser/cast_resource_dispatcher_host_delegate.h"
 #include "chromecast/browser/devtools/remote_debugging_server.h"
 #include "chromecast/browser/metrics/cast_metrics_service_client.h"
+#include "chromecast/browser/tts/tts_controller.h"
 #include "chromecast/net/connectivity_checker.h"
 #include "chromecast/service/cast_service.h"
 #include "components/prefs/pref_service.h"
 
-#if defined(OS_ANDROID)
-#include "components/crash/content/browser/crash_dump_manager_android.h"
-#endif  // defined(OS_ANDROID)
-
 #if defined(USE_AURA)
+
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+#include "chromecast/browser/accessibility/accessibility_manager.h"
+#endif  // BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+
+#include "chromecast/browser/cast_display_configurator.h"
 #include "chromecast/graphics/cast_screen.h"
 #endif  // defined(USE_AURA)
 
@@ -76,13 +77,27 @@ void CastBrowserProcess::SetCastScreen(
   DCHECK(!cast_screen_);
   cast_screen_ = std::move(cast_screen);
 }
-#endif  // defined(USE_AURA)
 
-void CastBrowserProcess::SetMetricsHelper(
-    std::unique_ptr<metrics::CastMetricsHelper> metrics_helper) {
-  DCHECK(!metrics_helper_);
-  metrics_helper_.swap(metrics_helper);
+void CastBrowserProcess::SetDisplayConfigurator(
+    std::unique_ptr<CastDisplayConfigurator> display_configurator) {
+  DCHECK(!display_configurator_);
+  display_configurator_ = std::move(display_configurator);
 }
+
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+void CastBrowserProcess::SetAccessibilityManager(
+    std::unique_ptr<AccessibilityManager> accessibility_manager) {
+  DCHECK(!accessibility_manager_);
+  accessibility_manager_ = std::move(accessibility_manager);
+}
+
+void CastBrowserProcess::ClearAccessibilityManager() {
+  accessibility_manager_.reset();
+}
+
+#endif  // BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+
+#endif  // defined(USE_AURA)
 
 void CastBrowserProcess::SetMetricsServiceClient(
     std::unique_ptr<metrics::CastMetricsServiceClient> metrics_service_client) {
@@ -102,20 +117,6 @@ void CastBrowserProcess::SetRemoteDebuggingServer(
   remote_debugging_server_.swap(remote_debugging_server);
 }
 
-void CastBrowserProcess::SetResourceDispatcherHostDelegate(
-    std::unique_ptr<CastResourceDispatcherHostDelegate> delegate) {
-  DCHECK(!resource_dispatcher_host_delegate_);
-  resource_dispatcher_host_delegate_.swap(delegate);
-}
-
-#if defined(OS_ANDROID)
-void CastBrowserProcess::SetCrashDumpManager(
-    std::unique_ptr<breakpad::CrashDumpManager> crash_dump_manager) {
-  DCHECK(!crash_dump_manager_);
-  crash_dump_manager_.swap(crash_dump_manager);
-}
-#endif  // defined(OS_ANDROID)
-
 void CastBrowserProcess::SetConnectivityChecker(
     scoped_refptr<ConnectivityChecker> connectivity_checker) {
   DCHECK(!connectivity_checker_);
@@ -125,6 +126,18 @@ void CastBrowserProcess::SetConnectivityChecker(
 void CastBrowserProcess::SetNetLog(net::NetLog* net_log) {
   DCHECK(!net_log_);
   net_log_ = net_log;
+}
+
+void CastBrowserProcess::SetTtsController(
+    std::unique_ptr<TtsController> tts_controller) {
+  DCHECK(!tts_controller_);
+  tts_controller_ = std::move(tts_controller);
+}
+
+void CastBrowserProcess::SetWebViewFactory(
+    CastWebViewFactory* web_view_factory) {
+  DCHECK(!web_view_factory_);
+  web_view_factory_ = web_view_factory;
 }
 
 }  // namespace shell

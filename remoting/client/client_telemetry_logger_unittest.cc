@@ -4,9 +4,9 @@
 
 #include "remoting/client/client_telemetry_logger.h"
 
-#include <deque>
 #include <string>
 
+#include "base/containers/circular_deque.h"
 #include "base/memory/ptr_util.h"
 #include "remoting/protocol/connection_to_host.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -59,16 +59,10 @@ class FakeLogWriter : public ChromotingEventLogWriter {
 
   // ChromotingEventLogWriter overrides.
   void Log(const ChromotingEvent& entry) override;
-  void SetAuthToken(const std::string& auth_token) override;
-  void SetAuthClosure(const base::Closure& closure) override;
-
-  const std::string& auth_token() const { return auth_token_; }
-  const base::Closure& auth_closure() const { return auth_closure_; }
 
  private:
-  std::deque<ChromotingEvent> expected_events_;
+  base::circular_deque<ChromotingEvent> expected_events_;
   std::string auth_token_;
-  base::Closure auth_closure_;
 };
 
 void FakeLogWriter::AddExpectedEvent(const ChromotingEvent& entry) {
@@ -83,30 +77,21 @@ void FakeLogWriter::Log(const ChromotingEvent& entry) {
   expected_events_.pop_front();
 }
 
-void FakeLogWriter::SetAuthToken(const std::string& auth_token) {
-  auth_token_ = auth_token;
-}
-
-void FakeLogWriter::SetAuthClosure(const base::Closure& closure) {
-  auth_closure_ = closure;
-}
-
 class ClientTelemetryLoggerTest : public testing::Test {
  public:
   // testing::Test override.
   void SetUp() override;
 
  protected:
-  // |log_writer_| will be owned by |logger_| and freed when |logger_|
-  // destructs. Feel free to use this reference in the test.
-  FakeLogWriter* log_writer_ = nullptr;
+  std::unique_ptr<FakeLogWriter> log_writer_;
   std::unique_ptr<ClientTelemetryLogger> logger_;
 };
 
 void ClientTelemetryLoggerTest::SetUp() {
-  log_writer_ = new FakeLogWriter();
-  logger_.reset(new ClientTelemetryLogger(ChromotingEvent::Mode::ME2ME));
-  logger_->StartForTest(base::WrapUnique(log_writer_));
+  log_writer_.reset(new FakeLogWriter());
+  logger_.reset(new ClientTelemetryLogger(
+      log_writer_.get(), ChromotingEvent::Mode::ME2ME,
+      ChromotingEvent::SessionEntryPoint::CONNECT_BUTTON));
 }
 
 TEST_F(ClientTelemetryLoggerTest, LogSessionStateChange) {
@@ -131,7 +116,7 @@ TEST_F(ClientTelemetryLoggerTest, LogStatistics) {
   protocol::PerformanceTracker perf_tracker;
   log_writer_->AddExpectedEvent(
       ChromotingEvent(ChromotingEvent::Type::CONNECTION_STATISTICS));
-  logger_->LogStatistics(&perf_tracker);
+  logger_->LogStatistics(perf_tracker);
 }
 
 TEST_F(ClientTelemetryLoggerTest, SessionIdGeneration) {
@@ -170,17 +155,8 @@ TEST_F(ClientTelemetryLoggerTest, SessionIdExpiration) {
   logger_->SetSessionIdGenerationTimeForTest(base::TimeTicks::Now() -
                                              base::TimeDelta::FromDays(2));
   protocol::PerformanceTracker perf_tracker;
-  logger_->LogStatistics(&perf_tracker);
+  logger_->LogStatistics(perf_tracker);
   EXPECT_NE(last_id, logger_->session_id());
-}
-
-TEST_F(ClientTelemetryLoggerTest, PassesThroughAuthTokenAndClosure) {
-  std::string token("some token");
-  base::Closure closure = base::Bind(&base::DoNothing);
-  logger_->SetAuthToken(token);
-  logger_->SetAuthClosure(closure);
-  EXPECT_EQ(token, log_writer_->auth_token());
-  EXPECT_TRUE(closure.Equals(log_writer_->auth_closure()));
 }
 
 }  // namespace remoting

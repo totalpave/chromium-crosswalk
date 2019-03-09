@@ -23,13 +23,13 @@ typedef libusb_context* PlatformUsbContext;
 // Destructor must be called on FILE thread.
 class UsbContext : public base::RefCountedThreadSafe<UsbContext> {
  public:
+  explicit UsbContext(PlatformUsbContext context);
+
   PlatformUsbContext context() const { return context_; }
 
  protected:
-  friend class UsbServiceImpl;
   friend class base::RefCountedThreadSafe<UsbContext>;
 
-  explicit UsbContext(PlatformUsbContext context);
   virtual ~UsbContext();
 
  private:
@@ -37,7 +37,6 @@ class UsbContext : public base::RefCountedThreadSafe<UsbContext> {
 
   PlatformUsbContext context_;
   std::unique_ptr<UsbEventHandler> event_handler_;
-  base::ThreadChecker thread_checker_;
 
   DISALLOW_COPY_AND_ASSIGN(UsbContext);
 };

@@ -1,4 +1,8 @@
+<!DOCTYPE html>
 <!--
+@BLINK-ALLOW:textSel*
+@MAC-ALLOW:AXEditableAncestor*
+@MAC-ALLOW:AXHighestEditableAncestor*
 @MAC-ALLOW:AXRole*
 @MAC-ALLOW:AXPlaceholder*
 @WIN-ALLOW:caret_offset*
@@ -8,10 +12,11 @@
 @WIN-ALLOW:selection_start*
 @WIN-ALLOW:selection_end*
 @WIN-ALLOW:text-input-type*
-@WIN-ALLOW:value*
-@WIN-DENY:value='http://*'
+@AURALINUX-ALLOW:text-input-type*
+@AURALINUX-ALLOW:editable
+@AURALINUX-ALLOW:focus*
+@AURALINUX-ALLOW:*-line
 -->
-<!DOCTYPE html>
 <html>
   <body>
     <input type="text" placeholder="Name" autofocus>

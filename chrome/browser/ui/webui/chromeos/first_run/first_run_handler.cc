@@ -4,9 +4,25 @@
 
 #include "chrome/browser/ui/webui/chromeos/first_run/first_run_handler.h"
 
+#include <utility>
+
+#include "ash/public/interfaces/voice_interaction_controller.mojom.h"
 #include "base/bind.h"
 #include "base/values.h"
+#include "chrome/browser/chromeos/assistant/assistant_util.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "content/public/browser/web_ui.h"
+
+namespace {
+
+bool IsAssistantAllowed() {
+  return ash::mojom::AssistantAllowedState::ALLOWED ==
+         assistant::IsAssistantAllowedForProfile(
+             ProfileManager::GetActiveUserProfile());
+}
+
+}  // namespace
 
 namespace chromeos {
 
@@ -21,20 +37,19 @@ bool FirstRunHandler::IsInitialized() {
 
 void FirstRunHandler::SetBackgroundVisible(bool visible) {
   web_ui()->CallJavascriptFunctionUnsafe("cr.FirstRun.setBackgroundVisible",
-                                         base::FundamentalValue(visible));
+                                         base::Value(visible));
 }
 
 void FirstRunHandler::AddRectangularHole(int x, int y, int width, int height) {
   web_ui()->CallJavascriptFunctionUnsafe(
-      "cr.FirstRun.addRectangularHole", base::FundamentalValue(x),
-      base::FundamentalValue(y), base::FundamentalValue(width),
-      base::FundamentalValue(height));
+      "cr.FirstRun.addRectangularHole", base::Value(x), base::Value(y),
+      base::Value(width), base::Value(height));
 }
 
 void FirstRunHandler::AddRoundHole(int x, int y, float radius) {
-  web_ui()->CallJavascriptFunctionUnsafe(
-      "cr.FirstRun.addRoundHole", base::FundamentalValue(x),
-      base::FundamentalValue(y), base::FundamentalValue(radius));
+  web_ui()->CallJavascriptFunctionUnsafe("cr.FirstRun.addRoundHole",
+                                         base::Value(x), base::Value(y),
+                                         base::Value(radius));
 }
 
 void FirstRunHandler::RemoveBackgroundHoles() {
@@ -43,22 +58,30 @@ void FirstRunHandler::RemoveBackgroundHoles() {
 
 void FirstRunHandler::ShowStepPositioned(const std::string& name,
                                          const StepPosition& position) {
-  web_ui()->CallJavascriptFunctionUnsafe(
-      "cr.FirstRun.showStep", base::StringValue(name), *position.AsValue());
+  base::DictionaryValue step_params;
+  step_params.SetKey("name", base::Value(name));
+  step_params.SetKey("position", position.AsValue());
+  step_params.SetKey("pointWithOffset", base::Value(base::Value::Type::LIST));
+  step_params.SetKey("assistantEnabled", base::Value(IsAssistantAllowed()));
+
+  web_ui()->CallJavascriptFunctionUnsafe("cr.FirstRun.showStep", step_params);
 }
 
 void FirstRunHandler::ShowStepPointingTo(const std::string& name,
                                          int x,
                                          int y,
                                          int offset) {
-  std::unique_ptr<base::Value> null = base::Value::CreateNullValue();
+  base::DictionaryValue step_params;
+  step_params.SetKey("name", base::Value(name));
+  step_params.SetKey("position", base::Value());
   base::ListValue point_with_offset;
   point_with_offset.AppendInteger(x);
   point_with_offset.AppendInteger(y);
   point_with_offset.AppendInteger(offset);
-  web_ui()->CallJavascriptFunctionUnsafe("cr.FirstRun.showStep",
-                                         base::StringValue(name), *null,
-                                         point_with_offset);
+  step_params.SetKey("pointWithOffset", std::move(point_with_offset));
+  step_params.SetKey("assistantEnabled", base::Value(IsAssistantAllowed()));
+
+  web_ui()->CallJavascriptFunctionUnsafe("cr.FirstRun.showStep", step_params);
 }
 
 void FirstRunHandler::HideCurrentStep() {
@@ -75,23 +98,26 @@ bool FirstRunHandler::IsFinalizing() {
 }
 
 void FirstRunHandler::RegisterMessages() {
-  web_ui()->RegisterMessageCallback("initialized",
-      base::Bind(&FirstRunHandler::HandleInitialized, base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("nextButtonClicked",
-      base::Bind(&FirstRunHandler::HandleNextButtonClicked,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("helpButtonClicked",
-      base::Bind(&FirstRunHandler::HandleHelpButtonClicked,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("stepShown",
-      base::Bind(&FirstRunHandler::HandleStepShown,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("stepHidden",
-      base::Bind(&FirstRunHandler::HandleStepHidden,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("finalized",
-      base::Bind(&FirstRunHandler::HandleFinalized,
-                 base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "initialized", base::BindRepeating(&FirstRunHandler::HandleInitialized,
+                                         base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "nextButtonClicked",
+      base::BindRepeating(&FirstRunHandler::HandleNextButtonClicked,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "helpButtonClicked",
+      base::BindRepeating(&FirstRunHandler::HandleHelpButtonClicked,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "stepShown", base::BindRepeating(&FirstRunHandler::HandleStepShown,
+                                       base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "stepHidden", base::BindRepeating(&FirstRunHandler::HandleStepHidden,
+                                        base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "finalized", base::BindRepeating(&FirstRunHandler::HandleFinalized,
+                                       base::Unretained(this)));
 }
 
 void FirstRunHandler::HandleInitialized(const base::ListValue* args) {

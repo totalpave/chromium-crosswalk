@@ -13,10 +13,6 @@
 #include "base/memory/weak_ptr.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 
-namespace base {
-class SequencedTaskRunner;
-}  // namespace base
-
 using base::android::ScopedJavaLocalRef;
 
 namespace device {
@@ -44,10 +40,8 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterAndroid final
   // The BluetoothAdapterAndroid instance will indirectly hold a Java reference
   // to |bluetooth_adapter_wrapper|.
   static base::WeakPtr<BluetoothAdapterAndroid> Create(
-      jobject bluetooth_adapter_wrapper);  // Java Type: bluetoothAdapterWrapper
-
-  // Register C++ methods exposed to Java using JNI.
-  static bool RegisterJNI(JNIEnv* env);
+      const base::android::JavaRef<jobject>&
+          bluetooth_adapter_wrapper);  // Java Type: bluetoothAdapterWrapper
 
   // BluetoothAdapter:
   std::string GetAddress() const override;
@@ -58,9 +52,6 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterAndroid final
   bool IsInitialized() const override;
   bool IsPresent() const override;
   bool IsPowered() const override;
-  void SetPowered(bool powered,
-                  const base::Closure& callback,
-                  const ErrorCallback& error_callback) override;
   bool IsDiscoverable() const override;
   void SetDiscoverable(bool discoverable,
                        const base::Closure& callback,
@@ -77,14 +68,10 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterAndroid final
       const ServiceOptions& options,
       const CreateServiceCallback& callback,
       const CreateServiceErrorCallback& error_callback) override;
-  void RegisterAudioSink(
-      const BluetoothAudioSink::Options& options,
-      const AcquiredCallback& callback,
-      const BluetoothAudioSink::ErrorCallback& error_callback) override;
   void RegisterAdvertisement(
       std::unique_ptr<BluetoothAdvertisement::Data> advertisement_data,
       const CreateAdvertisementCallback& callback,
-      const CreateAdvertisementErrorCallback& error_callback) override;
+      const AdvertisementErrorCallback& error_callback) override;
   BluetoothLocalGattService* GetGattService(
       const std::string& identifier) const override;
 
@@ -105,32 +92,43 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterAndroid final
       const base::android::JavaParamRef<jstring>& address,
       const base::android::JavaParamRef<jobject>&
           bluetooth_device_wrapper,  // Java Type: bluetoothDeviceWrapper
-      const base::android::JavaParamRef<jobject>&
-          advertised_uuids);  // Java Type: List<ParcelUuid>
+      const base::android::JavaParamRef<jstring>& local_name,
+      int32_t rssi,
+      const base::android::JavaParamRef<jobjectArray>&
+          advertised_uuids,  // Java Type: String[]
+      int32_t tx_power,
+      const base::android::JavaParamRef<jobjectArray>&
+          service_data_keys,  // Java Type: String[]
+      const base::android::JavaParamRef<jobjectArray>&
+          service_data_values,  // Java Type: byte[]
+      const base::android::JavaParamRef<jintArray>&
+          manufacturer_data_keys,  // Java Type: int[]
+      const base::android::JavaParamRef<jobjectArray>&
+          manufacturer_data_values  // Java Type: byte[]
+  );
 
  protected:
   BluetoothAdapterAndroid();
   ~BluetoothAdapterAndroid() override;
 
   // BluetoothAdapter:
+  bool SetPoweredImpl(bool powered) override;
   void AddDiscoverySession(
       BluetoothDiscoveryFilter* discovery_filter,
       const base::Closure& callback,
-      const DiscoverySessionErrorCallback& error_callback) override;
+      DiscoverySessionErrorCallback error_callback) override;
   void RemoveDiscoverySession(
       BluetoothDiscoveryFilter* discovery_filter,
       const base::Closure& callback,
-      const DiscoverySessionErrorCallback& error_callback) override;
+      DiscoverySessionErrorCallback error_callback) override;
   void SetDiscoveryFilter(
       std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
       const base::Closure& callback,
-      const DiscoverySessionErrorCallback& error_callback) override;
+      DiscoverySessionErrorCallback error_callback) override;
   void RemovePairingDelegateInternal(
       BluetoothDevice::PairingDelegate* pairing_delegate) override;
 
   void PurgeTimedOutDevices();
-
-  scoped_refptr<base::SequencedTaskRunner> ui_task_runner_;
 
   // Java object org.chromium.device.bluetooth.ChromeBluetoothAdapter.
   base::android::ScopedJavaGlobalRef<jobject> j_adapter_;

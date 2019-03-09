@@ -7,26 +7,37 @@
 #include <iterator>
 #include <utility>
 
-#include "ash/common/shell_window_ids.h"
 #include "base/command_line.h"
 #include "base/memory/ptr_util.h"
 #include "base/trace_event/trace_event.h"
-#include "base/trace_event/trace_event_argument.h"
+#include "base/trace_event/traced_value.h"
+#include "components/exo/data_device.h"
+#include "components/exo/file_helper.h"
+#include "components/exo/input_method_surface_manager.h"
 #include "components/exo/notification_surface.h"
 #include "components/exo/notification_surface_manager.h"
 #include "components/exo/shared_memory.h"
-#include "components/exo/shell_surface.h"
 #include "components/exo/sub_surface.h"
 #include "components/exo/surface.h"
+#include "ui/gfx/linux/client_native_pixmap_factory_dmabuf.h"
 #include "ui/views/widget/widget.h"
+#include "ui/wm/core/coordinate_conversion.h"
 
 #if defined(USE_OZONE)
 #include <GLES2/gl2extchromium.h>
 #include "components/exo/buffer.h"
-#include "gpu/command_buffer/client/gpu_memory_buffer_manager.h"
+#include "gpu/ipc/common/gpu_memory_buffer_impl_native_pixmap.h"
 #include "third_party/khronos/GLES2/gl2.h"
 #include "third_party/khronos/GLES2/gl2ext.h"
-#include "ui/aura/env.h"
+#include "ui/ozone/public/ozone_switches.h"
+#endif
+
+#if defined(OS_CHROMEOS)
+#include "ash/public/cpp/shell_window_ids.h"
+#include "components/exo/client_controlled_shell_surface.h"
+#include "components/exo/input_method_surface.h"
+#include "components/exo/shell_surface.h"
+#include "components/exo/xdg_shell_surface.h"
 #endif
 
 namespace exo {
@@ -34,10 +45,24 @@ namespace exo {
 ////////////////////////////////////////////////////////////////////////////////
 // Display, public:
 
-Display::Display() : notification_surface_manager_(nullptr) {}
+Display::Display()
+#if defined(USE_OZONE)
+    : client_native_pixmap_factory_(
+          gfx::CreateClientNativePixmapFactoryDmabuf())
+#endif
+{
+}
 
-Display::Display(NotificationSurfaceManager* notification_surface_manager)
-    : notification_surface_manager_(notification_surface_manager) {}
+#if defined(OS_CHROMEOS)
+Display::Display(NotificationSurfaceManager* notification_surface_manager,
+                 InputMethodSurfaceManager* input_method_surface_manager,
+                 std::unique_ptr<FileHelper> file_helper)
+    : Display() {
+  file_helper_ = std::move(file_helper);
+  notification_surface_manager_ = notification_surface_manager;
+  input_method_surface_manager_ = input_method_surface_manager;
+}
+#endif  // defined(OS_CHROMEOS)
 
 Display::~Display() {}
 
@@ -48,42 +73,39 @@ std::unique_ptr<Surface> Display::CreateSurface() {
 }
 
 std::unique_ptr<SharedMemory> Display::CreateSharedMemory(
-    const base::SharedMemoryHandle& handle,
-    size_t size) {
-  TRACE_EVENT1("exo", "Display::CreateSharedMemory", "size", size);
+    base::UnsafeSharedMemoryRegion shared_memory_region) {
+  TRACE_EVENT1("exo", "Display::CreateSharedMemory", "size",
+               shared_memory_region.GetSize());
 
-  if (!base::SharedMemory::IsHandleValid(handle))
+  if (!shared_memory_region.IsValid())
     return nullptr;
 
-  return base::WrapUnique(new SharedMemory(handle));
+  return std::make_unique<SharedMemory>(std::move(shared_memory_region));
 }
 
 #if defined(USE_OZONE)
 std::unique_ptr<Buffer> Display::CreateLinuxDMABufBuffer(
     const gfx::Size& size,
     gfx::BufferFormat format,
-    const std::vector<int>& strides,
-    const std::vector<int>& offsets,
+    const std::vector<gfx::NativePixmapPlane>& planes,
+    bool y_invert,
     std::vector<base::ScopedFD>&& fds) {
   TRACE_EVENT1("exo", "Display::CreateLinuxDMABufBuffer", "size",
                size.ToString());
 
   gfx::GpuMemoryBufferHandle handle;
-  handle.type = gfx::OZONE_NATIVE_PIXMAP;
+  handle.type = gfx::NATIVE_PIXMAP;
   for (auto& fd : fds)
     handle.native_pixmap_handle.fds.emplace_back(std::move(fd));
 
-  DCHECK_EQ(strides.size(), offsets.size());
-  for (size_t plane = 0; plane < strides.size(); ++plane) {
-    handle.native_pixmap_handle.strides_and_offsets.emplace_back(
-        strides[plane], offsets[plane]);
-  }
+  for (auto& plane : planes)
+    handle.native_pixmap_handle.planes.push_back(plane);
 
   std::unique_ptr<gfx::GpuMemoryBuffer> gpu_memory_buffer =
-      aura::Env::GetInstance()
-          ->context_factory()
-          ->GetGpuMemoryBufferManager()
-          ->CreateGpuMemoryBufferFromHandle(handle, size, format);
+      gpu::GpuMemoryBufferImplNativePixmap::CreateFromHandle(
+          client_native_pixmap_factory_.get(), handle, size, format,
+          gfx::BufferUsage::GPU_READ,
+          gpu::GpuMemoryBufferImpl::DestructionCallback());
   if (!gpu_memory_buffer) {
     LOG(ERROR) << "Failed to create GpuMemoryBuffer from handle";
     return nullptr;
@@ -92,68 +114,51 @@ std::unique_ptr<Buffer> Display::CreateLinuxDMABufBuffer(
   // Using zero-copy for optimal performance.
   bool use_zero_copy = true;
 
-  // List of overlay formats that are known to be supported.
-  // TODO(reveman): Determine this at runtime.
-  const gfx::BufferFormat kOverlayFormats[] = {gfx::BufferFormat::BGRX_8888};
-  bool is_overlay_candidate =
-      std::find(std::begin(kOverlayFormats), std::end(kOverlayFormats),
-                format) != std::end(kOverlayFormats);
+  // TODO(dcastagna): Re-enable NV12 format as HW overlay once b/113362843
+  // is addressed.
+  bool is_overlay_candidate = format != gfx::BufferFormat::YUV_420_BIPLANAR;
 
-  return base::WrapUnique(new Buffer(
+  return std::make_unique<Buffer>(
       std::move(gpu_memory_buffer), GL_TEXTURE_EXTERNAL_OES,
       // COMMANDS_COMPLETED queries are required by native pixmaps.
-      GL_COMMANDS_COMPLETED_CHROMIUM, use_zero_copy, is_overlay_candidate));
+      GL_COMMANDS_COMPLETED_CHROMIUM, use_zero_copy, is_overlay_candidate,
+      y_invert);
 }
-#endif
+#endif  // defined(USE_OZONE)
 
+#if defined(OS_CHROMEOS)
 std::unique_ptr<ShellSurface> Display::CreateShellSurface(Surface* surface) {
   TRACE_EVENT1("exo", "Display::CreateShellSurface", "surface",
                surface->AsTracedValue());
-
   if (surface->HasSurfaceDelegate()) {
     DLOG(ERROR) << "Surface has already been assigned a role";
     return nullptr;
   }
 
-  return base::WrapUnique(
-      new ShellSurface(surface, nullptr, gfx::Rect(), true /* activatable */,
-                       ash::kShellWindowId_DefaultContainer));
+  return std::make_unique<ShellSurface>(
+      surface, gfx::Point(), true /* activatable */, false /* can_minimize */,
+      ash::kShellWindowId_DefaultContainer);
 }
 
-std::unique_ptr<ShellSurface> Display::CreatePopupShellSurface(
-    Surface* surface,
-    ShellSurface* parent,
-    const gfx::Point& position) {
-  TRACE_EVENT2("exo", "Display::CreatePopupShellSurface", "surface",
-               surface->AsTracedValue(), "parent", parent->AsTracedValue());
-
-  if (surface->window()->Contains(parent->GetWidget()->GetNativeWindow())) {
-    DLOG(ERROR) << "Parent is contained within surface's hierarchy";
-    return nullptr;
-  }
-
+std::unique_ptr<XdgShellSurface> Display::CreateXdgShellSurface(
+    Surface* surface) {
+  TRACE_EVENT1("exo", "Display::CreateXdgShellSurface", "surface",
+               surface->AsTracedValue());
   if (surface->HasSurfaceDelegate()) {
     DLOG(ERROR) << "Surface has already been assigned a role";
     return nullptr;
   }
 
-  // Determine the initial bounds for popup. |position| is relative to the
-  // parent's main surface origin and initial bounds are relative to the
-  // container origin.
-  gfx::Rect initial_bounds(position, gfx::Size(1, 1));
-  aura::Window::ConvertRectToTarget(
-      ShellSurface::GetMainSurface(parent->GetWidget()->GetNativeWindow())
-          ->window(),
-      parent->GetWidget()->GetNativeWindow()->parent(), &initial_bounds);
-
-  return base::WrapUnique(
-      new ShellSurface(surface, parent, initial_bounds, false /* activatable */,
-                       ash::kShellWindowId_DefaultContainer));
+  return std::make_unique<XdgShellSurface>(
+      surface, gfx::Point(), true /* activatable */, false /* can_minimize */,
+      ash::kShellWindowId_DefaultContainer);
 }
 
-std::unique_ptr<ShellSurface> Display::CreateRemoteShellSurface(
+std::unique_ptr<ClientControlledShellSurface>
+Display::CreateClientControlledShellSurface(
     Surface* surface,
-    int container) {
+    int container,
+    double default_device_scale_factor) {
   TRACE_EVENT2("exo", "Display::CreateRemoteShellSurface", "surface",
                surface->AsTracedValue(), "container", container);
 
@@ -162,9 +167,53 @@ std::unique_ptr<ShellSurface> Display::CreateRemoteShellSurface(
     return nullptr;
   }
 
-  return base::WrapUnique(new ShellSurface(surface, nullptr, gfx::Rect(1, 1),
-                                           true /* activatable */, container));
+  // Remote shell surfaces in system modal container cannot be minimized.
+  bool can_minimize = container != ash::kShellWindowId_SystemModalContainer;
+
+  std::unique_ptr<ClientControlledShellSurface> shell_surface(
+      std::make_unique<ClientControlledShellSurface>(surface, can_minimize,
+                                                     container));
+  DCHECK_GE(default_device_scale_factor, 1.0);
+  shell_surface->SetScale(default_device_scale_factor);
+  return shell_surface;
 }
+
+std::unique_ptr<NotificationSurface> Display::CreateNotificationSurface(
+    Surface* surface,
+    const std::string& notification_key) {
+  TRACE_EVENT2("exo", "Display::CreateNotificationSurface", "surface",
+               surface->AsTracedValue(), "notification_key", notification_key);
+
+  if (!notification_surface_manager_ ||
+      notification_surface_manager_->GetSurface(notification_key)) {
+    DLOG(ERROR) << "Invalid notification key, key=" << notification_key;
+    return nullptr;
+  }
+
+  return std::make_unique<NotificationSurface>(notification_surface_manager_,
+                                               surface, notification_key);
+}
+
+std::unique_ptr<InputMethodSurface> Display::CreateInputMethodSurface(
+    Surface* surface,
+    double default_device_scale_factor) {
+  TRACE_EVENT1("exo", "Display::CreateInputMethodSurface", "surface",
+               surface->AsTracedValue());
+
+  if (!input_method_surface_manager_) {
+    DLOG(ERROR) << "Input method surface cannot be registered";
+    return nullptr;
+  }
+
+  if (surface->HasSurfaceDelegate()) {
+    DLOG(ERROR) << "Surface has already been assigned a role";
+    return nullptr;
+  }
+
+  return std::make_unique<InputMethodSurface>(
+      input_method_surface_manager_, surface, default_device_scale_factor);
+}
+#endif  // defined(OS_CHROMEOS)
 
 std::unique_ptr<SubSurface> Display::CreateSubSurface(Surface* surface,
                                                       Surface* parent) {
@@ -181,23 +230,12 @@ std::unique_ptr<SubSurface> Display::CreateSubSurface(Surface* surface,
     return nullptr;
   }
 
-  return base::WrapUnique(new SubSurface(surface, parent));
+  return std::make_unique<SubSurface>(surface, parent);
 }
 
-std::unique_ptr<NotificationSurface> Display::CreateNotificationSurface(
-    Surface* surface,
-    const std::string& notification_id) {
-  TRACE_EVENT2("exo", "Display::CreateNotificationSurface", "surface",
-               surface->AsTracedValue(), "notification_id", notification_id);
-
-  if (!notification_surface_manager_ ||
-      notification_surface_manager_->GetSurface(notification_id)) {
-    DLOG(ERROR) << "Invalid notification id, id=" << notification_id;
-    return nullptr;
-  }
-
-  return base::MakeUnique<NotificationSurface>(notification_surface_manager_,
-                                               surface, notification_id);
+std::unique_ptr<DataDevice> Display::CreateDataDevice(
+    DataDeviceDelegate* delegate) {
+  return std::make_unique<DataDevice>(delegate, &seat_, file_helper_.get());
 }
 
 }  // namespace exo

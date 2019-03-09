@@ -31,15 +31,15 @@ cr.define('settings', function() {
 
     // SystemDisplay overrides.
     /** @override */
-    getInfo: function(callback) {
+    getInfo: function(flags, callback) {
       setTimeout(function() {
         // Create a shallow copy to trigger Polymer data binding updates.
-        var displays;
+        let displays;
         if (this.fakeDisplays.length > 0 &&
             this.fakeDisplays[0].mirroringSourceId) {
           // When mirroring is enabled, send only the info for the display
           // being mirrored.
-          var display =
+          const display =
               this.getFakeDisplay_(this.fakeDisplays[0].mirroringSourceId);
           assert(!!display);
           displays = [display];
@@ -55,19 +55,20 @@ cr.define('settings', function() {
 
     /** @override */
     setDisplayProperties: function(id, info, callback) {
-      var display = this.getFakeDisplay_(id);
+      const display = this.getFakeDisplay_(id);
       if (!display) {
         chrome.runtime.lastError = 'Display not found.';
         callback();
       }
 
       if (info.mirroringSourceId != undefined) {
-        for (let d of this.fakeDisplays)
+        for (let d of this.fakeDisplays) {
           d.mirroringSourceId = info.mirroringSourceId;
+        }
       }
 
       if (info.isPrimary != undefined) {
-        var havePrimary = info.isPrimary;
+        let havePrimary = info.isPrimary;
         for (let d of this.fakeDisplays) {
           if (d.id == id) {
             d.isPrimary = info.isPrimary;
@@ -80,8 +81,9 @@ cr.define('settings', function() {
         }
         this.updateLayouts_();
       }
-      if (info.rotation != undefined)
+      if (info.rotation != undefined) {
         display.rotation = info.rotation;
+      }
     },
 
     /** @override */
@@ -102,22 +104,41 @@ cr.define('settings', function() {
     },
 
     /** @override */
+    setMirrorMode(info, callback) {
+      let mirroringSourceId = '';
+      if (info.mode == chrome.system.display.MirrorMode.NORMAL) {
+        // Select the primary display as the mirroring source.
+        for (let d of this.fakeDisplays) {
+          if (d.isPrimary) {
+            mirroringSourceId = d.id;
+            break;
+          }
+        }
+      }
+      for (let d of this.fakeDisplays) {
+        d.mirroringSourceId = mirroringSourceId;
+      }
+      callback();
+    },
+
+    /** @override */
     onDisplayChanged: new FakeChromeEvent(),
 
     /** @private */
     getFakeDisplay_(id) {
-      var idx = this.fakeDisplays.findIndex(function(display) {
+      const idx = this.fakeDisplays.findIndex(function(display) {
         return display.id == id;
       });
-      if (idx >= 0)
+      if (idx >= 0) {
         return this.fakeDisplays[idx];
+      }
       return undefined;
     },
 
     /** @private */
     updateLayouts_() {
       this.fakeLayouts = [];
-      var primaryId = '';
+      let primaryId = '';
       for (let d of this.fakeDisplays) {
         if (d.isPrimary) {
           primaryId = d.id;

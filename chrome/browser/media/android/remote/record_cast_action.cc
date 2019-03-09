@@ -2,17 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/media/android/remote/record_cast_action.h"
-
-#include <jni.h>
-
-#include "base/metrics/histogram.h"
-#include "content/public/browser/user_metrics.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/metrics/user_metrics.h"
 #include "jni/RecordCastAction_jni.h"
 #include "media/base/container_names.h"
 
-using base::UserMetricsAction;
-using content::RecordAction;
+using base::android::JavaParamRef;
 
 namespace {
 
@@ -43,20 +38,21 @@ enum RemotePlaybackDeviceType {
 }  // namespace
 
 namespace remote_media {
-static void RecordRemotePlaybackDeviceSelected(JNIEnv*,
-                                               const JavaParamRef<jclass>&,
-                                               jint device_type) {
-  UMA_HISTOGRAM_ENUMERATION(
-      "Cast.Sender.DeviceType", device_type, REMOTE_PLAYBACK_DEVICE_TYPE_COUNT);
+static void JNI_RecordCastAction_RecordRemotePlaybackDeviceSelected(
+    JNIEnv*,
+    jint device_type) {
+  UMA_HISTOGRAM_ENUMERATION("Cast.Sender.DeviceType",
+                            static_cast<RemotePlaybackDeviceType>(device_type),
+                            REMOTE_PLAYBACK_DEVICE_TYPE_COUNT);
 }
 
-static void RecordCastPlayRequested(JNIEnv*, const JavaParamRef<jclass>&) {
-  RecordAction(UserMetricsAction("Cast_Sender_CastPlayRequested"));
+static void JNI_RecordCastAction_RecordCastPlayRequested(JNIEnv*) {
+  base::RecordAction(base::UserMetricsAction("Cast_Sender_CastPlayRequested"));
 }
 
-static void RecordCastDefaultPlayerResult(JNIEnv*,
-                                          const JavaParamRef<jclass>&,
-                                          jboolean cast_success) {
+static void JNI_RecordCastAction_RecordCastDefaultPlayerResult(
+    JNIEnv*,
+    jboolean cast_success) {
   if (cast_success) {
     UMA_HISTOGRAM_ENUMERATION("Cast.Sender.CastPlayerResult",
                               DEFAULT_PLAYER_SUCCESS,
@@ -68,9 +64,9 @@ static void RecordCastDefaultPlayerResult(JNIEnv*,
   }
 }
 
-static void RecordCastYouTubePlayerResult(JNIEnv*,
-                                          const JavaParamRef<jclass>&,
-                                          jboolean cast_success) {
+static void JNI_RecordCastAction_RecordCastYouTubePlayerResult(
+    JNIEnv*,
+    jboolean cast_success) {
   if (cast_success) {
     UMA_HISTOGRAM_ENUMERATION("Cast.Sender.CastPlayerResult", YT_PLAYER_SUCCESS,
                               CAST_PLAYBACK_STATE_COUNT);
@@ -80,17 +76,19 @@ static void RecordCastYouTubePlayerResult(JNIEnv*,
   }
 }
 
-static void RecordCastMediaType(JNIEnv*,
-                                const JavaParamRef<jclass>&,
-                                jint media_type) {
-  UMA_HISTOGRAM_ENUMERATION("Cast.Sender.CastMediaType", media_type,
-      media::container_names::CONTAINER_MAX);
+static void JNI_RecordCastAction_RecordCastMediaType(
+    JNIEnv*,
+    jint media_type) {
+  UMA_HISTOGRAM_ENUMERATION(
+      "Cast.Sender.CastMediaType",
+      static_cast<media::container_names::MediaContainerName>(media_type),
+      media::container_names::CONTAINER_MAX + 1);
 }
 
-static void RecordCastEndedTimeRemaining(JNIEnv*,
-                                         const JavaParamRef<jclass>&,
-                                         jint video_total_time,
-                                         jint time_left_in_video) {
+static void JNI_RecordCastAction_RecordCastEndedTimeRemaining(
+    JNIEnv*,
+    jint video_total_time,
+    jint time_left_in_video) {
   int percent_remaining = 100;
   if (video_total_time > 0) {
     // Get the percentage of video remaining, but bucketize into groups of 10
@@ -101,11 +99,6 @@ static void RecordCastEndedTimeRemaining(JNIEnv*,
 
   UMA_HISTOGRAM_ENUMERATION("Cast.Sender.CastTimeRemainingPercentage",
       percent_remaining, 101);
-}
-
-// Register native methods
-bool RegisterRecordCastAction(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 }  // namespace remote_media

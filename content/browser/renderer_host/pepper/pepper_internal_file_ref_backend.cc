@@ -7,10 +7,11 @@
 #include <string.h>
 
 #include <string>
+#include <vector>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/files/file_util.h"
-#include "base/files/file_util_proxy.h"
 #include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/fileapi/browser_file_system_helper.h"
 #include "content/browser/renderer_host/pepper/pepper_file_system_browser_host.h"
@@ -80,7 +81,7 @@ base::FilePath PepperInternalFileRefBackend::GetExternalFilePath() const {
 scoped_refptr<storage::FileSystemContext>
 PepperInternalFileRefBackend::GetFileSystemContext() const {
   if (!fs_host_.get())
-    return NULL;
+    return nullptr;
   return fs_host_->GetFileSystemContext();
 }
 
@@ -103,10 +104,8 @@ int32_t PepperInternalFileRefBackend::MakeDirectory(
       GetFileSystemURL(),
       !!(make_directory_flags & PP_MAKEDIRECTORYFLAG_EXCLUSIVE),
       !!(make_directory_flags & PP_MAKEDIRECTORYFLAG_WITH_ANCESTORS),
-      base::Bind(&PepperInternalFileRefBackend::DidFinish,
-                 weak_factory_.GetWeakPtr(),
-                 reply_context,
-                 reply));
+      base::BindOnce(&PepperInternalFileRefBackend::DidFinish,
+                     weak_factory_.GetWeakPtr(), reply_context, reply));
   return PP_OK_COMPLETIONPENDING;
 }
 
@@ -119,13 +118,10 @@ int32_t PepperInternalFileRefBackend::Touch(
 
   PpapiPluginMsg_FileRef_TouchReply reply;
   GetFileSystemContext()->operation_runner()->TouchFile(
-      GetFileSystemURL(),
-      ppapi::PPTimeToTime(last_access_time),
+      GetFileSystemURL(), ppapi::PPTimeToTime(last_access_time),
       ppapi::PPTimeToTime(last_modified_time),
-      base::Bind(&PepperInternalFileRefBackend::DidFinish,
-                 weak_factory_.GetWeakPtr(),
-                 reply_context,
-                 reply));
+      base::BindOnce(&PepperInternalFileRefBackend::DidFinish,
+                     weak_factory_.GetWeakPtr(), reply_context, reply));
   return PP_OK_COMPLETIONPENDING;
 }
 
@@ -136,12 +132,9 @@ int32_t PepperInternalFileRefBackend::Delete(
 
   PpapiPluginMsg_FileRef_DeleteReply reply;
   GetFileSystemContext()->operation_runner()->Remove(
-      GetFileSystemURL(),
-      false,
-      base::Bind(&PepperInternalFileRefBackend::DidFinish,
-                 weak_factory_.GetWeakPtr(),
-                 reply_context,
-                 reply));
+      GetFileSystemURL(), false,
+      base::BindOnce(&PepperInternalFileRefBackend::DidFinish,
+                     weak_factory_.GetWeakPtr(), reply_context, reply));
   return PP_OK_COMPLETIONPENDING;
 }
 
@@ -159,13 +152,9 @@ int32_t PepperInternalFileRefBackend::Rename(
 
   PpapiPluginMsg_FileRef_RenameReply reply;
   GetFileSystemContext()->operation_runner()->Move(
-      GetFileSystemURL(),
-      new_url,
-      storage::FileSystemOperation::OPTION_NONE,
-      base::Bind(&PepperInternalFileRefBackend::DidFinish,
-                 weak_factory_.GetWeakPtr(),
-                 reply_context,
-                 reply));
+      GetFileSystemURL(), new_url, storage::FileSystemOperation::OPTION_NONE,
+      base::BindOnce(&PepperInternalFileRefBackend::DidFinish,
+                     weak_factory_.GetWeakPtr(), reply_context, reply));
   return PP_OK_COMPLETIONPENDING;
 }
 
@@ -179,8 +168,8 @@ int32_t PepperInternalFileRefBackend::Query(
       storage::FileSystemOperation::GET_METADATA_FIELD_IS_DIRECTORY |
           storage::FileSystemOperation::GET_METADATA_FIELD_SIZE |
           storage::FileSystemOperation::GET_METADATA_FIELD_LAST_MODIFIED,
-      base::Bind(&PepperInternalFileRefBackend::GetMetadataComplete,
-                 weak_factory_.GetWeakPtr(), reply_context));
+      base::BindOnce(&PepperInternalFileRefBackend::GetMetadataComplete,
+                     weak_factory_.GetWeakPtr(), reply_context));
   return PP_OK_COMPLETIONPENDING;
 }
 
@@ -209,10 +198,9 @@ int32_t PepperInternalFileRefBackend::ReadDirectoryEntries(
       new storage::FileSystemOperation::FileEntryList;
   GetFileSystemContext()->operation_runner()->ReadDirectory(
       GetFileSystemURL(),
-      base::Bind(&PepperInternalFileRefBackend::ReadDirectoryComplete,
-                 weak_factory_.GetWeakPtr(),
-                 reply_context,
-                 base::Owned(accumulated_file_list)));
+      base::BindRepeating(&PepperInternalFileRefBackend::ReadDirectoryComplete,
+                          weak_factory_.GetWeakPtr(), reply_context,
+                          base::Owned(accumulated_file_list)));
   return PP_OK_COMPLETIONPENDING;
 }
 
@@ -220,7 +208,7 @@ void PepperInternalFileRefBackend::ReadDirectoryComplete(
     ppapi::host::ReplyMessageContext context,
     storage::FileSystemOperation::FileEntryList* accumulated_file_list,
     base::File::Error error,
-    const storage::FileSystemOperation::FileEntryList& file_list,
+    storage::FileSystemOperation::FileEntryList file_list,
     bool has_more) {
   accumulated_file_list->insert(
       accumulated_file_list->end(), file_list.begin(), file_list.end());
@@ -233,23 +221,19 @@ void PepperInternalFileRefBackend::ReadDirectoryComplete(
   std::vector<PP_FileType> file_types;
   if (error == base::File::FILE_OK && fs_host_.get()) {
     std::string dir_path = path_;
-    if (dir_path.empty() || dir_path[dir_path.size() - 1] != '/')
+    if (dir_path.empty() || dir_path.back() != '/')
       dir_path += '/';
 
-    for (storage::FileSystemOperation::FileEntryList::const_iterator it =
-             accumulated_file_list->begin();
-         it != accumulated_file_list->end();
-         ++it) {
-      if (it->is_directory)
-        file_types.push_back(PP_FILETYPE_DIRECTORY);
-      else
-        file_types.push_back(PP_FILETYPE_REGULAR);
+    for (const auto& it : *accumulated_file_list) {
+      file_types.push_back(it.type == filesystem::mojom::FsFileType::DIRECTORY
+                               ? PP_FILETYPE_DIRECTORY
+                               : PP_FILETYPE_REGULAR);
 
       ppapi::FileRefCreateInfo info;
       info.file_system_type = fs_type_;
       info.file_system_plugin_resource = fs_host_->pp_resource();
       std::string path =
-          dir_path + storage::FilePathToString(base::FilePath(it->name));
+          dir_path + storage::FilePathToString(base::FilePath(it.name));
       info.internal_path = path;
       info.display_name = ppapi::GetNameForInternalFilePath(path);
       infos.push_back(info);

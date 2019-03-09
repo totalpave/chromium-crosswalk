@@ -9,15 +9,15 @@
 #include <string>
 
 #include "base/memory/ref_counted.h"
+#include "base/sequence_checker.h"
 #include "components/translate/core/browser/translate_language_list.h"
 #include "components/translate/core/browser/translate_script.h"
 #include "net/url_request/url_request_context_getter.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace base {
 template <typename T> struct DefaultSingletonTraits;
 }
-
-class PrefService;
 
 namespace translate {
 
@@ -28,39 +28,44 @@ class TranslateDownloadManager {
   // Returns the singleton instance.
   static TranslateDownloadManager* GetInstance();
 
-  // The request context used to download the resources.
+  // The URL loader factory used to download the resources.
   // Should be set before this class can be used.
-  net::URLRequestContextGetter* request_context() {
-    return request_context_.get();
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory() {
+    return url_loader_factory_;
   }
-  void set_request_context(net::URLRequestContextGetter* context) {
-      request_context_ = context;
+  void set_url_loader_factory(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
+    url_loader_factory_ = std::move(url_loader_factory);
   }
 
   // The application locale.
   // Should be set before this class can be used.
-  const std::string& application_locale() { return application_locale_; }
+  const std::string& application_locale() {
+    DCHECK(sequence_checker_.CalledOnValidSequence());
+    return application_locale_;
+  }
   void set_application_locale(const std::string& locale) {
+    DCHECK(sequence_checker_.CalledOnValidSequence());
     application_locale_ = locale;
   }
 
   // The language list.
-  TranslateLanguageList* language_list() { return language_list_.get(); }
+  TranslateLanguageList* language_list() {
+    DCHECK(sequence_checker_.CalledOnValidSequence());
+    return language_list_.get();
+  }
 
   // The translate script.
-  TranslateScript* script() { return script_.get(); }
-
-  // Let the caller decide if and when we should fetch the language list from
-  // the translate server. This is a NOOP if switches::kDisableTranslate is set
-  // or if prefs::kEnableTranslate is set to false.
-  static void RequestLanguageList(PrefService* prefs);
-
-  // Fetches the language list from the translate server.
-  static void RequestLanguageList();
+  TranslateScript* script() {
+    DCHECK(sequence_checker_.CalledOnValidSequence());
+    return script_.get();
+  }
 
   // Fills |languages| with the list of languages that the translate server can
-  // translate to and from.
-  static void GetSupportedLanguages(std::vector<std::string>* languages);
+  // translate to and from. May cause a language list request unless
+  // |translate_allowed| is false.
+  static void GetSupportedLanguages(bool translate_allowed,
+                                    std::vector<std::string>* languages);
 
   // Returns the last-updated time when Chrome received a language list from a
   // Translate server. Returns null time if Chrome hasn't received any lists.
@@ -73,10 +78,6 @@ class TranslateDownloadManager {
 
   // Returns true if |language| is supported by the translation server.
   static bool IsSupportedLanguage(const std::string& language);
-
-  // Returns true if |language| is supported by the translation server as an
-  // alpha language.
-  static bool IsAlphaLanguage(const std::string& language);
 
   // Must be called to shut Translate down. Cancels any pending fetches.
   void Shutdown();
@@ -97,6 +98,10 @@ class TranslateDownloadManager {
   TranslateDownloadManager();
   virtual ~TranslateDownloadManager();
 
+  // Validates that accesses to the download manager are performed on the same
+  // sequence.
+  base::SequenceChecker sequence_checker_;
+
   std::unique_ptr<TranslateLanguageList> language_list_;
 
   // An instance of TranslateScript which manages JavaScript source for
@@ -104,7 +109,7 @@ class TranslateDownloadManager {
   std::unique_ptr<TranslateScript> script_;
 
   std::string application_locale_;
-  scoped_refptr<net::URLRequestContextGetter> request_context_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 };
 
 }  // namespace translate

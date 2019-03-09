@@ -15,7 +15,6 @@
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/extensions/error_console/error_console_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/features/feature_channel.h"
 #include "chrome/common/pref_names.h"
 #include "components/crx_file/id_util.h"
 #include "components/prefs/pref_service.h"
@@ -30,6 +29,7 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_set.h"
 #include "extensions/common/feature_switch.h"
+#include "extensions/common/features/feature_channel.h"
 
 namespace extensions {
 
@@ -59,11 +59,11 @@ void ErrorConsole::Observer::OnErrorConsoleDestroyed() {
 }
 
 ErrorConsole::ErrorConsole(Profile* profile)
-     : enabled_(false),
-       default_mask_(kDefaultMask),
-       profile_(profile),
-       prefs_(NULL),
-       registry_observer_(this) {
+    : enabled_(false),
+      default_mask_(kDefaultMask),
+      profile_(profile),
+      prefs_(nullptr),
+      registry_observer_(this) {
   pref_registrar_.Init(profile_->GetPrefs());
   pref_registrar_.Add(prefs::kExtensionsUIDeveloperMode,
                       base::Bind(&ErrorConsole::OnPrefChanged,
@@ -75,7 +75,8 @@ ErrorConsole::ErrorConsole(Profile* profile)
 }
 
 ErrorConsole::~ErrorConsole() {
-  FOR_EACH_OBSERVER(Observer, observers_, OnErrorConsoleDestroyed());
+  for (auto& observer : observers_)
+    observer.OnErrorConsoleDestroyed();
 }
 
 // static
@@ -100,9 +101,8 @@ void ErrorConsole::SetReportingForExtension(const std::string& extension_id,
   else
     mask &= ~(1 << type);
 
-  prefs_->UpdateExtensionPref(extension_id,
-                              kStoreExtensionErrorsPref,
-                              new base::FundamentalValue(mask));
+  prefs_->UpdateExtensionPref(extension_id, kStoreExtensionErrorsPref,
+                              std::make_unique<base::Value>(mask));
 }
 
 void ErrorConsole::SetReportingAllForExtension(
@@ -113,9 +113,8 @@ void ErrorConsole::SetReportingAllForExtension(
 
   int mask = enabled ? (1 << ExtensionError::NUM_ERROR_TYPES) - 1 : 0;
 
-  prefs_->UpdateExtensionPref(extension_id,
-                              kStoreExtensionErrorsPref,
-                              new base::FundamentalValue(mask));
+  prefs_->UpdateExtensionPref(extension_id, kStoreExtensionErrorsPref,
+                              std::make_unique<base::Value>(mask));
 }
 
 bool ErrorConsole::IsReportingEnabledForExtension(
@@ -133,7 +132,7 @@ void ErrorConsole::UseDefaultReportingForExtension(
   if (!enabled_ || !crx_file::id_util::IdIsValid(extension_id))
     return;
 
-  prefs_->UpdateExtensionPref(extension_id, kStoreExtensionErrorsPref, NULL);
+  prefs_->UpdateExtensionPref(extension_id, kStoreExtensionErrorsPref, nullptr);
 }
 
 void ErrorConsole::ReportError(std::unique_ptr<ExtensionError> error) {
@@ -141,18 +140,23 @@ void ErrorConsole::ReportError(std::unique_ptr<ExtensionError> error) {
   if (!enabled_ || !crx_file::id_util::IdIsValid(error->extension_id()))
     return;
 
+  DCHECK_GE(error->level(), extension_misc::kMinimumSeverityToReportError)
+      << "Errors less than severity warning should not be reported.";
+
   int mask = GetMaskForExtension(error->extension_id());
   if (!(mask & (1 << error->type())))
     return;
 
   const ExtensionError* weak_error = errors_.AddError(std::move(error));
-  FOR_EACH_OBSERVER(Observer, observers_, OnErrorAdded(weak_error));
+  for (auto& observer : observers_)
+    observer.OnErrorAdded(weak_error);
 }
 
 void ErrorConsole::RemoveErrors(const ErrorMap::Filter& filter) {
   std::set<std::string> affected_ids;
   errors_.RemoveErrors(filter, &affected_ids);
-  FOR_EACH_OBSERVER(Observer, observers_, OnErrorsRemoved(affected_ids));
+  for (auto& observer : observers_)
+    observer.OnErrorsRemoved(affected_ids);
 }
 
 const ErrorList& ErrorConsole::GetErrorsForExtension(
@@ -171,13 +175,7 @@ void ErrorConsole::RemoveObserver(Observer* observer) {
 }
 
 bool ErrorConsole::IsEnabledForChromeExtensionsPage() const {
-  if (!profile_->GetPrefs()->GetBoolean(prefs::kExtensionsUIDeveloperMode))
-    return false;  // Only enabled in developer mode.
-  if (GetCurrentChannel() > version_info::Channel::DEV &&
-      !FeatureSwitch::error_console()->IsEnabled())
-    return false;  // Restricted to dev channel or opt-in.
-
-  return true;
+  return profile_->GetPrefs()->GetBoolean(prefs::kExtensionsUIDeveloperMode);
 }
 
 bool ErrorConsole::IsEnabledForAppsDeveloperTools() const {
@@ -198,7 +196,7 @@ void ErrorConsole::Enable() {
   enabled_ = true;
 
   // We postpone the initialization of |prefs_| until now because they can be
-  // NULL in unit_tests. Any unit tests that enable the error console should
+  // nullptr in unit_tests. Any unit tests that enable the error console should
   // also create an ExtensionPrefs object.
   prefs_ = ExtensionPrefs::Get(profile_);
 
@@ -228,7 +226,7 @@ void ErrorConsole::OnPrefChanged() {
 
 void ErrorConsole::OnExtensionUnloaded(content::BrowserContext* browser_context,
                                        const Extension* extension,
-                                       UnloadedExtensionInfo::Reason reason) {
+                                       UnloadedExtensionReason reason) {
   CheckEnabled();
 }
 
@@ -261,8 +259,7 @@ void ErrorConsole::OnExtensionUninstalled(
 void ErrorConsole::AddManifestErrorsForExtension(const Extension* extension) {
   const std::vector<InstallWarning>& warnings =
       extension->install_warnings();
-  for (std::vector<InstallWarning>::const_iterator iter = warnings.begin();
-       iter != warnings.end(); ++iter) {
+  for (auto iter = warnings.begin(); iter != warnings.end(); ++iter) {
     ReportError(std::unique_ptr<ExtensionError>(new ManifestError(
         extension->id(), base::UTF8ToUTF16(iter->message),
         base::UTF8ToUTF16(iter->key), base::UTF8ToUTF16(iter->specific))));

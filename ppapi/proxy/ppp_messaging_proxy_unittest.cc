@@ -4,6 +4,7 @@
 
 #include <cstring>
 
+#include "base/bind.h"
 #include "base/synchronization/waitable_event.h"
 #include "ppapi/c/pp_var.h"
 #include "ppapi/c/ppb_var.h"
@@ -20,9 +21,8 @@ namespace proxy {
 
 namespace {
 
-// This is a poor man's mock of PPP_Messaging using global variables. Eventually
-// we should generalize making PPAPI interface mocks by using IDL or macro/
-// template magic.
+// This is an ad-hoc mock of PPP_Messaging using global variables. Eventually,
+// generalize making PPAPI interface mocks by using IDL or macro/template magic.
 PP_Instance received_instance;
 PP_Var received_var;
 base::WaitableEvent handle_message_called(

@@ -120,11 +120,9 @@ IN_PROC_BROWSER_TEST_F(TabModalConfirmDialogTest, CloseSelf) {
 }
 
 IN_PROC_BROWSER_TEST_F(TabModalConfirmDialogTest, Navigate) {
-  content::OpenURLParams params(GURL("about:blank"),
-                                content::Referrer(),
-                                CURRENT_TAB,
-                                ui::PAGE_TRANSITION_LINK,
-                                false);
+  content::OpenURLParams params(GURL("about:blank"), content::Referrer(),
+                                WindowOpenDisposition::CURRENT_TAB,
+                                ui::PAGE_TRANSITION_LINK, false);
   browser()->tab_strip_model()->GetActiveWebContents()->OpenURL(params);
 
   EXPECT_EQ(0, accepted_count_);
@@ -134,8 +132,9 @@ IN_PROC_BROWSER_TEST_F(TabModalConfirmDialogTest, Navigate) {
 
 IN_PROC_BROWSER_TEST_F(TabModalConfirmDialogTest, Quit) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&chrome::AttemptExit));
-  content::RunMessageLoop();
+      FROM_HERE, base::BindOnce(&chrome::AttemptExit));
+  RunUntilBrowserProcessQuits();
+
   EXPECT_EQ(0, accepted_count_);
   EXPECT_EQ(0, canceled_count_);
   EXPECT_EQ(1, closed_count_);

@@ -13,20 +13,14 @@
 #include <vector>
 
 #include "base/callback.h"
-#include "base/files/file_proxy.h"
+#include "base/files/file.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-
-class Profile;
 
 namespace base {
 class FilePath;
 class FileEnumerator;
 class Time;
-}
-
-namespace content {
-class WebContents;
 }
 
 class DevToolsFileSystemIndexer
@@ -38,34 +32,37 @@ class DevToolsFileSystemIndexer
   typedef base::Callback<void()> DoneCallback;
   typedef base::Callback<void(const std::vector<std::string>&)> SearchCallback;
 
-  class FileSystemIndexingJob : public base::RefCounted<FileSystemIndexingJob> {
+  class FileSystemIndexingJob
+      : public base::RefCountedThreadSafe<FileSystemIndexingJob> {
    public:
     void Stop();
 
    private:
-    friend class base::RefCounted<FileSystemIndexingJob>;
+    friend class base::RefCountedThreadSafe<FileSystemIndexingJob>;
     friend class DevToolsFileSystemIndexer;
     FileSystemIndexingJob(const base::FilePath& file_system_path,
+                          const std::vector<base::FilePath>& excluded_folders,
                           const TotalWorkCallback& total_work_callback,
                           const WorkedCallback& worked_callback,
                           const DoneCallback& done_callback);
     virtual ~FileSystemIndexingJob();
 
     void Start();
-    void StopOnFileThread();
+    void StopOnImplSequence();
     void CollectFilesToIndex();
     void IndexFiles();
-    void StartFileIndexing(base::File::Error error);
     void ReadFromFile();
     void OnRead(base::File::Error error,
                 const char* data,
                 int bytes_read);
     void FinishFileIndexing(bool success);
     void CloseFile();
-    void CloseCallback(base::File::Error error);
     void ReportWorked();
 
     base::FilePath file_system_path_;
+    std::vector<base::FilePath> excluded_folders_;
+
+    std::vector<base::FilePath> pending_folders_;
     TotalWorkCallback total_work_callback_;
     WorkedCallback worked_callback_;
     DoneCallback done_callback_;
@@ -73,7 +70,7 @@ class DevToolsFileSystemIndexer
     typedef std::map<base::FilePath, base::Time> FilePathTimesMap;
     FilePathTimesMap file_path_times_;
     FilePathTimesMap::const_iterator indexing_it_;
-    base::FileProxy current_file_;
+    base::File current_file_;
     int64_t current_file_offset_;
     typedef int32_t Trigram;
     std::vector<Trigram> current_trigrams_;
@@ -90,6 +87,7 @@ class DevToolsFileSystemIndexer
   // progress callbacks.
   scoped_refptr<FileSystemIndexingJob> IndexPath(
       const std::string& file_system_path,
+      const std::vector<std::string>& excluded_folders,
       const TotalWorkCallback& total_work_callback,
       const WorkedCallback& worked_callback,
       const DoneCallback& done_callback);
@@ -104,9 +102,9 @@ class DevToolsFileSystemIndexer
 
   virtual ~DevToolsFileSystemIndexer();
 
-  void SearchInPathOnFileThread(const std::string& file_system_path,
-                                const std::string& query,
-                                const SearchCallback& callback);
+  void SearchInPathOnImplSequence(const std::string& file_system_path,
+                                  const std::string& query,
+                                  const SearchCallback& callback);
 
   DISALLOW_COPY_AND_ASSIGN(DevToolsFileSystemIndexer);
 };

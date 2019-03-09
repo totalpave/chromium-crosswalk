@@ -181,6 +181,17 @@ TEST(ContentSettingsPatternTest, FromURLNoWildcard) {
       GURL("filesystem:https://foo.www.google.com/temporary/")));
 }
 
+// The static Wildcard() method goes through a fast path and avoids the Builder
+// pattern. Ensure that it yields the exact same behavior.
+TEST(ContentSettingsPatternTest, ValidWildcardFastPath) {
+  std::unique_ptr<ContentSettingsPattern::BuilderInterface> builder =
+      ContentSettingsPattern::CreateBuilder();
+  builder->WithSchemeWildcard()->WithDomainWildcard()->WithPortWildcard()->
+           WithPathWildcard();
+  ContentSettingsPattern built_wildcard = builder->Build();
+  EXPECT_EQ(built_wildcard, ContentSettingsPattern::Wildcard());
+}
+
 TEST(ContentSettingsPatternTest, Wildcard) {
   EXPECT_TRUE(ContentSettingsPattern::Wildcard().IsValid());
 
@@ -212,9 +223,22 @@ TEST(ContentSettingsPatternTest, TrimEndingDotFromHost) {
                Pattern("www.example.com.").ToString().c_str());
 
   EXPECT_TRUE(Pattern("www.example.com.") == Pattern("www.example.com"));
+  EXPECT_TRUE(Pattern("www.example.com.") == Pattern("www.example.com."));
 
   EXPECT_TRUE(Pattern(".").IsValid());
   EXPECT_STREQ(".", Pattern(".").ToString().c_str());
+  EXPECT_TRUE(Pattern("http://.").Matches(GURL("http://.")));
+
+  EXPECT_TRUE(Pattern("a..b").IsValid());
+  EXPECT_STREQ("a..b", Pattern("a..b").ToString().c_str());
+  EXPECT_TRUE(Pattern("a..b").Matches(GURL("http://a..b")));
+
+  EXPECT_TRUE(Pattern("a..b.").IsValid());
+  EXPECT_STREQ("a..b", Pattern("a..b.").ToString().c_str());
+  EXPECT_TRUE(Pattern("a..b.").Matches(GURL("http://a..b.")));
+
+  EXPECT_FALSE(Pattern("..").IsValid());
+  EXPECT_FALSE(Pattern("a..").IsValid());
 }
 
 TEST(ContentSettingsPatternTest, FromString_WithNoWildcards) {
@@ -314,6 +338,14 @@ TEST(ContentSettingsPatternTest, FromString_ExtensionPatterns) {
           .ToString());
   EXPECT_TRUE(Pattern("chrome-extension://peoadpeiejnhkmpaakpnompolbglelel/")
       .Matches(GURL("chrome-extension://peoadpeiejnhkmpaakpnompolbglelel/")));
+}
+
+TEST(ContentSettingsPatternTest, FromString_SearchPatterns) {
+  EXPECT_TRUE(Pattern("chrome-search://local-ntp/").IsValid());
+  EXPECT_EQ("chrome-search://local-ntp/",
+            Pattern("chrome-search://local-ntp/").ToString());
+  EXPECT_TRUE(Pattern("chrome-search://local-ntp/")
+                  .Matches(GURL("chrome-search://local-ntp/")));
 }
 
 TEST(ContentSettingsPatternTest, FromString_WithIPAdresses) {
@@ -622,6 +654,31 @@ TEST(ContentSettingsPatternTest, Compare) {
                 Pattern("*://mail.google.com:80")));
 }
 
+TEST(ContentSettingsPatternTest, CompareSubdomains) {
+  EXPECT_EQ(ContentSettingsPattern::IDENTITY,
+            Pattern("https://[*.]a.b").Compare(Pattern("https://[*.]a.b")));
+
+  EXPECT_EQ(ContentSettingsPattern::PREDECESSOR,
+            Pattern("https://[*.]b.a.a.a").Compare(Pattern("https://[*.]a.a")));
+  EXPECT_EQ(ContentSettingsPattern::SUCCESSOR,
+            Pattern("https://[*.]a.a").Compare(Pattern("https://[*.]b.a.a.a")));
+
+  EXPECT_EQ(ContentSettingsPattern::PREDECESSOR,
+            Pattern("https://[*.]a.b.a.b").Compare(Pattern("https://[*.]a.b")));
+  EXPECT_EQ(ContentSettingsPattern::SUCCESSOR,
+            Pattern("https://[*.]a.b").Compare(Pattern("https://[*.]a.b.a.b")));
+
+  EXPECT_EQ(ContentSettingsPattern::DISJOINT_ORDER_PRE,
+            Pattern("https://[*.]a.a").Compare(Pattern("https://[*.]b.a.a.b")));
+  EXPECT_EQ(ContentSettingsPattern::DISJOINT_ORDER_POST,
+            Pattern("https://[*.]b.a.a.b").Compare(Pattern("https://[*.]a.a")));
+
+  EXPECT_EQ(ContentSettingsPattern::DISJOINT_ORDER_PRE,
+            Pattern("https://[*.]a.b").Compare(Pattern("https://[*.]aa.b")));
+  EXPECT_EQ(ContentSettingsPattern::DISJOINT_ORDER_POST,
+            Pattern("https://[*.]aa.b").Compare(Pattern("https://[*.]a.b")));
+}
+
 TEST(ContentSettingsPatternTest, CompareWithWildcard) {
   EXPECT_EQ(ContentSettingsPattern::IDENTITY,
             ContentSettingsPattern::Wildcard().Compare(
@@ -731,10 +788,19 @@ TEST(ContentSettingsPatternTest, Schemes) {
   EXPECT_EQ(ContentSettingsPattern::SCHEME_CHROMEEXTENSION,
             Pattern("chrome-extension://peoadpeiejnhkmpaakpnompolbglelel/")
                 .GetScheme());
+  EXPECT_EQ(ContentSettingsPattern::SCHEME_CHROMESEARCH,
+            Pattern("chrome-search://local-ntp/").GetScheme());
   EXPECT_EQ(ContentSettingsPattern::SCHEME_WILDCARD,
             Pattern("192.168.0.1").GetScheme());
   EXPECT_EQ(ContentSettingsPattern::SCHEME_WILDCARD,
             Pattern("www.example.com").GetScheme());
   EXPECT_EQ(ContentSettingsPattern::SCHEME_OTHER,
             Pattern("filesystem:http://www.google.com/temporary/").GetScheme());
+}
+
+TEST(ContentSettingsPatternTest, FileSchemeHasPath) {
+  EXPECT_FALSE(Pattern("file:///*").HasPath());
+  EXPECT_TRUE(Pattern("file:///foo").HasPath());
+  EXPECT_TRUE(Pattern("file:///foo/bar/").HasPath());
+  EXPECT_TRUE(Pattern("file:///foo/bar/test.html").HasPath());
 }

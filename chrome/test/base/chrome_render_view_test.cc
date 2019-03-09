@@ -6,30 +6,30 @@
 
 #include "base/debug/leak_annotations.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/common/chrome_content_client.h"
 #include "chrome/renderer/chrome_content_renderer_client.h"
-#include "chrome/renderer/spellchecker/spellcheck.h"
 #include "chrome/test/base/chrome_unit_test_suite.h"
 #include "components/autofill/content/renderer/autofill_agent.h"
 #include "components/autofill/content/renderer/password_autofill_agent.h"
 #include "components/autofill/content/renderer/test_password_autofill_agent.h"
 #include "components/autofill/content/renderer/test_password_generation_agent.h"
+#include "components/spellcheck/renderer/spellcheck.h"
+#include "components/spellcheck/spellcheck_buildflags.h"
 #include "content/public/browser/native_web_keyboard_event.h"
-#include "content/public/common/renderer_preferences.h"
 #include "content/public/renderer/render_view.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "third_party/WebKit/public/platform/WebURLRequest.h"
-#include "third_party/WebKit/public/web/WebFrame.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
-#include "third_party/WebKit/public/web/WebKit.h"
-#include "third_party/WebKit/public/web/WebScriptController.h"
-#include "third_party/WebKit/public/web/WebScriptSource.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "third_party/blink/public/platform/web_input_event.h"
+#include "third_party/blink/public/platform/web_url_request.h"
+#include "third_party/blink/public/web/blink.h"
+#include "third_party/blink/public/web/web_frame.h"
+#include "third_party/blink/public/web/web_script_controller.h"
+#include "third_party/blink/public/web/web_script_source.h"
+#include "third_party/blink/public/web/web_view.h"
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/renderer/extensions/chrome_extensions_dispatcher_delegate.h"
 #include "chrome/renderer/extensions/chrome_extensions_renderer_client.h"
 #include "extensions/browser/extension_function_dispatcher.h"
@@ -60,10 +60,12 @@ class MockAutofillAgent : public AutofillAgent {
  public:
   MockAutofillAgent(RenderFrame* render_frame,
                     PasswordAutofillAgent* password_autofill_agent,
-                    PasswordGenerationAgent* password_generation_agent)
+                    PasswordGenerationAgent* password_generation_agent,
+                    blink::AssociatedInterfaceRegistry* registry)
       : AutofillAgent(render_frame,
                       password_autofill_agent,
-                      password_generation_agent) {
+                      password_generation_agent,
+                      registry) {
     ON_CALL(*this, IsUserGesture()).WillByDefault(Return(true));
   }
 
@@ -79,9 +81,8 @@ class MockAutofillAgent : public AutofillAgent {
   MOCK_CONST_METHOD0(IsUserGesture, bool());
 
  private:
-  void didAssociateFormControls(
-      const blink::WebVector<blink::WebNode>& nodes) override {
-    AutofillAgent::didAssociateFormControls(nodes);
+  void DidAssociateFormControlsDynamically() override {
+    AutofillAgent::DidAssociateFormControlsDynamically();
     if (run_loop_)
       run_loop_->Quit();
   }
@@ -110,28 +111,30 @@ void ChromeRenderViewTest::SetUp() {
   chrome_render_thread_ = new ChromeMockRenderThread();
   render_thread_.reset(chrome_render_thread_);
 
+  registry_ = std::make_unique<service_manager::BinderRegistry>();
+
+  // TODO(crbug/862989): Before this SetUp, the test agents defined at the end
+  // of this method should be injected into the creation of RenderViewImpl.
+  // In the current state, regular agents are created before the test agents.
   content::RenderViewTest::SetUp();
+
+  RegisterMainFrameRemoteInterfaces();
 
   // RenderFrame doesn't expose its Agent objects, because it has no need to
   // store them directly (they're stored as RenderFrameObserver*).  So just
   // create another set.
-  password_autofill_agent_ =
-      new autofill::TestPasswordAutofillAgent(view_->GetMainRenderFrame());
-  password_generation_ =
-      new autofill::TestPasswordGenerationAgent(view_->GetMainRenderFrame(),
-                                                password_autofill_agent_);
-  autofill_agent_ = new NiceMock<MockAutofillAgent>(view_->GetMainRenderFrame(),
-                                                    password_autofill_agent_,
-                                                    password_generation_);
+  password_autofill_agent_ = new autofill::TestPasswordAutofillAgent(
+      view_->GetMainRenderFrame(), &associated_interfaces_);
+  password_generation_ = new autofill::TestPasswordGenerationAgent(
+      view_->GetMainRenderFrame(), password_autofill_agent_,
+      &associated_interfaces_);
+  autofill_agent_ = new NiceMock<MockAutofillAgent>(
+      view_->GetMainRenderFrame(), password_autofill_agent_,
+      password_generation_, &associated_interfaces_);
 }
 
 void ChromeRenderViewTest::TearDown() {
   base::RunLoop().RunUntilIdle();
-#if defined(ENABLE_EXTENSIONS)
-  ChromeExtensionsRendererClient* ext_client =
-      ChromeExtensionsRendererClient::GetInstance();
-  ext_client->GetExtensionDispatcherForTest()->OnRenderProcessShutdown();
-#endif
 
 #if defined(LEAK_SANITIZER)
   // Do this before shutting down V8 in RenderViewTest::TearDown().
@@ -139,6 +142,7 @@ void ChromeRenderViewTest::TearDown() {
   __lsan_do_leak_check();
 #endif
   content::RenderViewTest::TearDown();
+  registry_.reset();
 }
 
 content::ContentClient* ChromeRenderViewTest::CreateContentClient() {
@@ -157,18 +161,20 @@ ChromeRenderViewTest::CreateContentRendererClient() {
   return client;
 }
 
+void ChromeRenderViewTest::RegisterMainFrameRemoteInterfaces() {}
+
 void ChromeRenderViewTest::InitChromeContentRendererClient(
     ChromeContentRendererClient* client) {
-#if defined(ENABLE_EXTENSIONS)
-  extension_dispatcher_delegate_.reset(
-      new ChromeExtensionsDispatcherDelegate());
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   ChromeExtensionsRendererClient* ext_client =
       ChromeExtensionsRendererClient::GetInstance();
-  ext_client->SetExtensionDispatcherForTest(base::WrapUnique(
-      new extensions::Dispatcher(extension_dispatcher_delegate_.get())));
+  ext_client->SetExtensionDispatcherForTest(
+      std::make_unique<extensions::Dispatcher>(
+          std::make_unique<ChromeExtensionsDispatcherDelegate>()));
 #endif
-#if defined(ENABLE_SPELLCHECK)
-  client->SetSpellcheck(new SpellCheck());
+
+#if BUILDFLAG(ENABLE_SPELLCHECK)
+  client->InitSpellCheck();
 #endif
 }
 

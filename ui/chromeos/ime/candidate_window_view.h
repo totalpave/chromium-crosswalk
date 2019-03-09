@@ -5,10 +5,12 @@
 #ifndef UI_CHROMEOS_IME_CANDIDATE_WINDOW_VIEW_H_
 #define UI_CHROMEOS_IME_CANDIDATE_WINDOW_VIEW_H_
 
+#include <memory>
+
 #include "base/macros.h"
 #include "ui/base/ime/candidate_window.h"
 #include "ui/chromeos/ui_chromeos_export.h"
-#include "ui/views/bubble/bubble_dialog_delegate.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/button.h"
 
 namespace ui {
@@ -30,7 +32,10 @@ class UI_CHROMEOS_EXPORT CandidateWindowView
     virtual void OnCandidateCommitted(int index) = 0;
   };
 
-  explicit CandidateWindowView(gfx::NativeView parent);
+  explicit CandidateWindowView(
+      gfx::NativeView parent,
+      int window_shell_id =
+          -1 /* equals ash::ShellWindowId::kShellWindowId_Invalid */);
   ~CandidateWindowView() override;
   views::Widget* InitWidget();
 
@@ -78,6 +83,8 @@ class UI_CHROMEOS_EXPORT CandidateWindowView
   // views::BubbleDialogDelegateView:
   const char* GetClassName() const override;
   int GetDialogButtons() const override;
+  void OnBeforeBubbleWidgetInit(views::Widget::InitParams* params,
+                                views::Widget* widget) const override;
 
   // Overridden from views::ButtonListener:
   void ButtonPressed(views::Button* sender, const ui::Event& event) override;
@@ -96,7 +103,7 @@ class UI_CHROMEOS_EXPORT CandidateWindowView
   int selected_candidate_index_in_page_;
 
   // The observers of the object.
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   // Views created in the class will be part of tree of |this|, so these
   // child views will be deleted when |this| is deleted.
@@ -105,7 +112,7 @@ class UI_CHROMEOS_EXPORT CandidateWindowView
   views::View* candidate_area_;
 
   // The candidate views are used for rendering candidates.
-  std::vector<CandidateView*> candidate_views_;
+  std::vector<std::unique_ptr<CandidateView>> candidate_views_;
 
   // Current columns size in |candidate_area_|.
   gfx::Size previous_shortcut_column_size_;
@@ -115,20 +122,23 @@ class UI_CHROMEOS_EXPORT CandidateWindowView
   // The last cursor bounds.
   gfx::Rect cursor_bounds_;
 
-  // The last compostion head bounds.
+  // The last composition head bounds.
   gfx::Rect composition_head_bounds_;
 
   // True if the candidate window should be shown with aligning with composition
   // text as opposed to the cursor.
   bool should_show_at_composition_head_;
 
-  // True if the candidate window should be shonw on the upper side of
+  // True if the candidate window should be shown on the upper side of
   // composition text.
   bool should_show_upper_side_;
 
   // True if the candidate window was open.  This is used to determine when to
   // send OnCandidateWindowOpened and OnCandidateWindowClosed events.
   bool was_candidate_window_open_;
+
+  // Corresponds to ash::ShellWindowId.
+  const int window_shell_id_;
 
   DISALLOW_COPY_AND_ASSIGN(CandidateWindowView);
 };

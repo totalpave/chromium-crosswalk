@@ -22,14 +22,6 @@ namespace base {
 class DictionaryValue;
 }
 
-namespace content {
-class URLFetcher;
-}
-
-namespace net {
-class URLRequestContextGetter;
-}
-
 // IssueAdvice: messages to show to the user to get a user's approval.
 // The structure is as follows:
 // * Description 1
@@ -111,8 +103,13 @@ class OAuth2MintTokenFlow : public OAuth2ApiCallFlow {
   GURL CreateApiCallUrl() override;
   std::string CreateApiCallBody() override;
 
-  void ProcessApiCallSuccess(const net::URLFetcher* source) override;
-  void ProcessApiCallFailure(const net::URLFetcher* source) override;
+  void ProcessApiCallSuccess(const network::ResourceResponseHead* head,
+                             std::unique_ptr<std::string> body) override;
+  void ProcessApiCallFailure(int net_error,
+                             const network::ResourceResponseHead* head,
+                             std::unique_ptr<std::string> body) override;
+  net::PartialNetworkTrafficAnnotationTag GetNetworkTrafficAnnotationTag()
+      override;
 
  private:
   friend class OAuth2MintTokenFlowTest;

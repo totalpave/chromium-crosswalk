@@ -341,45 +341,6 @@ is_version_ge() {
   return 0
 }
 
-# Prints the OS version, as reported by sw_vers -productVersion, to stdout.
-# This function operates with "static" variables: it will only check the OS
-# version once per script run.
-g_checked_os_version=
-g_os_version=
-os_version() {
-  if [[ -z "${g_checked_os_version}" ]]; then
-    g_checked_os_version="y"
-    g_os_version="$(sw_vers -productVersion)"
-    note "g_os_version = ${g_os_version}"
-  fi
-  echo "${g_os_version}"
-  return 0
-}
-
-# Compares the running OS version against a supplied version number,
-# |check_version|, and returns 0 (true) if the running OS version is greater
-# than or equal to |check_version| according to a piece-wise comparison.
-# Returns 1 (false) if the running OS version number cannot be determined or
-# if |check_version| is greater than the running OS version. |check_version|
-# should be a string of the form "major.minor" or "major.minor.micro".
-is_os_version_ge() {
-  local check_version="${1}"
-
-  local os_version="$(os_version)"
-  is_version_ge "${os_version}" "${check_version}"
-
-  # The return value of is_version_ge is used as this function's return value.
-}
-
-# Returns 0 (true) if xattr supports -r for recursive operation.
-os_xattr_supports_r() {
-  # xattr -r is supported in Mac OS X 10.6.
-  is_os_version_ge 10.6
-
-  # The return value of is_os_version_ge is used as this function's return
-  # value.
-}
-
 # Prints the version of ksadmin, as reported by ksadmin --ksadmin-version, to
 # stdout.  This function operates with "static" variables: it will only check
 # the ksadmin version once per script run.  If ksadmin is old enough to not
@@ -635,6 +596,7 @@ main() {
   readonly KS_BRAND_KEY="KSBrandID"
 
   readonly QUARANTINE_ATTR="com.apple.quarantine"
+  readonly KEYCHAIN_REAUTHORIZE_DIR=".keychain_reauthorize"
 
   # Don't use rsync -a, because -a expands to -rlptgoD.  -g and -o copy owners
   # and groups, respectively, from the source, and that is undesirable in this
@@ -1483,13 +1445,51 @@ main() {
   # the application.
   note "lifting quarantine"
 
-  if os_xattr_supports_r; then
-    # On 10.6, xattr supports -r for recursive operation.
-    xattr -d -r "${QUARANTINE_ATTR}" "${installed_app}" 2> /dev/null
+  xattr -d -r "${QUARANTINE_ATTR}" "${installed_app}" 2> /dev/null
+
+  # Do Keychain reauthorization. This involves running a stub executable on
+  # the dmg that loads the newly-updated framework and jumps to it to perform
+  # the reauthorization. The stub executable can be signed by the old
+  # certificate even after the rest of Chrome switches to the new certificate,
+  # so it still has access to the old Keychain items. The stub executable is
+  # an unbundled flat file executable whose name matches the real
+  # application's bundle identifier, so it's permitted access to the Keychain
+  # items. Doing a reauthorization step at update time reauthorizes Keychain
+  # items for users who never bother restarting Chrome, and provides a
+  # mechanism to continue doing reauthorizations even after the certificate
+  # changes. However, it only works for non-system ticket installations of
+  # Chrome, because the updater runs as root when on a system ticket, and root
+  # can't access individual user Keychains.
+  #
+  # Even if the reauthorization tool is launched, it doesn't necessarily try
+  # to do anything. It will only attempt to perform a reauthorization if one
+  # hasn't yet been done at update time.
+  note "maybe reauthorizing Keychain"
+
+  if [[ -z "${system_ticket}" ]]; then
+    local new_bundleid_app
+      new_bundleid_app="$(defaults read "${installed_app_plist}" \
+                                        "${APP_BUNDLEID_KEY}" || true)"
+      note "new_bundleid_app = ${new_bundleid_app}"
+
+    local keychain_reauthorize_dir="\
+${update_dmg_mount_point}/${KEYCHAIN_REAUTHORIZE_DIR}"
+    local keychain_reauthorize_path="\
+${keychain_reauthorize_dir}/${new_bundleid_app}"
+    note "keychain_reauthorize_path = ${keychain_reauthorize_path}"
+
+    if [[ -x "${keychain_reauthorize_path}" ]]; then
+      local framework_dir="${new_versioned_dir}/${FRAMEWORK_DIR}"
+      local framework_dylib_path="${framework_dir}/${FRAMEWORK_NAME}"
+      note "framework_dylib_path = ${framework_dylib_path}"
+
+      if [[ -f "${framework_dylib_path}" ]]; then
+        note "reauthorizing Keychain"
+        "${keychain_reauthorize_path}" "${framework_dylib_path}"
+      fi
+    fi
   else
-    # On earlier systems, xattr doesn't support -r, so run xattr via find.
-    find "${installed_app}" -exec xattr -d "${QUARANTINE_ATTR}" {} + \
-        2> /dev/null
+    note "system ticket, not reauthorizing Keychain"
   fi
 
   # Great success!

@@ -4,10 +4,10 @@
 
 import time
 
-from telemetry.core import exceptions
 from telemetry.page import legacy_page_test
 from telemetry.value import scalar
 
+import py_utils
 
 class RasterizeAndRecordMicro(legacy_page_test.LegacyPageTest):
 
@@ -23,8 +23,6 @@ class RasterizeAndRecordMicro(legacy_page_test.LegacyPageTest):
 
   def CustomizeBrowserOptions(self, options):
     options.AppendExtraBrowserArgs([
-        '--enable-impl-side-painting',
-        '--enable-threaded-compositing',
         '--enable-gpu-benchmarking'
     ])
 
@@ -32,7 +30,7 @@ class RasterizeAndRecordMicro(legacy_page_test.LegacyPageTest):
     del page  # unused
     try:
       tab.WaitForDocumentReadyStateToBeComplete()
-    except exceptions.TimeoutException:
+    except py_utils.TimeoutException:
       pass
     time.sleep(self._start_wait_time)
 
@@ -47,18 +45,22 @@ class RasterizeAndRecordMicro(legacy_page_test.LegacyPageTest):
                   window.benchmark_results.done = true;
                   window.benchmark_results.results = value;
                 }, {
-                  "record_repeat_count": %i,
-                  "rasterize_repeat_count": %i
+                  "record_repeat_count": {{ record_repeat_count }},
+                  "rasterize_repeat_count": {{ rasterize_repeat_count }}
                 });
-    """ % (self._record_repeat, self._rasterize_repeat))
+        """,
+        record_repeat_count=self._record_repeat,
+        rasterize_repeat_count=self._rasterize_repeat)
 
-    benchmark_id = tab.EvaluateJavaScript('window.benchmark_results.id')
+    # Evaluating this expression usually takes between 60 and 90 seconds.
+    benchmark_id = tab.EvaluateJavaScript(
+        'window.benchmark_results.id', timeout=self._timeout)
     if not benchmark_id:
       raise legacy_page_test.MeasurementFailure(
           'Failed to schedule rasterize_and_record_micro')
 
-    tab.WaitForJavaScriptExpression(
-        'window.benchmark_results.done', self._timeout)
+    tab.WaitForJavaScriptCondition(
+        'window.benchmark_results.done', timeout=self._timeout)
 
     data = tab.EvaluateJavaScript('window.benchmark_results.results')
 
@@ -66,12 +68,9 @@ class RasterizeAndRecordMicro(legacy_page_test.LegacyPageTest):
     record_time = data['record_time_ms']
     pixels_rasterized = data['pixels_rasterized']
     rasterize_time = data['rasterize_time_ms']
-    # TODO(schenney): Remove this workaround when reference builds get past
-    # the change that adds this comment.
-    if 'picture_memory_usage' in data:
-      picture_memory_usage = data['picture_memory_usage']
-    else:
-      picture_memory_usage = 0
+    painter_memory_usage = data.get('painter_memory_usage', 0)
+    paint_op_memory_usage = data.get('paint_op_memory_usage', 0)
+    paint_op_count = data.get('paint_op_count', 0)
 
     results.AddValue(scalar.ScalarValue(
         results.current_page, 'pixels_recorded', 'pixels', pixels_recorded))
@@ -80,28 +79,25 @@ class RasterizeAndRecordMicro(legacy_page_test.LegacyPageTest):
     results.AddValue(scalar.ScalarValue(
         results.current_page, 'rasterize_time', 'ms', rasterize_time))
     results.AddValue(scalar.ScalarValue(
-        results.current_page, 'viewport_picture_size', 'bytes',
-        picture_memory_usage))
-    results.AddValue(scalar.ScalarValue(
         results.current_page, 'record_time', 'ms', record_time))
-
-    record_time_sk_null_canvas = data['record_time_sk_null_canvas_ms']
-    record_time_painting_disabled = data['record_time_painting_disabled_ms']
-    # TODO(schenney): Remove this workaround when reference builds get past
-    # the change that adds this comment.
-    record_time_caching_disabled = \
-        data.get('record_time_caching_disabled_ms', 0)
-    # TODO(schenney): Remove this workaround when reference builds get past
-    # the change that adds this comment.
-    record_time_construction_disabled = \
-        data.get('record_time_construction_disabled_ms', 0)
-    # TODO(wangxianzhu): Remove this workaround when reference builds get past
-    # the change that adds this comment.
-    record_time_subsequence_caching_disabled = \
-        data.get('record_time_subsequence_caching_disabled_ms', 0)
     results.AddValue(scalar.ScalarValue(
-        results.current_page, 'record_time_sk_null_canvas', 'ms',
-        record_time_sk_null_canvas))
+        results.current_page, 'painter_memory_usage', 'bytes',
+        painter_memory_usage))
+    results.AddValue(scalar.ScalarValue(
+        results.current_page, 'paint_op_memory_usage', 'bytes',
+        paint_op_memory_usage))
+    results.AddValue(scalar.ScalarValue(
+        results.current_page, 'paint_op_count', 'count',
+        paint_op_count))
+
+    record_time_painting_disabled = data['record_time_painting_disabled_ms']
+    record_time_caching_disabled = data['record_time_caching_disabled_ms']
+    record_time_construction_disabled = \
+        data['record_time_construction_disabled_ms']
+    record_time_subsequence_caching_disabled = \
+        data['record_time_subsequence_caching_disabled_ms']
+    record_time_partial_invalidation = \
+        data['record_time_partial_invalidation_ms']
     results.AddValue(scalar.ScalarValue(
         results.current_page, 'record_time_painting_disabled', 'ms',
         record_time_painting_disabled))
@@ -114,28 +110,20 @@ class RasterizeAndRecordMicro(legacy_page_test.LegacyPageTest):
     results.AddValue(scalar.ScalarValue(
         results.current_page, 'record_time_subsequence_caching_disabled', 'ms',
         record_time_subsequence_caching_disabled))
+    results.AddValue(scalar.ScalarValue(
+        results.current_page, 'record_time_partial_invalidation_ms', 'ms',
+        record_time_partial_invalidation))
 
     if self._report_detailed_results:
       pixels_rasterized_with_non_solid_color = \
           data['pixels_rasterized_with_non_solid_color']
-      pixels_rasterized_as_opaque = \
-          data['pixels_rasterized_as_opaque']
+      pixels_rasterized_as_opaque = data['pixels_rasterized_as_opaque']
       total_layers = data['total_layers']
       total_picture_layers = data['total_picture_layers']
       total_picture_layers_with_no_content = \
           data['total_picture_layers_with_no_content']
-      total_picture_layers_off_screen = \
-          data['total_picture_layers_off_screen']
-      # TODO(schenney): Remove this workaround when reference builds get past
-      # the change that adds this comment.
-      if 'total_pictures_in_pile_size' in data:
-        total_pictures_in_pile_size = data['total_pictures_in_pile_size']
-      else:
-        total_pictures_in_pile_size = 0
+      total_picture_layers_off_screen = data['total_picture_layers_off_screen']
 
-      results.AddValue(scalar.ScalarValue(
-          results.current_page, 'total_size_of_pictures_in_piles', 'bytes',
-          total_pictures_in_pile_size))
       results.AddValue(scalar.ScalarValue(
           results.current_page, 'pixels_rasterized_with_non_solid_color',
           'pixels', pixels_rasterized_with_non_solid_color))

@@ -11,12 +11,12 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/time/time.h"
-#include "chrome/browser/interstitials/security_interstitial_page.h"
+#include "chrome/browser/ssl/ssl_blocking_page_base.h"
 #include "chrome/browser/ssl/ssl_cert_reporter.h"
 #include "components/ssl_errors/error_classification.h"
+#include "content/public/browser/certificate_request_result_type.h"
 #include "net/ssl/ssl_info.h"
 
-class CertReportHelper;
 class GURL;
 
 namespace security_interstitials {
@@ -27,10 +27,10 @@ class BadClockUI;
 // occurs when an SSL error is triggered by a clock misconfiguration. It
 // creates the UI using security_interstitials::BadClockUI and then
 // displays it. It deletes itself when the interstitial page is closed.
-class BadClockBlockingPage : public SecurityInterstitialPage {
+class BadClockBlockingPage : public SSLBlockingPageBase {
  public:
   // Interstitial type, used in tests.
-  static InterstitialPageDelegate::TypeID kTypeForTesting;
+  static const InterstitialPageDelegate::TypeID kTypeForTesting;
 
   // If the blocking page isn't shown, the caller is responsible for cleaning
   // up the blocking page. Otherwise, the interstitial takes ownership when
@@ -42,39 +42,33 @@ class BadClockBlockingPage : public SecurityInterstitialPage {
                        const base::Time& time_triggered,
                        ssl_errors::ClockState clock_state,
                        std::unique_ptr<SSLCertReporter> ssl_cert_reporter,
-                       const base::Callback<void(bool)>& callback);
+                       const base::Callback<void(
+                           content::CertificateRequestResultType)>& callback);
 
   ~BadClockBlockingPage() override;
 
   // InterstitialPageDelegate method:
   InterstitialPageDelegate::TypeID GetTypeForTesting() const override;
 
-  void SetSSLCertReporterForTesting(
-      std::unique_ptr<SSLCertReporter> ssl_cert_reporter);
-
  protected:
   // InterstitialPageDelegate implementation:
   void CommandReceived(const std::string& command) override;
   void OverrideEntry(content::NavigationEntry* entry) override;
-  void OverrideRendererPrefs(content::RendererPreferences* prefs) override;
+  void OverrideRendererPrefs(blink::mojom::RendererPreferences* prefs) override;
   void OnDontProceed() override;
 
   // SecurityInterstitialPage implementation:
   bool ShouldCreateNewNavigation() const override;
   void PopulateInterstitialStrings(
       base::DictionaryValue* load_time_data) override;
-  void AfterShow() override;
 
  private:
   void NotifyDenyCertificate();
 
-  base::Callback<void(bool)> callback_;
+  base::Callback<void(content::CertificateRequestResultType)> callback_;
   const net::SSLInfo ssl_info_;
-  const base::Time time_triggered_;
-  std::unique_ptr<ChromeControllerClient> controller_;
 
-  std::unique_ptr<security_interstitials::BadClockUI> bad_clock_ui_;
-  std::unique_ptr<CertReportHelper> cert_report_helper_;
+  const std::unique_ptr<security_interstitials::BadClockUI> bad_clock_ui_;
 
   DISALLOW_COPY_AND_ASSIGN(BadClockBlockingPage);
 };

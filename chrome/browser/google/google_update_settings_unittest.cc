@@ -50,6 +50,20 @@ TEST_F(GoogleUpdateTest, LastRunTime) {
 
 #endif  // defined(OS_WIN)
 
+TEST_F(GoogleUpdateTest, IsOrganic) {
+  // Test some brand codes to ensure that future changes to this method won't
+  // go unnoticed.
+
+  // GGRV is non-organic.
+  EXPECT_FALSE(google_brand::IsOrganic("GGRV"));
+
+  // Other GGR* are organic.
+  EXPECT_TRUE(google_brand::IsOrganic("GGRA"));
+
+  // GGLS must always be organic.
+  EXPECT_TRUE(google_brand::IsOrganic("GGLS"));
+}
+
 TEST_F(GoogleUpdateTest, IsOrganicFirstRunBrandCodes) {
   // Test some brand codes to ensure that future changes to this method won't
   // go unnoticed.
@@ -72,7 +86,7 @@ TEST_F(GoogleUpdateTest, ConsentFileIsWorldReadable) {
   EXPECT_TRUE(GoogleUpdateSettings::SetCollectStatsConsent(true));
 
   base::FilePath consent_dir;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_USER_DATA, &consent_dir));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_USER_DATA, &consent_dir));
   ASSERT_TRUE(base::DirectoryExists(consent_dir));
 
   base::FilePath consent_file = consent_dir.Append("Consent To Send Stats");

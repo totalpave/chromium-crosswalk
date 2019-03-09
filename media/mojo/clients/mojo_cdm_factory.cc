@@ -8,57 +8,63 @@
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "media/base/content_decryption_module.h"
 #include "media/base/key_systems.h"
 #include "media/cdm/aes_decryptor.h"
+#include "media/mojo/buildflags.h"
 #include "media/mojo/clients/mojo_cdm.h"
-#include "services/shell/public/cpp/connect.h"
-#include "services/shell/public/interfaces/interface_provider.mojom.h"
+#include "media/mojo/interfaces/interface_factory.mojom.h"
+#include "mojo/public/cpp/bindings/interface_request.h"
+#include "url/origin.h"
 
 namespace media {
 
 MojoCdmFactory::MojoCdmFactory(
-    shell::mojom::InterfaceProvider* interface_provider)
-    : interface_provider_(interface_provider) {
-  DCHECK(interface_provider_);
+    media::mojom::InterfaceFactory* interface_factory)
+    : interface_factory_(interface_factory) {
+  DCHECK(interface_factory_);
 }
 
-MojoCdmFactory::~MojoCdmFactory() {}
+MojoCdmFactory::~MojoCdmFactory() = default;
 
 void MojoCdmFactory::Create(
     const std::string& key_system,
-    const GURL& security_origin,
+    const url::Origin& security_origin,
     const CdmConfig& cdm_config,
     const SessionMessageCB& session_message_cb,
     const SessionClosedCB& session_closed_cb,
-    const LegacySessionErrorCB& legacy_session_error_cb,
     const SessionKeysChangeCB& session_keys_change_cb,
     const SessionExpirationUpdateCB& session_expiration_update_cb,
     const CdmCreatedCB& cdm_created_cb) {
-  DVLOG(2) << __FUNCTION__ << ": " << key_system;
+  DVLOG(2) << __func__ << ": " << key_system;
 
-  if (!security_origin.is_valid()) {
+  if (security_origin.opaque()) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(cdm_created_cb, nullptr, "Invalid origin."));
+        FROM_HERE, base::BindOnce(cdm_created_cb, nullptr, "Invalid origin."));
     return;
   }
 
+  // If AesDecryptor can be used, always use it here in the local process.
+  // Note: We should not run AesDecryptor in the browser process except for
+  // testing. See http://crbug.com/441957.
+  // Note: Previously MojoRenderer doesn't work with local CDMs, this has
+  // been solved by using DecryptingRenderer. See http://crbug.com/913775.
   if (CanUseAesDecryptor(key_system)) {
-    scoped_refptr<MediaKeys> cdm(
-        new AesDecryptor(security_origin, session_message_cb, session_closed_cb,
-                         session_keys_change_cb));
+    scoped_refptr<ContentDecryptionModule> cdm(
+        new AesDecryptor(session_message_cb, session_closed_cb,
+                         session_keys_change_cb, session_expiration_update_cb));
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(cdm_created_cb, cdm, ""));
+        FROM_HERE, base::BindOnce(cdm_created_cb, cdm, ""));
     return;
   }
 
   mojom::ContentDecryptionModulePtr cdm_ptr;
-  shell::GetInterface<mojom::ContentDecryptionModule>(interface_provider_,
-                                                      &cdm_ptr);
+  interface_factory_->CreateCdm(key_system, mojo::MakeRequest(&cdm_ptr));
 
   MojoCdm::Create(key_system, security_origin, cdm_config, std::move(cdm_ptr),
-                  session_message_cb, session_closed_cb,
-                  legacy_session_error_cb, session_keys_change_cb,
-                  session_expiration_update_cb, cdm_created_cb);
+                  interface_factory_, session_message_cb, session_closed_cb,
+                  session_keys_change_cb, session_expiration_update_cb,
+                  cdm_created_cb);
 }
 
 }  // namespace media

@@ -9,8 +9,9 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 
 #include "base/logging.h"
-#include "chrome/browser/browser_shutdown.h"
 #import "chrome/browser/chrome_browser_application_mac.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
+#include "ui/views/widget/widget.h"
 
 namespace chrome {
 
@@ -26,6 +27,12 @@ void HandleAppExitingForPlatform() {
   [[NSNotificationCenter defaultCenter]
       postNotificationName:NSApplicationWillTerminateNotification
                     object:NSApp];
+
+  // Views Widgets host ui::Compositors that talk to the GPU process, whose host
+  // complains if it is destroyed while in-use. By this point, all browser
+  // windows are closed, which tear down any Widgets parented to them. This will
+  // additionally close any unparented, non-Browser Widgets.
+  views::Widget::CloseAllSecondaryWidgets();
 }
 
 }  // namespace chrome

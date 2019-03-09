@@ -7,12 +7,14 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <set>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
-#include "cc/animation/animation.h"
+#include "cc/animation/keyframe_model.h"
+#include "cc/trees/target_property.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/compositor/compositor_export.h"
 #include "ui/gfx/animation/tween.h"
@@ -23,6 +25,12 @@ namespace ui {
 
 class InterpolatedTransform;
 class LayerAnimationDelegate;
+
+class AnimationMetricsReporter {
+ public:
+  virtual ~AnimationMetricsReporter() {}
+  virtual void Report(int value) = 0;
+};
 
 // LayerAnimationElements represent one segment of an animation between two
 // keyframes. They know how to update a LayerAnimationDelegate given a value
@@ -68,24 +76,14 @@ class COMPOSITOR_EXPORT LayerAnimationElement {
 
   virtual ~LayerAnimationElement();
 
+  static std::string AnimatablePropertiesToString(
+      AnimatableProperties properties);
+
   // Creates an element that transitions to the given transform. The caller owns
   // the return value.
-  static LayerAnimationElement* CreateTransformElement(
+  static std::unique_ptr<LayerAnimationElement> CreateTransformElement(
       const gfx::Transform& transform,
       base::TimeDelta duration);
-
-  // Creates an element that counters a transition to the given transform.
-  // This element maintains the invariant uninverted_transition->at(t) *
-  // this->at(t) == base_transform * this->at(t_start) for any t. The caller
-  // owns the return value.
-  static LayerAnimationElement* CreateInverseTransformElement(
-      const gfx::Transform& base_transform,
-      const LayerAnimationElement* uninverted_transition);
-
-
-  // Duplicates elements as created by CreateInverseTransformElement.
-  static LayerAnimationElement* CloneInverseTransformElement(
-      const LayerAnimationElement* other);
 
   // Creates an element that transitions to another in a way determined by an
   // interpolated transform. The element accepts ownership of the interpolated
@@ -94,49 +92,50 @@ class COMPOSITOR_EXPORT LayerAnimationElement {
   // transform and the last value the interpolated transform will assume. It is
   // therefore important that the value of the interpolated at time 0 matches
   // the current transform.
-  static LayerAnimationElement* CreateInterpolatedTransformElement(
-      InterpolatedTransform* interpolated_transform,
+  static std::unique_ptr<LayerAnimationElement>
+  CreateInterpolatedTransformElement(
+      std::unique_ptr<InterpolatedTransform> interpolated_transform,
       base::TimeDelta duration);
 
   // Creates an element that transitions to the given bounds. The caller owns
   // the return value.
-  static LayerAnimationElement* CreateBoundsElement(
+  static std::unique_ptr<LayerAnimationElement> CreateBoundsElement(
       const gfx::Rect& bounds,
       base::TimeDelta duration);
 
   // Creates an element that transitions to the given opacity. The caller owns
   // the return value.
-  static LayerAnimationElement* CreateOpacityElement(
+  static std::unique_ptr<LayerAnimationElement> CreateOpacityElement(
       float opacity,
       base::TimeDelta duration);
 
   // Creates an element that sets visibily following a delay. The caller owns
   // the return value.
-  static LayerAnimationElement* CreateVisibilityElement(
+  static std::unique_ptr<LayerAnimationElement> CreateVisibilityElement(
       bool visibility,
       base::TimeDelta duration);
 
   // Creates an element that transitions to the given brightness.
   // The caller owns the return value.
-  static LayerAnimationElement* CreateBrightnessElement(
+  static std::unique_ptr<LayerAnimationElement> CreateBrightnessElement(
       float brightness,
       base::TimeDelta duration);
 
   // Creates an element that transitions to the given grayscale value.
   // The caller owns the return value.
-  static LayerAnimationElement* CreateGrayscaleElement(
+  static std::unique_ptr<LayerAnimationElement> CreateGrayscaleElement(
       float grayscale,
       base::TimeDelta duration);
 
   // Creates an element that pauses the given properties. The caller owns the
   // return value.
-  static LayerAnimationElement* CreatePauseElement(
+  static std::unique_ptr<LayerAnimationElement> CreatePauseElement(
       AnimatableProperties properties,
       base::TimeDelta duration);
 
   // Creates an element that transitions to the given color. The caller owns the
   // return value.
-  static LayerAnimationElement* CreateColorElement(
+  static std::unique_ptr<LayerAnimationElement> CreateColorElement(
       SkColor color,
       base::TimeDelta duration);
 
@@ -162,7 +161,7 @@ class COMPOSITOR_EXPORT LayerAnimationElement {
   void Start(LayerAnimationDelegate* delegate, int animation_group_id);
 
   // Returns true if the animation has started but hasn't finished.
-  bool Started() { return !first_frame_; }
+  bool Started() const { return !first_frame_; }
 
   // Updates the delegate to the appropriate value for |now|. Returns true
   // if a redraw is required.
@@ -188,15 +187,19 @@ class COMPOSITOR_EXPORT LayerAnimationElement {
   AnimatableProperties properties() const { return properties_; }
 
   // Whether this element animates on the compositor thread.
-  virtual bool IsThreaded() const;
+  virtual bool IsThreaded(LayerAnimationDelegate* delegate) const;
 
   gfx::Tween::Type tween_type() const { return tween_type_; }
   void set_tween_type(gfx::Tween::Type tween_type) { tween_type_ = tween_type; }
 
-  // Each LayerAnimationElement has a unique animation_id. Elements belonging
-  // to sequences that are supposed to start together have the same
+  void set_animation_metrics_reporter(AnimationMetricsReporter* reporter) {
+    animation_metrics_reporter_ = reporter;
+  }
+
+  // Each LayerAnimationElement has a unique keyframe_model_id. Elements
+  // belonging to sequences that are supposed to start together have the same
   // animation_group_id.
-  int animation_id() const { return animation_id_; }
+  int keyframe_model_id() const { return keyframe_model_id_; }
   int animation_group_id() const { return animation_group_id_; }
   void set_animation_group_id(int id) { animation_group_id_ = id; }
 
@@ -206,7 +209,11 @@ class COMPOSITOR_EXPORT LayerAnimationElement {
   // call made to {Progress, ProgressToEnd}.
   double last_progressed_fraction() const { return last_progressed_fraction_; }
 
+  std::string ToString() const;
+
  protected:
+  virtual std::string DebugName() const;
+
   // Called once each time the animation element is run before any call to
   // OnProgress.
   virtual void OnStart(LayerAnimationDelegate* delegate) = 0;
@@ -234,10 +241,15 @@ class COMPOSITOR_EXPORT LayerAnimationElement {
   const base::TimeDelta duration_;
   gfx::Tween::Type tween_type_;
 
-  const int animation_id_;
+  const int keyframe_model_id_;
   int animation_group_id_;
 
   double last_progressed_fraction_;
+
+  // To obtain metrics of animation performance tag animation elements and
+  // keep track of sequential compositor frame number.
+  AnimationMetricsReporter* animation_metrics_reporter_;
+  int start_frame_number_;
 
   base::WeakPtrFactory<LayerAnimationElement> weak_ptr_factory_;
 

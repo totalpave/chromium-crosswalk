@@ -4,37 +4,63 @@
 
 package org.chromium.chrome.browser.autofill;
 
-import android.test.suitebuilder.annotation.MediumTest;
+import android.app.Activity;
+import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
+import android.support.annotation.Nullable;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.MediumTest;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.ViewGroup;
 
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.Callback;
+import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.AutofillProfile;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.input.ChromiumBaseInputConnection;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content.browser.test.util.DOMUtils;
-import org.chromium.content.browser.test.util.TestInputMethodManagerWrapper;
-import org.chromium.content.browser.test.util.TouchCommon;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.util.browser.Features;
+import org.chromium.chrome.test.util.browser.Features.EnableFeatures;
+import org.chromium.content_public.browser.ImeAdapter;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.DOMUtils;
+import org.chromium.content_public.browser.test.util.TestInputMethodManagerWrapper;
+import org.chromium.content_public.browser.test.util.TouchCommon;
+import org.chromium.content_public.browser.test.util.WebContentsUtils;
+import org.chromium.ui.DropdownPopupWindowInterface;
 import org.chromium.ui.R;
-import org.chromium.ui.autofill.AutofillPopup;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /**
  * Integration tests for the AutofillPopup.
  */
-public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity> {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@RetryOnFailure
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class AutofillPopupTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
 
     private static final String FIRST_NAME = "John";
     private static final String LAST_NAME = "Smith";
@@ -120,45 +146,42 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
     private AutofillTestHelper mHelper;
     private List<AutofillLogger.LogEntry> mAutofillLoggedEntries;
 
-    public AutofillPopupTest() {
-        super(ChromeActivity.class);
-    }
-
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        // Don't launch activity automatically.
-    }
-
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
         mAutofillLoggedEntries = new ArrayList<AutofillLogger.LogEntry>();
         AutofillLogger.setLoggerForTesting(
-                new AutofillLogger.Logger() {
-                    @Override
-                    public void didFillField(AutofillLogger.LogEntry logEntry) {
-                        mAutofillLoggedEntries.add(logEntry);
-                    }
-                }
+                logEntry -> mAutofillLoggedEntries.add(logEntry)
         );
+        // TODO(crbug.com/894428) - fix this suite to use the embedded test server instead of
+        // data urls.
+        Features.getInstance().enable(ChromeFeatureList.AUTOFILL_ALLOW_NON_HTTP_ACTIVATION);
     }
 
-    private void loadAndFillForm(
-            final String formDataUrl, final String inputText)
+    @After
+    public void tearDown() throws Exception {
+        mActivityTestRule.getActivity().setRequestedOrientation(
+                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
+    private void loadForm(final String formDataUrl, final String inputText,
+            @Nullable Callback<Activity> updateActivity)
             throws InterruptedException, ExecutionException, TimeoutException {
-        startMainActivityWithURL(formDataUrl);
-        mHelper = new AutofillTestHelper();
+        mActivityTestRule.startMainActivityWithURL(formDataUrl);
+        if (updateActivity != null) {
+            updateActivity.onResult(mActivityTestRule.getActivity());
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        }
 
         // The TestInputMethodManagerWrapper intercepts showSoftInput so that a keyboard is never
         // brought up.
-        final ContentViewCore viewCore = getActivity().getCurrentContentViewCore();
-        final WebContents webContents = viewCore.getWebContents();
-        final ViewGroup view = viewCore.getContainerView();
-        final TestInputMethodManagerWrapper immw =
-                new TestInputMethodManagerWrapper(viewCore);
-        viewCore.getImeAdapterForTest().setInputMethodManagerWrapperForTest(immw);
+        final WebContents webContents = mActivityTestRule.getActivity().getCurrentWebContents();
+        final ImeAdapter imeAdapter = WebContentsUtils.getImeAdapter(webContents);
+        TestInputMethodManagerWrapper immw = TestInputMethodManagerWrapper.create(imeAdapter);
+        imeAdapter.setInputMethodManagerWrapper(immw);
 
         // Add an Autofill profile.
+        mHelper = new AutofillTestHelper();
         AutofillProfile profile = new AutofillProfile(
                 "" /* guid */, ORIGIN, FIRST_NAME + " " + LAST_NAME, COMPANY_NAME,
                 STREET_ADDRESS_TEXTAREA,
@@ -166,73 +189,81 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
                 ZIP_CODE, SORTING_CODE, COUNTRY, PHONE_NUMBER, EMAIL,
                 LANGUAGE_CODE);
         mHelper.setProfile(profile);
-        assertEquals(1, mHelper.getNumberOfProfilesToSuggest());
+        Assert.assertEquals(1, mHelper.getNumberOfProfilesToSuggest());
 
         // Click the input field for the first name.
         DOMUtils.waitForNonZeroNodeBounds(webContents, "fn");
-        DOMUtils.clickNode(this, viewCore, "fn");
+        DOMUtils.clickNode(webContents, "fn");
 
         waitForKeyboardShowRequest(immw, 1);
 
-        final ChromiumBaseInputConnection inputConnection =
-                viewCore.getImeAdapterForTest().getInputConnectionForTest();
-        inputConnection.getHandler().post(new Runnable() {
-            @Override
-            public void run() {
-                inputConnection.setComposingText(inputText, 1);
-            }
-        });
+        imeAdapter.setComposingTextForTest(inputText, 1);
 
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
+    private void loadAndFillForm(final String formDataUrl, final String inputText,
+            @Nullable Callback<Activity> updateActivity)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        loadForm(formDataUrl, inputText, updateActivity);
+
+        final WebContents webContents = mActivityTestRule.getActivity().getCurrentWebContents();
+        final ViewGroup view = webContents.getViewAndroidDelegate().getContainerView();
         waitForAnchorViewAdd(view);
         View anchorView = view.findViewById(R.id.dropdown_popup_window);
 
-        assertTrue(anchorView.getTag() instanceof AutofillPopup);
-        final AutofillPopup popup = (AutofillPopup) anchorView.getTag();
+        Assert.assertTrue(anchorView.getTag() instanceof DropdownPopupWindowInterface);
+        final DropdownPopupWindowInterface popup =
+                (DropdownPopupWindowInterface) anchorView.getTag();
 
-        waitForAutofillPopopShow(popup);
+        waitForAutofillPopupShow(popup);
 
         TouchCommon.singleClickView(popup.getListView(), 10, 10);
 
-        waitForInputFieldFill(webContents);
+        waitForInputFieldFill();
+    }
+
+    private void loadAndFillForm(final String formDataUrl, final String inputText)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        loadAndFillForm(formDataUrl, inputText, null);
     }
 
     /**
      * Tests that bringing up an Autofill and clicking on the first entry fills out the expected
      * Autofill information.
      */
+    @Test
     @MediumTest
     @Feature({"autofill"})
+    @DisabledTest(message = "Flaky. crbug.com/936183")
     public void testClickAutofillPopupSuggestion()
             throws InterruptedException, ExecutionException, TimeoutException {
         loadAndFillForm(BASIC_PAGE_DATA, "J");
-        final ContentViewCore viewCore = getActivity().getCurrentContentViewCore();
-        final WebContents webContents = viewCore.getWebContents();
+        final WebContents webContents = mActivityTestRule.getActivity().getCurrentWebContents();
 
-        assertEquals("First name did not match",
-                FIRST_NAME, DOMUtils.getNodeValue(webContents, "fn"));
-        assertEquals("Last name did not match",
-                LAST_NAME, DOMUtils.getNodeValue(webContents, "ln"));
-        assertEquals("Street address (textarea) did not match",
-                STREET_ADDRESS_TEXTAREA, DOMUtils.getNodeValue(webContents, "sa"));
-        assertEquals("Address line 1 did not match",
-                ADDRESS_LINE1, DOMUtils.getNodeValue(webContents, "a1"));
-        assertEquals("Address line 2 did not match",
-                ADDRESS_LINE2, DOMUtils.getNodeValue(webContents, "a2"));
-        assertEquals("City did not match",
-                CITY, DOMUtils.getNodeValue(webContents, "ct"));
-        assertEquals("Zip code did not match",
-                ZIP_CODE, DOMUtils.getNodeValue(webContents, "zc"));
-        assertEquals("Country did not match",
-                COUNTRY, DOMUtils.getNodeValue(webContents, "co"));
-        assertEquals("Email did not match",
-                EMAIL, DOMUtils.getNodeValue(webContents, "em"));
-        assertEquals("Phone number did not match",
-                PHONE_NUMBER, DOMUtils.getNodeValue(webContents, "ph"));
+        Assert.assertEquals(
+                "First name did not match", FIRST_NAME, DOMUtils.getNodeValue(webContents, "fn"));
+        Assert.assertEquals(
+                "Last name did not match", LAST_NAME, DOMUtils.getNodeValue(webContents, "ln"));
+        Assert.assertEquals("Street address (textarea) did not match", STREET_ADDRESS_TEXTAREA,
+                DOMUtils.getNodeValue(webContents, "sa"));
+        Assert.assertEquals("Address line 1 did not match", ADDRESS_LINE1,
+                DOMUtils.getNodeValue(webContents, "a1"));
+        Assert.assertEquals("Address line 2 did not match", ADDRESS_LINE2,
+                DOMUtils.getNodeValue(webContents, "a2"));
+        Assert.assertEquals("City did not match", CITY, DOMUtils.getNodeValue(webContents, "ct"));
+        Assert.assertEquals(
+                "Zip code did not match", ZIP_CODE, DOMUtils.getNodeValue(webContents, "zc"));
+        Assert.assertEquals(
+                "Country did not match", COUNTRY, DOMUtils.getNodeValue(webContents, "co"));
+        Assert.assertEquals("Email did not match", EMAIL, DOMUtils.getNodeValue(webContents, "em"));
+        Assert.assertEquals("Phone number did not match", PHONE_NUMBER,
+                DOMUtils.getNodeValue(webContents, "ph"));
 
         final String profileFullName = FIRST_NAME + " " + LAST_NAME;
         final int loggedEntries = 10;
-        assertEquals("Mismatched number of logged entries",
-                loggedEntries, mAutofillLoggedEntries.size());
+        Assert.assertEquals("Mismatched number of logged entries", loggedEntries,
+                mAutofillLoggedEntries.size());
         assertLogged(FIRST_NAME, profileFullName);
         assertLogged(LAST_NAME, profileFullName);
         assertLogged(STREET_ADDRESS_TEXTAREA, profileFullName);
@@ -249,6 +280,7 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
      * Tests that bringing up an Autofill and clicking on the partially filled first
      * element will still fill the entire form (including the initiating element itself).
      */
+    @Test
     @MediumTest
     @Feature({"autofill"})
     public void testLoggingInitiatedElementFilled()
@@ -256,8 +288,8 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
         loadAndFillForm(INITIATING_ELEMENT_FILLED, "o");
         final String profileFullName = FIRST_NAME + " " + LAST_NAME;
         final int loggedEntries = 4;
-        assertEquals("Mismatched number of logged entries",
-                loggedEntries, mAutofillLoggedEntries.size());
+        Assert.assertEquals("Mismatched number of logged entries", loggedEntries,
+                mAutofillLoggedEntries.size());
         assertLogged(FIRST_NAME, profileFullName);
         assertLogged(LAST_NAME, profileFullName);
         assertLogged(EMAIL, profileFullName);
@@ -268,6 +300,7 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
      * Tests that bringing up an Autofill and clicking on the empty first element
      * will fill the all other elements except the previously filled email.
      */
+    @Test
     @MediumTest
     @Feature({"autofill"})
     public void testLoggingAnotherElementFilled()
@@ -275,8 +308,8 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
         loadAndFillForm(ANOTHER_ELEMENT_FILLED, "J");
         final String profileFullName = FIRST_NAME + " " + LAST_NAME;
         final int loggedEntries = 3;
-        assertEquals("Mismatched number of logged entries",
-                loggedEntries, mAutofillLoggedEntries.size());
+        Assert.assertEquals("Mismatched number of logged entries", loggedEntries,
+                mAutofillLoggedEntries.size());
         assertLogged(FIRST_NAME, profileFullName);
         assertLogged(LAST_NAME, profileFullName);
         assertLogged(COUNTRY, profileFullName);
@@ -286,6 +319,7 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
     /**
      * Tests that selecting a value not present in <option> will not be filled.
      */
+    @Test
     @MediumTest
     @Feature({"autofill"})
     public void testNotLoggingInvalidOption()
@@ -293,28 +327,69 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
         loadAndFillForm(INVALID_OPTION, "o");
         final String profileFullName = FIRST_NAME + " " + LAST_NAME;
         final int loggedEntries = 3;
-        assertEquals("Mismatched number of logged entries",
-                loggedEntries, mAutofillLoggedEntries.size());
+        Assert.assertEquals("Mismatched number of logged entries", loggedEntries,
+                mAutofillLoggedEntries.size());
         assertLogged(FIRST_NAME, profileFullName);
         assertLogged(LAST_NAME, profileFullName);
         assertLogged(EMAIL, profileFullName);
         // Country will not be logged since "US" is not a valid <option>.
     }
 
+    @Test
+    @MediumTest
+    @Feature({"autofill"})
+    @EnableFeatures(ChromeFeatureList.AUTOFILL_REFRESH_STYLE_ANDROID)
+    public void testScreenOrientationPortrait()
+            throws InterruptedException, ExecutionException, TimeoutException {
+        runTestScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"autofill"})
+    @EnableFeatures(ChromeFeatureList.AUTOFILL_REFRESH_STYLE_ANDROID)
+    public void testScreenOrientationLandscape()
+            throws InterruptedException, ExecutionException, TimeoutException {
+        runTestScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+    }
+
+    private void runTestScreenOrientation(int orientation)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        // TODO(crbug.com/905081): Also test different screen sizes.
+        loadForm(BASIC_PAGE_DATA, "J", activity -> activity.setRequestedOrientation(orientation));
+
+        ChromeActivity activity = mActivityTestRule.getActivity();
+        final WebContents webContents = activity.getCurrentWebContents();
+        final Configuration config = activity.getResources().getConfiguration();
+        final boolean shouldShowPopup = config.orientation == Configuration.ORIENTATION_PORTRAIT
+                || config.isLayoutSizeAtLeast(Configuration.SCREENLAYOUT_SIZE_XLARGE);
+        final ViewGroup view = webContents.getViewAndroidDelegate().getContainerView();
+        if (shouldShowPopup) {
+            waitForAnchorViewAdd(view);
+        } else {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        }
+        final View popup = view.findViewById(R.id.dropdown_popup_window);
+
+        final String message = "Mismatched dropdown_popup_window for orientation: "
+                + (orientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE ? "landscape"
+                                                                            : "portrait");
+        if (shouldShowPopup) {
+            Assert.assertNotNull(message, popup);
+        } else {
+            Assert.assertNull(message, popup);
+        }
+    }
+
     // Wait and assert helper methods -------------------------------------------------------------
 
     private void waitForKeyboardShowRequest(final TestInputMethodManagerWrapper immw,
-            final int count) throws InterruptedException {
+            final int count) {
         CriteriaHelper.pollUiThread(
-                Criteria.equals(count, new Callable<Integer>() {
-                    @Override
-                    public Integer call() {
-                        return immw.getShowSoftInputCounter();
-                    }
-                }));
+                Criteria.equals(count, () -> immw.getShowSoftInputCounter()));
     }
 
-    private void waitForAnchorViewAdd(final ViewGroup view) throws InterruptedException {
+    private void waitForAnchorViewAdd(final ViewGroup view) {
         CriteriaHelper.pollUiThread(new Criteria(
                 "Autofill Popup anchor view was never added.") {
             @Override
@@ -324,7 +399,7 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
         });
     }
 
-    private void waitForAutofillPopopShow(final AutofillPopup popup) throws InterruptedException {
+    private void waitForAutofillPopupShow(final DropdownPopupWindowInterface popup) {
         CriteriaHelper.pollUiThread(
                 new Criteria("Autofill Popup anchor view was never added.") {
                     @Override
@@ -336,14 +411,16 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
                 });
     }
 
-    private void waitForInputFieldFill(final WebContents webContents) throws InterruptedException {
+    private void waitForInputFieldFill() {
         CriteriaHelper.pollInstrumentationThread(
                 new Criteria("First name field was never filled.") {
                     @Override
                     public boolean isSatisfied() {
                         try {
                             return TextUtils.equals(FIRST_NAME,
-                                    DOMUtils.getNodeValue(webContents, "fn"));
+                                    DOMUtils.getNodeValue(
+                                            mActivityTestRule.getActivity().getCurrentWebContents(),
+                                            "fn"));
                         } catch (InterruptedException e) {
                             return false;
                         } catch (TimeoutException e) {
@@ -360,6 +437,6 @@ public class AutofillPopupTest extends ChromeActivityTestCaseBase<ChromeActivity
                 return;
             }
         }
-        fail("Logged entry not found [" + autofilledValue + "," + profileFullName + "]");
+        Assert.fail("Logged entry not found [" + autofilledValue + "," + profileFullName + "]");
     }
 }

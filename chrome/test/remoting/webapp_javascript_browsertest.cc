@@ -12,18 +12,14 @@
 
 namespace remoting {
 
-// Disable test on (dbg) as it takes longer than 30s to complete.
-// https://crbug.com/504204.
-#if (!defined(NDEBUG))
-#define MAYBE_Remoting_Webapp_Js_Unittest DISABLED_Remoting_Webapp_Js_Unittest
-#else
-#define MAYBE_Remoting_Webapp_Js_Unittest Remoting_Webapp_Js_Unittest
-#endif
-
+// The test is disabled for these reasons:
+// - takes longer than 30s to complete in dbg (https://crbug.com/504204),
+// - flaky on ASAN (https://crbug.com/685025), and
+// - fails with User Activation v2 (https://crbug.com/855655).
 IN_PROC_BROWSER_TEST_F(QUnitBrowserTestRunner,
-                       MAYBE_Remoting_Webapp_Js_Unittest) {
+                       DISABLED_Remoting_Webapp_Js_Unittest) {
   base::FilePath base_dir;
-  ASSERT_TRUE(PathService::Get(base::DIR_EXE, &base_dir));
+  ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &base_dir));
 
 #if defined(OS_MACOSX)
   if (base::mac::AmIBundled()) {

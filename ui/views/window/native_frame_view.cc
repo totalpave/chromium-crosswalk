@@ -55,7 +55,7 @@ int NativeFrameView::NonClientHitTest(const gfx::Point& point) {
 }
 
 void NativeFrameView::GetWindowMask(const gfx::Size& size,
-                                    gfx::Path* window_mask) {
+                                    SkPath* window_mask) {
   // Nothing to do, we use the default window mask.
 }
 
@@ -75,7 +75,7 @@ void NativeFrameView::SizeConstraintsChanged() {
   // Nothing to do.
 }
 
-gfx::Size NativeFrameView::GetPreferredSize() const {
+gfx::Size NativeFrameView::CalculatePreferredSize() const {
   gfx::Size client_preferred_size = frame_->client_view()->GetPreferredSize();
 #if defined(OS_WIN)
   // Returns the client size. On Windows, this is the expected behavior for

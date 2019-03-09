@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env vpython
 # Copyright 2016 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -13,6 +13,34 @@ from pylib.local.device import local_device_test_run
 
 with host_paths.SysPath(host_paths.PYMOCK_PATH):
   import mock # pylint: disable=import-error
+
+
+class SubstituteDeviceRootTest(unittest.TestCase):
+
+  def testNoneDevicePath(self):
+    self.assertEquals(
+        '/fake/device/root',
+        local_device_test_run.SubstituteDeviceRoot(
+            None, '/fake/device/root'))
+
+  def testStringDevicePath(self):
+    self.assertEquals(
+        '/another/fake/device/path',
+        local_device_test_run.SubstituteDeviceRoot(
+            '/another/fake/device/path', '/fake/device/root'))
+
+  def testListWithNoneDevicePath(self):
+    self.assertEquals(
+        '/fake/device/root/subpath',
+        local_device_test_run.SubstituteDeviceRoot(
+            [None, 'subpath'], '/fake/device/root'))
+
+  def testListWithoutNoneDevicePath(self):
+    self.assertEquals(
+        '/another/fake/device/path',
+        local_device_test_run.SubstituteDeviceRoot(
+            ['/', 'another', 'fake', 'device', 'path'],
+            '/fake/device/root'))
 
 
 class TestLocalDeviceTestRun(local_device_test_run.LocalDeviceTestRun):

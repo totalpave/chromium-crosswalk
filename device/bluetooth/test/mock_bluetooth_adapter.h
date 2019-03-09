@@ -7,12 +7,11 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/callback.h"
-#include "base/memory/scoped_vector.h"
 #include "build/build_config.h"
 #include "device/bluetooth/bluetooth_adapter.h"
-#include "device/bluetooth/bluetooth_audio_sink.h"
 #include "device/bluetooth/bluetooth_device.h"
 #include "device/bluetooth/bluetooth_discovery_session.h"
 #include "device/bluetooth/test/mock_bluetooth_device.h"
@@ -25,7 +24,7 @@ class MockBluetoothAdapter : public BluetoothAdapter {
   class Observer : public BluetoothAdapter::Observer {
    public:
     Observer();
-    virtual ~Observer();
+    ~Observer() override;
 
     MOCK_METHOD2(AdapterPresentChanged, void(BluetoothAdapter*, bool));
     MOCK_METHOD2(AdapterPoweredChanged, void(BluetoothAdapter*, bool));
@@ -37,7 +36,7 @@ class MockBluetoothAdapter : public BluetoothAdapter {
 
   MockBluetoothAdapter();
 
-  virtual bool IsInitialized() const { return true; }
+  bool IsInitialized() const override { return true; }
 
 #if defined(OS_CHROMEOS) || defined(OS_LINUX)
   void Shutdown() override;
@@ -52,6 +51,7 @@ class MockBluetoothAdapter : public BluetoothAdapter {
                     const ErrorCallback& error_callback));
   MOCK_CONST_METHOD0(IsPresent, bool());
   MOCK_CONST_METHOD0(IsPowered, bool());
+  MOCK_CONST_METHOD0(CanPower, bool());
   MOCK_METHOD3(SetPowered,
                void(bool powered,
                     const base::Closure& callback,
@@ -72,7 +72,7 @@ class MockBluetoothAdapter : public BluetoothAdapter {
   MOCK_METHOD3(SetDiscoveryFilterRaw,
                void(const BluetoothDiscoveryFilter*,
                     const base::Closure& callback,
-                    const DiscoverySessionErrorCallback& error_callback));
+                    DiscoverySessionErrorCallback& error_callback));
   MOCK_CONST_METHOD0(GetDevices, BluetoothAdapter::ConstDeviceList());
   MOCK_METHOD1(GetDevice, BluetoothDevice*(const std::string& address));
   MOCK_CONST_METHOD1(GetDevice,
@@ -94,56 +94,66 @@ class MockBluetoothAdapter : public BluetoothAdapter {
                     const ServiceOptions& options,
                     const CreateServiceCallback& callback,
                     const CreateServiceErrorCallback& error_callback));
-  MOCK_METHOD3(RegisterAudioSink,
-               void(const BluetoothAudioSink::Options& options,
-                    const AcquiredCallback& callback,
-                    const BluetoothAudioSink::ErrorCallback& error_callback));
   MOCK_CONST_METHOD1(GetGattService,
                      BluetoothLocalGattService*(const std::string& identifier));
 
   void StartDiscoverySessionWithFilter(
       std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
       const DiscoverySessionCallback& callback,
-      const ErrorCallback& error_callback);
+      const ErrorCallback& error_callback) override;
 
   // BluetoothAdapter is supposed to manage the lifetime of BluetoothDevices.
   // This method takes ownership of the MockBluetoothDevice. This is only for
   // convenience as far testing is concerned and it's possible to write test
   // cases without using these functions.
   void AddMockDevice(std::unique_ptr<MockBluetoothDevice> mock_device);
+  std::unique_ptr<MockBluetoothDevice> RemoveMockDevice(
+      const std::string& address);
   BluetoothAdapter::ConstDeviceList GetConstMockDevices();
   BluetoothAdapter::DeviceList GetMockDevices();
 
   // The observers are maintained by the default behavior of AddObserver() and
   // RemoveObserver(). Test fakes can use this function to notify the observers
   // about events.
-  base::ObserverList<device::BluetoothAdapter::Observer>& GetObservers() {
+  base::ObserverList<device::BluetoothAdapter::Observer>::Unchecked&
+  GetObservers() {
     return observers_;
   }
 
  protected:
+  bool SetPoweredImpl(bool powered) override;
   void AddDiscoverySession(
       BluetoothDiscoveryFilter* discovery_filter,
       const base::Closure& callback,
-      const DiscoverySessionErrorCallback& error_callback) override;
+      DiscoverySessionErrorCallback error_callback) override;
   void RemoveDiscoverySession(
       BluetoothDiscoveryFilter* discovery_filter,
       const base::Closure& callback,
-      const DiscoverySessionErrorCallback& error_callback) override;
+      DiscoverySessionErrorCallback error_callback) override;
   void SetDiscoveryFilter(
       std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
       const base::Closure& callback,
-      const DiscoverySessionErrorCallback& error_callback) override;
+      DiscoverySessionErrorCallback error_callback) override;
   void RegisterAdvertisement(
       std::unique_ptr<BluetoothAdvertisement::Data> advertisement_data,
       const CreateAdvertisementCallback& callback,
-      const CreateAdvertisementErrorCallback& error_callback) override;
-  virtual ~MockBluetoothAdapter();
+      const AdvertisementErrorCallback& error_callback) override;
+#if defined(OS_CHROMEOS) || defined(OS_LINUX)
+  void SetAdvertisingInterval(
+      const base::TimeDelta& min,
+      const base::TimeDelta& max,
+      const base::Closure& callback,
+      const AdvertisementErrorCallback& error_callback) override;
+  void ResetAdvertising(
+      const base::Closure& callback,
+      const AdvertisementErrorCallback& error_callback) override;
+#endif
+  ~MockBluetoothAdapter() override;
 
   MOCK_METHOD1(RemovePairingDelegateInternal,
                void(BluetoothDevice::PairingDelegate* pairing_delegate));
 
-  ScopedVector<MockBluetoothDevice> mock_devices_;
+  std::vector<std::unique_ptr<MockBluetoothDevice>> mock_devices_;
 };
 
 }  // namespace device

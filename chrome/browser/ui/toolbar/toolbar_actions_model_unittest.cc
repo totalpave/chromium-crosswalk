@@ -11,8 +11,9 @@
 #include "base/callback.h"
 #include "base/callback_helpers.h"
 #include "base/files/file_util.h"
-#include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/extensions/api/extension_action/extension_action_api.h"
@@ -21,13 +22,10 @@
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/extensions/extension_util.h"
-#include "chrome/browser/extensions/test_extension_dir.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/extensions/unpacked_installer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_tab_helper.h"
-#include "chrome/browser/ui/toolbar/component_toolbar_actions_factory.h"
-#include "chrome/browser/ui/toolbar/mock_component_toolbar_actions_factory.h"
 #include "chrome/browser/ui/toolbar/test_toolbar_action_view_controller.h"
 #include "chrome/common/extensions/api/extension_action/action_info.h"
 #include "chrome/common/pref_names.h"
@@ -43,11 +41,13 @@
 #include "extensions/browser/uninstall_reason.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/feature_switch.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/value_builder.h"
+#include "extensions/test/test_extension_dir.h"
 
 namespace {
+
+using ActionType = extensions::ExtensionBuilder::ActionType;
 
 // A simple observer that tracks the number of times certain events occur.
 class ToolbarActionsModelTestObserver : public ToolbarActionsModel::Observer {
@@ -63,20 +63,25 @@ class ToolbarActionsModelTestObserver : public ToolbarActionsModel::Observer {
 
  private:
   // ToolbarActionsModel::Observer:
-  void OnToolbarActionAdded(const ToolbarActionsModel::ToolbarItem& item,
+  void OnToolbarActionAdded(const ToolbarActionsModel::ActionId& action_id,
                             int index) override {
     ++inserted_count_;
   }
 
-  void OnToolbarActionRemoved(const std::string& id) override {
+  void OnToolbarActionRemoved(
+      const ToolbarActionsModel::ActionId& id) override {
     ++removed_count_;
   }
 
-  void OnToolbarActionMoved(const std::string& id, int index) override {
+  void OnToolbarActionLoadFailed() override {}
+
+  void OnToolbarActionMoved(const ToolbarActionsModel::ActionId& id,
+                            int index) override {
     ++moved_count_;
   }
 
-  void OnToolbarActionUpdated(const std::string& id) override {}
+  void OnToolbarActionUpdated(
+      const ToolbarActionsModel::ActionId& id) override {}
 
   void OnToolbarVisibleCountChanged() override {}
 
@@ -123,28 +128,8 @@ class ToolbarActionsModelUnitTest
   ~ToolbarActionsModelUnitTest() override {}
 
  protected:
-  // Initialize the ExtensionService, ToolbarActionsModel, and
-  // ExtensionSystem.
+  // Initialize the ExtensionService, ToolbarActionsModel, and ExtensionSystem.
   void Init();
-
-  enum class MigrationStatus {
-    // The feature is enabled without any extension to migrate.
-    FEATURE_ENABLED_NO_EXTENSION,
-    // The feature is enabled and the user has installed an extension.
-    FEATURE_ENABLED_EXTENSION_INSTALLED,
-    // Feature is enabled with extension and a pref of false.
-    FEATURE_ENABLED_WITH_PREF_FALSE,
-    // Feature is enabled with extension and a pref of true.
-    FEATURE_ENABLED_WITH_PREF_TRUE,
-    // The feature is now disabled after previously being enabled, and the user
-    // has a pref reflecting a previous migration.
-    FEATURE_DISABLED_WITH_PREF_TRUE,
-  };
-
-  // Initialize the ExtensionService, ToolbarActionsModel, and ExtensionSystem,
-  // and an action extension to migrate to a component.  |migration_status|
-  // is used to configure the user's initial migration status.
-  void InitForMigrationTest(MigrationStatus migration_status);
 
   void TearDown() override;
 
@@ -163,9 +148,6 @@ class ToolbarActionsModelUnitTest
   // action, and are added in that order.
   testing::AssertionResult AddActionExtensions() WARN_UNUSED_RESULT;
 
-  // Creates an extension that is to be migrated to a component action.
-  void CreateMigratedActionExtension();
-
   // Returns the action's id at the given index in the toolbar model, or empty
   // if one does not exist.
   // If |model| is specified, it is used. Otherwise, this defaults to
@@ -177,16 +159,12 @@ class ToolbarActionsModelUnitTest
   // Returns true if the |toobar_model_| has an action with the given |id|.
   bool ModelHasActionForId(const std::string& id) const;
 
-  void SetMockActionsFactory(MockComponentToolbarActionsFactory* factory);
-
   ToolbarActionsModel* toolbar_model() { return toolbar_model_; }
 
   const ToolbarActionsModelTestObserver* observer() const {
     return model_observer_.get();
   }
-  size_t num_toolbar_items() const {
-    return toolbar_model_->toolbar_items().size();
-  }
+  size_t num_actions() const { return toolbar_model_->action_ids().size(); }
   const extensions::Extension* browser_action_a() const {
     return browser_action_a_.get();
   }
@@ -199,19 +177,11 @@ class ToolbarActionsModelUnitTest
   const extensions::Extension* browser_action() const {
     return browser_action_extension_.get();
   }
-  const extensions::Extension* browser_action_migrated() const {
-    return browser_action_migrated_.get();
-  }
   const extensions::Extension* page_action() const {
     return page_action_extension_.get();
   }
   const extensions::Extension* no_action() const {
     return no_action_extension_.get();
-  }
-
-  // The mock component action will be referred to as "MCA" below.
-  const char* component_action_id() {
-    return MockComponentToolbarActionsFactory::kActionIdForTesting;
   }
 
  private:
@@ -230,14 +200,11 @@ class ToolbarActionsModelUnitTest
   scoped_refptr<const extensions::Extension> browser_action_a_;
   scoped_refptr<const extensions::Extension> browser_action_b_;
   scoped_refptr<const extensions::Extension> browser_action_c_;
-  scoped_refptr<const extensions::Extension> browser_action_migrated_;
 
   // Sample extensions with different kinds of actions.
   scoped_refptr<const extensions::Extension> browser_action_extension_;
   scoped_refptr<const extensions::Extension> page_action_extension_;
   scoped_refptr<const extensions::Extension> no_action_extension_;
-
-  std::unique_ptr<MockComponentToolbarActionsFactory> mock_actions_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ToolbarActionsModelUnitTest);
 };
@@ -247,48 +214,8 @@ void ToolbarActionsModelUnitTest::Init() {
   toolbar_model_ =
       extensions::extension_action_test_util::CreateToolbarModelForProfile(
           profile());
-  model_observer_.reset(new ToolbarActionsModelTestObserver(toolbar_model_));
-}
-
-void ToolbarActionsModelUnitTest::InitForMigrationTest(
-    MigrationStatus migration_status) {
-  InitializeEmptyExtensionService();
-  SetMockActionsFactory(new MockComponentToolbarActionsFactory(nullptr));
-  CreateMigratedActionExtension();
-
-  {
-    DictionaryPrefUpdate update(profile()->GetPrefs(),
-                                ::prefs::kToolbarMigratedComponentActionStatus);
-    switch (migration_status) {
-      case MigrationStatus::FEATURE_ENABLED_EXTENSION_INSTALLED:
-        mock_actions_factory_->set_migrated_feature_enabled(true);
-        ASSERT_TRUE(AddExtension(browser_action_migrated()));
-        break;
-      case MigrationStatus::FEATURE_ENABLED_NO_EXTENSION:
-        mock_actions_factory_->set_migrated_feature_enabled(true);
-        break;
-      case MigrationStatus::FEATURE_ENABLED_WITH_PREF_TRUE:
-        mock_actions_factory_->set_migrated_feature_enabled(true);
-        ASSERT_TRUE(AddExtension(browser_action_migrated()));
-        update->SetBoolean(component_action_id(), true);
-        break;
-      case MigrationStatus::FEATURE_ENABLED_WITH_PREF_FALSE:
-        mock_actions_factory_->set_migrated_feature_enabled(true);
-        ASSERT_TRUE(AddExtension(browser_action_migrated()));
-        update->SetBoolean(component_action_id(), false);
-        break;
-      case MigrationStatus::FEATURE_DISABLED_WITH_PREF_TRUE:
-        mock_actions_factory_->set_migrated_feature_enabled(false);
-        ASSERT_TRUE(AddExtension(browser_action_migrated()));
-        update->SetBoolean(component_action_id(), true);
-        break;
-    }
-  }
-
-  toolbar_model_ =
-      extensions::extension_action_test_util::CreateToolbarModelForProfile(
-          profile());
-  model_observer_.reset(new ToolbarActionsModelTestObserver(toolbar_model_));
+  model_observer_ =
+      std::make_unique<ToolbarActionsModelTestObserver>(toolbar_model_);
 }
 
 void ToolbarActionsModelUnitTest::TearDown() {
@@ -299,13 +226,13 @@ void ToolbarActionsModelUnitTest::TearDown() {
 testing::AssertionResult ToolbarActionsModelUnitTest::AddExtension(
     const scoped_refptr<const extensions::Extension>& extension) {
   if (registry()->enabled_extensions().GetByID(extension->id())) {
-    return testing::AssertionFailure() << "Extension " << extension->name()
-                                       << " already installed!";
+    return testing::AssertionFailure()
+           << "Extension " << extension->name() << " already installed!";
   }
   service()->AddExtension(extension.get());
   if (!registry()->enabled_extensions().GetByID(extension->id())) {
-    return testing::AssertionFailure() << "Failed to install extension: "
-                                       << extension->name();
+    return testing::AssertionFailure()
+           << "Failed to install extension: " << extension->name();
   }
   return testing::AssertionSuccess();
 }
@@ -313,29 +240,30 @@ testing::AssertionResult ToolbarActionsModelUnitTest::AddExtension(
 testing::AssertionResult ToolbarActionsModelUnitTest::RemoveExtension(
     const scoped_refptr<const extensions::Extension>& extension) {
   if (!registry()->enabled_extensions().GetByID(extension->id())) {
-    return testing::AssertionFailure() << "Extension " << extension->name()
-                                       << " not installed!";
+    return testing::AssertionFailure()
+           << "Extension " << extension->name() << " not installed!";
   }
   service()->UnloadExtension(extension->id(),
-                             extensions::UnloadedExtensionInfo::REASON_DISABLE);
+                             extensions::UnloadedExtensionReason::DISABLE);
   if (registry()->enabled_extensions().GetByID(extension->id())) {
-    return testing::AssertionFailure() << "Failed to unload extension: "
-                                       << extension->name();
+    return testing::AssertionFailure()
+           << "Failed to unload extension: " << extension->name();
   }
   return testing::AssertionSuccess();
 }
 
 testing::AssertionResult ToolbarActionsModelUnitTest::AddActionExtensions() {
-  browser_action_extension_ =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "browser_action",
-          extensions::extension_action_test_util::BROWSER_ACTION);
-  page_action_extension_ =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "page_action", extensions::extension_action_test_util::PAGE_ACTION);
-  no_action_extension_ =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "no_action", extensions::extension_action_test_util::NO_ACTION);
+  browser_action_extension_ = extensions::ExtensionBuilder("browser_action")
+                                  .SetAction(ActionType::BROWSER_ACTION)
+                                  .SetLocation(extensions::Manifest::INTERNAL)
+                                  .Build();
+  page_action_extension_ = extensions::ExtensionBuilder("page_action")
+                               .SetAction(ActionType::PAGE_ACTION)
+                               .SetLocation(extensions::Manifest::INTERNAL)
+                               .Build();
+  no_action_extension_ = extensions::ExtensionBuilder("no_action")
+                             .SetLocation(extensions::Manifest::INTERNAL)
+                             .Build();
 
   extensions::ExtensionList extensions;
   extensions.push_back(browser_action_extension_);
@@ -347,18 +275,18 @@ testing::AssertionResult ToolbarActionsModelUnitTest::AddActionExtensions() {
 
 testing::AssertionResult
 ToolbarActionsModelUnitTest::AddBrowserActionExtensions() {
-  browser_action_a_ =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "browser_actionA",
-          extensions::extension_action_test_util::BROWSER_ACTION);
-  browser_action_b_ =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "browser_actionB",
-          extensions::extension_action_test_util::BROWSER_ACTION);
-  browser_action_c_ =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "browser_actionC",
-          extensions::extension_action_test_util::BROWSER_ACTION);
+  browser_action_a_ = extensions::ExtensionBuilder("browser_actionA")
+                          .SetAction(ActionType::BROWSER_ACTION)
+                          .SetLocation(extensions::Manifest::INTERNAL)
+                          .Build();
+  browser_action_b_ = extensions::ExtensionBuilder("browser_actionB")
+                          .SetAction(ActionType::BROWSER_ACTION)
+                          .SetLocation(extensions::Manifest::INTERNAL)
+                          .Build();
+  browser_action_c_ = extensions::ExtensionBuilder("browser_actionC")
+                          .SetAction(ActionType::BROWSER_ACTION)
+                          .SetLocation(extensions::Manifest::INTERNAL)
+                          .Build();
 
   extensions::ExtensionList extensions;
   extensions.push_back(browser_action_a_);
@@ -368,21 +296,11 @@ ToolbarActionsModelUnitTest::AddBrowserActionExtensions() {
   return AddAndVerifyExtensions(extensions);
 }
 
-void ToolbarActionsModelUnitTest::CreateMigratedActionExtension() {
-  browser_action_migrated_ =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "browser_actionMigrated",
-          extensions::extension_action_test_util::BROWSER_ACTION);
-  mock_actions_factory_->set_migrated_extension_id(
-      browser_action_migrated_->id());
-}
-
 const std::string ToolbarActionsModelUnitTest::GetActionIdAtIndex(
     size_t index,
     const ToolbarActionsModel* model) const {
-  return index < model->toolbar_items().size()
-             ? model->toolbar_items()[index].id
-             : std::string();
+  return index < model->action_ids().size() ? model->action_ids()[index]
+                                            : std::string();
 }
 
 const std::string ToolbarActionsModelUnitTest::GetActionIdAtIndex(
@@ -392,8 +310,8 @@ const std::string ToolbarActionsModelUnitTest::GetActionIdAtIndex(
 
 bool ToolbarActionsModelUnitTest::ModelHasActionForId(
     const std::string& id) const {
-  for (const auto& item : toolbar_model_->toolbar_items()) {
-    if (item.id == id)
+  for (const auto& toolbar_action_id : toolbar_model_->action_ids()) {
+    if (toolbar_action_id == id)
       return true;
   }
   return false;
@@ -401,48 +319,42 @@ bool ToolbarActionsModelUnitTest::ModelHasActionForId(
 
 testing::AssertionResult ToolbarActionsModelUnitTest::AddAndVerifyExtensions(
     const extensions::ExtensionList& extensions) {
-  for (extensions::ExtensionList::const_iterator iter = extensions.begin();
-       iter != extensions.end(); ++iter) {
+  for (auto iter = extensions.begin(); iter != extensions.end(); ++iter) {
     if (!AddExtension(*iter)) {
-      return testing::AssertionFailure() << "Failed to install extension: "
-                                         << (*iter)->name();
+      return testing::AssertionFailure()
+             << "Failed to install extension: " << (*iter)->name();
     }
   }
   return testing::AssertionSuccess();
 }
 
-void ToolbarActionsModelUnitTest::SetMockActionsFactory(
-    MockComponentToolbarActionsFactory* factory) {
-  mock_actions_factory_.reset(factory);
-}
-
-// A basic test for component actions and extensions with browser actions
-// showing up in the toolbar.
+// A basic test for extensions with browser actions showing up in the toolbar.
 TEST_F(ToolbarActionsModelUnitTest, BasicToolbarActionsModelTest) {
   Init();
 
   // Load an extension with a browser action.
   scoped_refptr<const extensions::Extension> extension =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "browser_action",
-          extensions::extension_action_test_util::BROWSER_ACTION);
+      extensions::ExtensionBuilder("browser_action")
+          .SetAction(ActionType::BROWSER_ACTION)
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .Build();
   ASSERT_TRUE(AddExtension(extension));
 
   // We should now find our extension in the model.
   EXPECT_EQ(1u, observer()->inserted_count());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(extension->id(), GetActionIdAtIndex(0u));
 
   // Should be a no-op, but still fires the events.
   toolbar_model()->MoveActionIcon(extension->id(), 0);
   EXPECT_EQ(1u, observer()->moved_count());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(extension->id(), GetActionIdAtIndex(0u));
 
   // Remove the extension and verify.
   ASSERT_TRUE(RemoveExtension(extension));
   EXPECT_EQ(1u, observer()->removed_count());
-  EXPECT_EQ(0u, num_toolbar_items());
+  EXPECT_EQ(0u, num_actions());
   EXPECT_EQ(std::string(), GetActionIdAtIndex(0u));
 }
 
@@ -454,7 +366,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarReorderAndReinsert) {
   ASSERT_TRUE(AddBrowserActionExtensions());
 
   // Verify the three actions are in the model in the proper order.
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(2u));
@@ -462,7 +374,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarReorderAndReinsert) {
   // Order is now A, B, C. Let's put C first.
   toolbar_model()->MoveActionIcon(browser_action_c()->id(), 0);
   EXPECT_EQ(1u, observer()->moved_count());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(2u));
@@ -470,7 +382,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarReorderAndReinsert) {
   // Order is now C, A, B. Let's put A last.
   toolbar_model()->MoveActionIcon(browser_action_a()->id(), 2);
   EXPECT_EQ(2u, observer()->moved_count());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(2u));
@@ -478,7 +390,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarReorderAndReinsert) {
   // Order is now C, B, A. Let's remove B.
   ASSERT_TRUE(RemoveExtension(browser_action_b()));
   EXPECT_EQ(1u, observer()->removed_count());
-  EXPECT_EQ(2u, num_toolbar_items());
+  EXPECT_EQ(2u, num_actions());
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(1u));
 
@@ -487,14 +399,14 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarReorderAndReinsert) {
 
   // Extension B loaded again.
   EXPECT_EQ(4u, observer()->inserted_count());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   // Make sure it gets its old spot in the list.
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
 
   // Unload B again.
   ASSERT_TRUE(RemoveExtension(browser_action_b()));
   EXPECT_EQ(2u, observer()->removed_count());
-  EXPECT_EQ(2u, num_toolbar_items());
+  EXPECT_EQ(2u, num_actions());
 
   // Order is now C, A. Flip it.
   toolbar_model()->MoveActionIcon(browser_action_a()->id(), 0);
@@ -511,7 +423,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarReorderAndReinsert) {
   // Order is now A, C.
   ASSERT_TRUE(RemoveExtension(browser_action_c()));
   EXPECT_EQ(3u, observer()->removed_count());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
 
   // Load extension C again.
@@ -519,7 +431,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarReorderAndReinsert) {
 
   // Extension C loaded again.
   EXPECT_EQ(5u, observer()->inserted_count());
-  EXPECT_EQ(2u, num_toolbar_items());
+  EXPECT_EQ(2u, num_actions());
   // Make sure it gets its old spot in the list (at the very end).
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(1u));
 }
@@ -533,7 +445,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarUnloadDisableAndUninstall) {
   ASSERT_TRUE(AddBrowserActionExtensions());
 
   // Verify the three actions are in the model in the proper order: A, B, C.
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(2u));
@@ -542,11 +454,11 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarUnloadDisableAndUninstall) {
   ASSERT_TRUE(RemoveExtension(browser_action_b()));
   ASSERT_TRUE(RemoveExtension(browser_action_c()));
   ASSERT_TRUE(RemoveExtension(browser_action_a()));
-  EXPECT_EQ(0u, num_toolbar_items());  // Sanity check: all gone?
+  EXPECT_EQ(0u, num_actions());  // Sanity check: all gone?
   ASSERT_TRUE(AddExtension(browser_action_c()));
   ASSERT_TRUE(AddExtension(browser_action_a()));
   ASSERT_TRUE(AddExtension(browser_action_b()));
-  EXPECT_EQ(3u, num_toolbar_items());  // Sanity check: all back?
+  EXPECT_EQ(3u, num_actions());  // Sanity check: all back?
   EXPECT_EQ(0u, observer()->moved_count());
 
   // Even though we unloaded and reloaded in a different order, the original
@@ -557,11 +469,11 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarUnloadDisableAndUninstall) {
 
   // Disabling extensions should also preserve order.
   service()->DisableExtension(browser_action_b()->id(),
-                              extensions::Extension::DISABLE_USER_ACTION);
+                              extensions::disable_reason::DISABLE_USER_ACTION);
   service()->DisableExtension(browser_action_c()->id(),
-                              extensions::Extension::DISABLE_USER_ACTION);
+                              extensions::disable_reason::DISABLE_USER_ACTION);
   service()->DisableExtension(browser_action_a()->id(),
-                              extensions::Extension::DISABLE_USER_ACTION);
+                              extensions::disable_reason::DISABLE_USER_ACTION);
   service()->EnableExtension(browser_action_c()->id());
   service()->EnableExtension(browser_action_a()->id());
   service()->EnableExtension(browser_action_b()->id());
@@ -578,10 +490,9 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarUnloadDisableAndUninstall) {
   // Uninstall Extension B.
   service()->UninstallExtension(browser_action_b()->id(),
                                 extensions::UNINSTALL_REASON_FOR_TESTING,
-                                base::Bind(&base::DoNothing),
                                 NULL);  // Ignore error.
   // List contains only A and C now. Validate that.
-  EXPECT_EQ(2u, num_toolbar_items());
+  EXPECT_EQ(2u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(1u));
 
@@ -589,7 +500,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarUnloadDisableAndUninstall) {
 
   // Make sure Extension B is _not_ first (its old position should have been
   // forgotten at uninstall time). Order should be A, C, B.
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(2u));
@@ -600,7 +511,7 @@ TEST_F(ToolbarActionsModelUnitTest, ReorderOnPrefChange) {
 
   // Add the three browser action extensions.
   ASSERT_TRUE(AddBrowserActionExtensions());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
 
   // Change the value of the toolbar preference.
   std::vector<std::string> new_order;
@@ -621,25 +532,33 @@ TEST_F(ToolbarActionsModelUnitTest, NewToolbarExtensionsAreVisible) {
 
   // Three extensions with actions.
   scoped_refptr<const extensions::Extension> extension_a =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "a", extensions::extension_action_test_util::BROWSER_ACTION);
+      extensions::ExtensionBuilder("a")
+          .SetAction(ActionType::BROWSER_ACTION)
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .Build();
   scoped_refptr<const extensions::Extension> extension_b =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "b", extensions::extension_action_test_util::BROWSER_ACTION);
+      extensions::ExtensionBuilder("b")
+          .SetAction(ActionType::BROWSER_ACTION)
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .Build();
   scoped_refptr<const extensions::Extension> extension_c =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "c", extensions::extension_action_test_util::BROWSER_ACTION);
+      extensions::ExtensionBuilder("c")
+          .SetAction(ActionType::BROWSER_ACTION)
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .Build();
   scoped_refptr<const extensions::Extension> extension_d =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "d", extensions::extension_action_test_util::BROWSER_ACTION);
+      extensions::ExtensionBuilder("d")
+          .SetAction(ActionType::BROWSER_ACTION)
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .Build();
 
   // We should start off without any actions.
-  EXPECT_EQ(0u, num_toolbar_items());
+  EXPECT_EQ(0u, num_actions());
   EXPECT_EQ(0u, toolbar_model()->visible_icon_count());
 
   // Add one action. It should be visible.
   service()->AddExtension(extension_a.get());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(1u, toolbar_model()->visible_icon_count());
   EXPECT_EQ(extension_a.get()->id(), GetActionIdAtIndex(0u));
 
@@ -650,7 +569,7 @@ TEST_F(ToolbarActionsModelUnitTest, NewToolbarExtensionsAreVisible) {
   // Add a new action - it should be visible, so it should be in the first
   // index. The other action should remain hidden.
   service()->AddExtension(extension_b.get());
-  EXPECT_EQ(2u, num_toolbar_items());
+  EXPECT_EQ(2u, num_actions());
   EXPECT_EQ(1u, toolbar_model()->visible_icon_count());
   EXPECT_EQ(extension_b.get()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(extension_a.get()->id(), GetActionIdAtIndex(1u));
@@ -663,7 +582,7 @@ TEST_F(ToolbarActionsModelUnitTest, NewToolbarExtensionsAreVisible) {
   // Add the third action. Since all action are visible, it should go in the
   // last index.
   service()->AddExtension(extension_c.get());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(3u, toolbar_model()->visible_icon_count());
   EXPECT_TRUE(toolbar_model()->all_icons_visible());
   EXPECT_EQ(extension_b.get()->id(), GetActionIdAtIndex(0u));
@@ -678,7 +597,7 @@ TEST_F(ToolbarActionsModelUnitTest, NewToolbarExtensionsAreVisible) {
   // be visible, so it increases visible count by 1, and goes into the fourth
   // index. The hidden action should remain hidden.
   service()->AddExtension(extension_d.get());
-  EXPECT_EQ(4u, num_toolbar_items());
+  EXPECT_EQ(4u, num_actions());
   EXPECT_EQ(3u, toolbar_model()->visible_icon_count());
   EXPECT_EQ(extension_b.get()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(extension_a.get()->id(), GetActionIdAtIndex(1u));
@@ -695,7 +614,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightMode) {
 
   // Add the three browser action extensions.
   ASSERT_TRUE(AddBrowserActionExtensions());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
 
   // Start with a visible count of 2 (non-zero, and not all).
   toolbar_model()->SetVisibleIconCount(2u);
@@ -707,7 +626,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightMode) {
                                     ToolbarActionsModel::HIGHLIGHT_WARNING);
   EXPECT_EQ(1, observer()->highlight_mode_count());
   EXPECT_TRUE(toolbar_model()->is_highlighting());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(1u, toolbar_model()->visible_icon_count());
 
@@ -717,7 +636,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightMode) {
   EXPECT_FALSE(toolbar_model()->is_highlighting());
 
   // Verify that the extensions are back to normal.
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(2u));
@@ -736,7 +655,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightMode) {
   toolbar_model()->HighlightActions(action_ids,
                                     ToolbarActionsModel::HIGHLIGHT_WARNING);
   EXPECT_EQ(1, observer()->highlight_mode_count());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(2u));
@@ -752,7 +671,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightMode) {
   toolbar_model()->HighlightActions(action_ids,
                                     ToolbarActionsModel::HIGHLIGHT_WARNING);
   EXPECT_EQ(2, observer()->highlight_mode_count());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(0u));
 
   // Highlight extensions A and B (grow the highlight list).
@@ -762,7 +681,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightMode) {
   toolbar_model()->HighlightActions(action_ids,
                                     ToolbarActionsModel::HIGHLIGHT_WARNING);
   EXPECT_EQ(3, observer()->highlight_mode_count());
-  EXPECT_EQ(2u, num_toolbar_items());
+  EXPECT_EQ(2u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
 
@@ -786,7 +705,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightModeRemove) {
 
   // Add the three browser action extensions.
   ASSERT_TRUE(AddBrowserActionExtensions());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
 
   // Highlight two of the extensions.
   std::vector<std::string> action_ids;
@@ -796,24 +715,23 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightModeRemove) {
                                     ToolbarActionsModel::HIGHLIGHT_WARNING);
   EXPECT_TRUE(toolbar_model()->is_highlighting());
   EXPECT_EQ(1, observer()->highlight_mode_count());
-  EXPECT_EQ(2u, num_toolbar_items());
+  EXPECT_EQ(2u, num_actions());
 
   // Disable one of them - only one should remain highlighted.
   service()->DisableExtension(browser_action_a()->id(),
-                              extensions::Extension::DISABLE_USER_ACTION);
+                              extensions::disable_reason::DISABLE_USER_ACTION);
   EXPECT_TRUE(toolbar_model()->is_highlighting());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(0u));
 
   // Uninstall the remaining highlighted extension. This should result in
   // highlight mode exiting.
   service()->UninstallExtension(browser_action_b()->id(),
                                 extensions::UNINSTALL_REASON_FOR_TESTING,
-                                base::Bind(&base::DoNothing),
                                 NULL);  // Ignore error.
   EXPECT_FALSE(toolbar_model()->is_highlighting());
   EXPECT_EQ(0, observer()->highlight_mode_count());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
 
   // Test that removing an unhighlighted extension still works.
@@ -826,24 +744,23 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightModeRemove) {
                                     ToolbarActionsModel::HIGHLIGHT_WARNING);
   EXPECT_EQ(1, observer()->highlight_mode_count());
   EXPECT_TRUE(toolbar_model()->is_highlighting());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
 
   // Uninstalling B should not have visible impact.
   service()->UninstallExtension(browser_action_b()->id(),
                                 extensions::UNINSTALL_REASON_FOR_TESTING,
-                                base::Bind(&base::DoNothing),
                                 NULL);  // Ignore error.
   EXPECT_TRUE(toolbar_model()->is_highlighting());
   EXPECT_EQ(1, observer()->highlight_mode_count());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
 
   // When we stop, only action C should remain.
   toolbar_model()->StopHighlighting();
   EXPECT_FALSE(toolbar_model()->is_highlighting());
   EXPECT_EQ(0, observer()->highlight_mode_count());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
 }
 
@@ -852,7 +769,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightModeAdd) {
 
   // Add the three browser action extensions.
   ASSERT_TRUE(AddBrowserActionExtensions());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
 
   // Remove one (down to two).
   ASSERT_TRUE(RemoveExtension(browser_action_c()));
@@ -863,19 +780,19 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarHighlightModeAdd) {
   toolbar_model()->HighlightActions(action_ids,
                                     ToolbarActionsModel::HIGHLIGHT_WARNING);
   EXPECT_TRUE(toolbar_model()->is_highlighting());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
 
   // Adding a new extension should have no visible effect.
   ASSERT_TRUE(AddExtension(browser_action_c()));
   EXPECT_TRUE(toolbar_model()->is_highlighting());
-  EXPECT_EQ(1u, num_toolbar_items());
+  EXPECT_EQ(1u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
 
   // When we stop highlighting, we should see the new extension show up.
   toolbar_model()->StopHighlighting();
   EXPECT_FALSE(toolbar_model()->is_highlighting());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(2u));
@@ -888,42 +805,28 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarSizeAfterPrefChange) {
 
   // Add the three browser action extensions.
   ASSERT_TRUE(AddBrowserActionExtensions());
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
 
   // Should be at max size.
   EXPECT_TRUE(toolbar_model()->all_icons_visible());
-  EXPECT_EQ(num_toolbar_items(), toolbar_model()->visible_icon_count());
+  EXPECT_EQ(num_actions(), toolbar_model()->visible_icon_count());
   toolbar_model()->OnActionToolbarPrefChange();
   // Should still be at max size.
   EXPECT_TRUE(toolbar_model()->all_icons_visible());
-  EXPECT_EQ(num_toolbar_items(), toolbar_model()->visible_icon_count());
-}
-
-// Test that, in the absence of the extension-action-redesign switch, the
-// model only contains extensions with browser actions and component actions.
-TEST_F(ToolbarActionsModelUnitTest, TestToolbarExtensionTypesDisabledSwitch) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), false);
-  Init();
-  ASSERT_TRUE(AddActionExtensions());
-
-  EXPECT_EQ(1u, num_toolbar_items());
-  EXPECT_EQ(browser_action()->id(), GetActionIdAtIndex(0u));
+  EXPECT_EQ(num_actions(), toolbar_model()->visible_icon_count());
 }
 
 // Test that, with the extension-action-redesign switch, the model contains
 // all types of extensions, except those which should not be displayed on the
 // toolbar (like component extensions).
 TEST_F(ToolbarActionsModelUnitTest, TestToolbarExtensionTypesEnabledSwitch) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), true);
   Init();
 
   ASSERT_TRUE(AddActionExtensions());
 
   // With the switch on, extensions with page actions and no action should also
   // be displayed in the toolbar.
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(browser_action()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(page_action()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(no_action()->id(), GetActionIdAtIndex(2u));
@@ -942,71 +845,27 @@ TEST_F(ToolbarActionsModelUnitTest, TestToolbarExtensionTypesEnabledSwitch) {
           .AddFlags(extensions::Extension::WAS_INSTALLED_BY_DEFAULT)
           .Build();
   EXPECT_TRUE(AddExtension(default_installed_extension.get()));
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_FALSE(ModelHasActionForId(default_installed_extension->id()));
 
   // Component extensions shouldn't be given an icon.
   scoped_refptr<const extensions::Extension> component_extension_no_action =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "component ext no action",
-          extensions::extension_action_test_util::NO_ACTION,
-          extensions::Manifest::COMPONENT);
+      extensions::ExtensionBuilder("component ext no action")
+          .SetLocation(extensions::Manifest::COMPONENT)
+          .Build();
   EXPECT_TRUE(AddExtension(component_extension_no_action.get()));
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_FALSE(ModelHasActionForId(component_extension_no_action->id()));
 
   // Sanity check: A new extension that's installed from the webstore should
   // have an icon.
   scoped_refptr<const extensions::Extension> internal_extension_no_action =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "internal ext no action",
-          extensions::extension_action_test_util::NO_ACTION,
-          extensions::Manifest::INTERNAL);
+      extensions::ExtensionBuilder("internal ext no action")
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .Build();
   EXPECT_TRUE(AddExtension(internal_extension_no_action.get()));
-  EXPECT_EQ(4u, num_toolbar_items());
+  EXPECT_EQ(4u, num_actions());
   EXPECT_TRUE(ModelHasActionForId(internal_extension_no_action->id()));
-}
-
-// Test that hiding actions on the toolbar results in their removal from the
-// model when the redesign switch is not enabled.
-TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarActionsVisibilityNoSwitch) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), false);
-  Init();
-
-  extensions::ExtensionActionAPI* action_api =
-      extensions::ExtensionActionAPI::Get(profile());
-
-  ASSERT_TRUE(AddBrowserActionExtensions());
-  // Sanity check: Order should start as A , B, C.
-  EXPECT_EQ(3u, num_toolbar_items());
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(2u));
-
-  // By default, all actions should be visible.
-  EXPECT_TRUE(action_api->GetBrowserActionVisibility(browser_action_a()->id()));
-  EXPECT_TRUE(action_api->GetBrowserActionVisibility(browser_action_b()->id()));
-  EXPECT_TRUE(action_api->GetBrowserActionVisibility(browser_action_c()->id()));
-
-  // Hiding an action should result in its removal from the toolbar.
-  action_api->SetBrowserActionVisibility(browser_action_b()->id(), false);
-  EXPECT_FALSE(
-      action_api->GetBrowserActionVisibility(browser_action_b()->id()));
-  // Thus, there should now only be two items on the toolbar - A and C.
-  EXPECT_EQ(2u, num_toolbar_items());
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(1u));
-
-  // Resetting the visibility to 'true' should result in the extension being
-  // added back at its original position.
-  action_api->SetBrowserActionVisibility(browser_action_b()->id(), true);
-  EXPECT_TRUE(action_api->GetBrowserActionVisibility(browser_action_b()->id()));
-  // So the toolbar order should be A, B, C.
-  EXPECT_EQ(3u, num_toolbar_items());
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(2u));
 }
 
 TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarIncognitoModeTest) {
@@ -1042,9 +901,9 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarIncognitoModeTest) {
   ToolbarActionsModelTestObserver incognito_observer(incognito_model);
   EXPECT_EQ(0u, incognito_observer.moved_count());
 
-  // We should have two items: C, B, and the order should be preserved from the
-  // original model.
-  EXPECT_EQ(2u, incognito_model->toolbar_items().size());
+  // We should have two actions: C, B, and the order should be preserved from
+  // the original model.
+  EXPECT_EQ(2u, incognito_model->action_ids().size());
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u, incognito_model));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u, incognito_model));
 
@@ -1113,15 +972,15 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarIncognitoEnableExtension) {
 
   extensions::TestExtensionDir* dirs[] = {&dir1, &dir2};
   const extensions::Extension* extensions[] = {nullptr, nullptr};
-  for (size_t i = 0; i < arraysize(dirs); ++i) {
+  for (size_t i = 0; i < base::size(dirs); ++i) {
     // The extension id will be calculated from the file path; we need this to
     // wait for the extension to load.
     base::FilePath path_for_id =
-        base::MakeAbsoluteFilePath(dirs[i]->unpacked_path());
+        base::MakeAbsoluteFilePath(dirs[i]->UnpackedPath());
     std::string id = crx_file::id_util::GenerateIdForPath(path_for_id);
     extensions::TestExtensionRegistryObserver observer(registry(), id);
-    extensions::UnpackedInstaller::Create(service())
-        ->Load(dirs[i]->unpacked_path());
+    extensions::UnpackedInstaller::Create(service())->Load(
+        dirs[i]->UnpackedPath());
     observer.WaitForExtensionLoaded();
     extensions[i] = registry()->enabled_extensions().GetByID(id);
     ASSERT_TRUE(extensions[i]);
@@ -1133,7 +992,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarIncognitoEnableExtension) {
   std::string extension_b = extensions[1]->id();
 
   // The first model should have both extensions visible.
-  EXPECT_EQ(2u, toolbar_model()->toolbar_items().size());
+  EXPECT_EQ(2u, toolbar_model()->action_ids().size());
   EXPECT_EQ(extension_a, GetActionIdAtIndex(0u));
   EXPECT_EQ(extension_b, GetActionIdAtIndex(1u));
 
@@ -1147,7 +1006,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarIncognitoEnableExtension) {
   ToolbarActionsModelTestObserver incognito_observer(incognito_model);
 
   // Right now, no actions are enabled in incognito mode.
-  EXPECT_EQ(0u, incognito_model->toolbar_items().size());
+  EXPECT_EQ(0u, incognito_model->action_ids().size());
 
   // Set extension B (which is overflowed) to be enabled in incognito. This
   // results in b reloading, so wait for it.
@@ -1159,7 +1018,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarIncognitoEnableExtension) {
 
   // Now, we should have one icon in the incognito bar. But, since B is
   // overflowed in the main bar, it shouldn't be visible.
-  EXPECT_EQ(1u, incognito_model->toolbar_items().size());
+  EXPECT_EQ(1u, incognito_model->action_ids().size());
   EXPECT_EQ(extension_b, GetActionIdAtIndex(0u, incognito_model));
   EXPECT_EQ(0u, incognito_model->visible_icon_count());
 
@@ -1173,7 +1032,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarIncognitoEnableExtension) {
   // Now, both extensions should be enabled in incognito mode. In addition, the
   // incognito toolbar should have expanded to show extension A (since it isn't
   // overflowed in the main bar).
-  EXPECT_EQ(2u, incognito_model->toolbar_items().size());
+  EXPECT_EQ(2u, incognito_model->action_ids().size());
   EXPECT_EQ(extension_a, GetActionIdAtIndex(0u, incognito_model));
   EXPECT_EQ(extension_b, GetActionIdAtIndex(1u, incognito_model));
   EXPECT_EQ(1u, incognito_model->visible_icon_count());
@@ -1181,10 +1040,7 @@ TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarIncognitoEnableExtension) {
 
 // Test that hiding actions on the toolbar results in sending them to the
 // overflow menu when the redesign switch is enabled.
-TEST_F(ToolbarActionsModelUnitTest,
-       ActionsToolbarActionsVisibilityWithSwitchAndComponentActions) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), true);
+TEST_F(ToolbarActionsModelUnitTest, ActionsToolbarActionsVisibilityWithSwitch) {
   Init();
 
   // We choose to use all types of extensions here, since the misnamed
@@ -1197,7 +1053,7 @@ TEST_F(ToolbarActionsModelUnitTest,
   const extensions::Extension* extension_c = no_action();
 
   // Sanity check: Order should start as A, B, C, with all three visible.
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_TRUE(toolbar_model()->all_icons_visible());
   EXPECT_EQ(extension_a->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(extension_b->id(), GetActionIdAtIndex(1u));
@@ -1206,7 +1062,7 @@ TEST_F(ToolbarActionsModelUnitTest,
   toolbar_model()->SetActionVisibility(extension_b->id(), false);
 
   // Thus, the order should be A, C, B, with B in the overflow.
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(2u, toolbar_model()->visible_icon_count());
   EXPECT_EQ(extension_a->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(extension_c->id(), GetActionIdAtIndex(1u));
@@ -1216,7 +1072,7 @@ TEST_F(ToolbarActionsModelUnitTest,
   // as well, but as the _first_ extension in the overflow.
   toolbar_model()->SetActionVisibility(extension_a->id(), false);
   // Thus, the order should be C, A, B, with A and B in the overflow.
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(1u, toolbar_model()->visible_icon_count());
   EXPECT_EQ(extension_c->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(extension_a->id(), GetActionIdAtIndex(1u));
@@ -1227,7 +1083,7 @@ TEST_F(ToolbarActionsModelUnitTest,
   // the visible icon list (not to its original position).
   toolbar_model()->SetActionVisibility(extension_a->id(), true);
   // So order is C, A, B, with only B in the overflow.
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(2u, toolbar_model()->visible_icon_count());
   EXPECT_EQ(extension_c->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(extension_a->id(), GetActionIdAtIndex(1u));
@@ -1236,7 +1092,7 @@ TEST_F(ToolbarActionsModelUnitTest,
   // Resetting B to be visible should make the order C, A, B, with no
   // overflow.
   toolbar_model()->SetActionVisibility(extension_b->id(), true);
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_TRUE(toolbar_model()->all_icons_visible());
   EXPECT_EQ(extension_c->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(extension_a->id(), GetActionIdAtIndex(1u));
@@ -1274,7 +1130,7 @@ TEST_F(ToolbarActionsModelUnitTest, ModelWaitsForExtensionSystemReady) {
 
 // Check that the toolbar model correctly clears and reorders when it detects
 // a preference change.
-TEST_F(ToolbarActionsModelUnitTest, ToolbarModelPrefChange) {
+TEST_F(ToolbarActionsModelUnitTest, LocationBarModelPrefChange) {
   Init();
 
   ASSERT_TRUE(AddBrowserActionExtensions());
@@ -1308,235 +1164,47 @@ TEST_F(ToolbarActionsModelUnitTest, ToolbarModelPrefChange) {
             observer()->inserted_count() - observer()->removed_count());
 }
 
-TEST_F(ToolbarActionsModelUnitTest, ComponentExtensionsAddedToEnd) {
-  Init();
-
-  ASSERT_TRUE(AddBrowserActionExtensions());
-
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1));
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(2));
-
-  const char kName[] = "component";
-  extensions::DictionaryBuilder manifest;
-  manifest.Set("name", kName)
-      .Set("description", "An extension")
-      .Set("manifest_version", 2)
-      .Set("version", "1.0.0")
-      .Set("browser_action", extensions::DictionaryBuilder().Build());
-  scoped_refptr<const extensions::Extension> component_extension =
-      extensions::ExtensionBuilder()
-          .SetManifest(manifest.Build())
-          .SetID(crx_file::id_util::GenerateId(kName))
-          .SetLocation(extensions::Manifest::COMPONENT)
-          .Build();
-  service()->AddExtension(component_extension.get());
-
-  EXPECT_EQ(component_extension.get()->id(), GetActionIdAtIndex(0));
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(1));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(2));
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(3));
-}
-
-// Test various different reorderings, removals, and reinsertions of the
-// toolbar with component actions.
-TEST_F(ToolbarActionsModelUnitTest,
-       ActionsToolbarReorderAndReinsertWithSwitchAndComponentActions) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), true);
-  SetMockActionsFactory(new MockComponentToolbarActionsFactory(nullptr));
-  Init();
-
-  // One component action was added when the model was initialized.
-  EXPECT_EQ(1u, num_toolbar_items());
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(0u));
-  EXPECT_TRUE(toolbar_model()->HasComponentAction(component_action_id()));
-
-  // Add the three browser action extensions.
-  ASSERT_TRUE(AddBrowserActionExtensions());
-
-  // Verify the four actions are in the model in the proper order.
-  EXPECT_EQ(4u, num_toolbar_items());
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(1u));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(2u));
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(3u));
-
-  // Order is now MCA, A, B, C. Let's put C first.
-  toolbar_model()->MoveActionIcon(browser_action_c()->id(), 0);
-  EXPECT_EQ(1u, observer()->moved_count());
-  EXPECT_EQ(4u, num_toolbar_items());
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(1u));
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(2u));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(3u));
-
-  // Order is now C, MCA, A, B. Let's put MCA last.
-  toolbar_model()->MoveActionIcon(component_action_id(), 3);
-  EXPECT_EQ(2u, observer()->moved_count());
-  EXPECT_EQ(4u, num_toolbar_items());
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(1u));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(2u));
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(3u));
-
-  // Order is now C, A, B, MCA. Move MCA to the location it already occupies.
-  toolbar_model()->MoveActionIcon(component_action_id(), 3);
-  EXPECT_EQ(3u, observer()->moved_count());
-  EXPECT_EQ(4u, num_toolbar_items());
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(1u));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(2u));
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(3u));
-
-  // Order is still C, A, B, MCA. Move MCA to second to last, in preparation
-  // for visibility checks.
-  toolbar_model()->MoveActionIcon(component_action_id(), 2);
-  EXPECT_EQ(4u, observer()->moved_count());
-  EXPECT_EQ(4u, num_toolbar_items());
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(1u));
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(2u));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(3u));
-
-  // Order is now C, A, MCA, B. Show only three icons: C, A, MCA, [B].
-  toolbar_model()->SetVisibleIconCount(3);
-  EXPECT_EQ(3u, toolbar_model()->visible_icon_count());
-  EXPECT_FALSE(toolbar_model()->all_icons_visible());
-
-  // Show only two icons so we test MCA in the overflow. The icons should
-  // be: C, A, [MCA], [B].
-  toolbar_model()->SetVisibleIconCount(2);
-  EXPECT_EQ(2u, toolbar_model()->visible_icon_count());
-  EXPECT_FALSE(toolbar_model()->all_icons_visible());
-
-  // Show all the icons again. Order should be C, A, MCA, B.
-  toolbar_model()->SetVisibleIconCount(4);
-  EXPECT_EQ(4u, toolbar_model()->visible_icon_count());
-  EXPECT_TRUE(toolbar_model()->all_icons_visible());
-
-  // Order is C, A, MCA, B. Remove C.
-  ASSERT_TRUE(RemoveExtension(browser_action_c()));
-  EXPECT_EQ(1u, observer()->removed_count());
-  EXPECT_EQ(3u, num_toolbar_items());
-  EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(1u));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(2u));
-
-  // Order is now A, MCA, B. Remove A.
-  ASSERT_TRUE(RemoveExtension(browser_action_a()));
-  EXPECT_EQ(2u, observer()->removed_count());
-  EXPECT_EQ(2u, num_toolbar_items());
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
-
-  // Order is now MCA, B. Remove B.
-  ASSERT_TRUE(RemoveExtension(browser_action_b()));
-  EXPECT_EQ(3u, observer()->removed_count());
-  EXPECT_EQ(1u, num_toolbar_items());
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(0u));
-
-  // Just MCA is visible.  Remove MCA.
-  toolbar_model()->RemoveComponentAction(component_action_id());
-  EXPECT_EQ(4u, observer()->removed_count());
-  EXPECT_EQ(0u, num_toolbar_items());
-  EXPECT_FALSE(toolbar_model()->HasComponentAction(component_action_id()));
-
-  // Add MCA again.
-  toolbar_model()->AddComponentAction(component_action_id());
-  EXPECT_EQ(1u, num_toolbar_items());
-  EXPECT_EQ(4u, observer()->inserted_count());
-  EXPECT_TRUE(toolbar_model()->HasComponentAction(component_action_id()));
-  // Newly added component actions get put at the end of the visible area.
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(1u, toolbar_model()->visible_icon_count());
-  EXPECT_TRUE(toolbar_model()->all_icons_visible());
-
-  // Load extension C again.
-  ASSERT_TRUE(AddExtension(browser_action_c()));
-  EXPECT_EQ(5u, observer()->inserted_count());
-  EXPECT_EQ(2u, num_toolbar_items());
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(0u));
-  EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(1u));
-}
-
 TEST_F(ToolbarActionsModelUnitTest,
        TestUninstallVisibleExtensionDoesntBringOutOther) {
   Init();
   ASSERT_TRUE(AddBrowserActionExtensions());
   toolbar_model()->SetVisibleIconCount(2u);
-  EXPECT_EQ(3u, num_toolbar_items());
+  EXPECT_EQ(3u, num_actions());
   EXPECT_EQ(2u, toolbar_model()->visible_icon_count());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_b()->id(), GetActionIdAtIndex(1u));
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(2u));
 
-  service()->UninstallExtension(
-      browser_action_b()->id(),
-      extensions::UNINSTALL_REASON_FOR_TESTING,
-      base::Bind(&base::DoNothing),
-      nullptr);
+  service()->UninstallExtension(browser_action_b()->id(),
+                                extensions::UNINSTALL_REASON_FOR_TESTING,
+                                nullptr);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_EQ(2u, num_toolbar_items());
+  EXPECT_EQ(2u, num_actions());
   EXPECT_EQ(1u, toolbar_model()->visible_icon_count());
   EXPECT_EQ(browser_action_a()->id(), GetActionIdAtIndex(0u));
   EXPECT_EQ(browser_action_c()->id(), GetActionIdAtIndex(1u));
 }
 
-TEST_F(ToolbarActionsModelUnitTest,
-       NoMigrationToComponentActionWithoutExtension) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), true);
-  InitForMigrationTest(MigrationStatus::FEATURE_ENABLED_NO_EXTENSION);
+// Test that user-script extensions show up on the toolbar.
+TEST_F(ToolbarActionsModelUnitTest, AddUserScriptExtension) {
+  Init();
 
-  EXPECT_EQ(0u, num_toolbar_items());
-}
+  scoped_refptr<const extensions::Extension> extension =
+      extensions::ExtensionBuilder("a")
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .MergeManifest(extensions::DictionaryBuilder()
+                             .Set("converted_from_user_script", true)
+                             .Build())
+          .Build();
 
-TEST_F(ToolbarActionsModelUnitTest, MigrationFromExtensionToComponentAction) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), true);
-  InitForMigrationTest(MigrationStatus::FEATURE_ENABLED_EXTENSION_INSTALLED);
+  // We should start off without any actions.
+  EXPECT_EQ(0u, num_actions());
+  EXPECT_EQ(0u, toolbar_model()->visible_icon_count());
 
-  // Initialization disables the extension and adds the migrated component
-  // action.
-  EXPECT_EQ(1u, num_toolbar_items());
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(0u));
-}
-
-TEST_F(ToolbarActionsModelUnitTest, MigratedComponentActionAddedWithPrefTrue) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), true);
-  InitForMigrationTest(MigrationStatus::FEATURE_ENABLED_WITH_PREF_TRUE);
-
-  EXPECT_EQ(1u, num_toolbar_items());
-  EXPECT_EQ(component_action_id(), GetActionIdAtIndex(0u));
-}
-
-TEST_F(ToolbarActionsModelUnitTest, NoMigratedComponentActionWithPrefFalse) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), true);
-  InitForMigrationTest(MigrationStatus::FEATURE_ENABLED_WITH_PREF_FALSE);
-
-  EXPECT_EQ(0u, num_toolbar_items());
-}
-
-TEST_F(ToolbarActionsModelUnitTest, MigrationFromComponentActionToExtension) {
-  extensions::FeatureSwitch::ScopedOverride enable_redesign(
-      extensions::FeatureSwitch::extension_action_redesign(), true);
-  InitForMigrationTest(MigrationStatus::FEATURE_DISABLED_WITH_PREF_TRUE);
-
-  // Initialization re-enables the extension and removes the migrated component
-  // action.
-  EXPECT_EQ(1u, num_toolbar_items());
-  EXPECT_EQ(browser_action_migrated()->id(), GetActionIdAtIndex(0u));
-}
-
-TEST_F(ToolbarActionsModelUnitTest,
-       MigrationToExtensionWithoutExtensionActionRedesign) {
-  InitForMigrationTest(MigrationStatus::FEATURE_DISABLED_WITH_PREF_TRUE);
-
-  // Initialization re-enables the extension.
-  EXPECT_EQ(1u, num_toolbar_items());
-  EXPECT_EQ(browser_action_migrated()->id(), GetActionIdAtIndex(0u));
+  // Add the extension. It should be visible.
+  service()->AddExtension(extension.get());
+  EXPECT_EQ(1u, num_actions());
+  EXPECT_EQ(1u, toolbar_model()->visible_icon_count());
+  EXPECT_EQ(extension.get()->id(), GetActionIdAtIndex(0u));
 }

@@ -9,7 +9,6 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/memory/linked_ptr.h"
 #include "base/path_service.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -33,19 +32,20 @@ TEST(ExtensionL10nUtil, ValidateLocalesWithBadLocale) {
   base::ScopedTempDir temp;
   ASSERT_TRUE(temp.CreateUniqueTempDir());
 
-  base::FilePath src_path = temp.path().Append(kLocaleFolder);
+  base::FilePath src_path = temp.GetPath().Append(kLocaleFolder);
   base::FilePath locale = src_path.AppendASCII("ms");
   ASSERT_TRUE(base::CreateDirectory(locale));
 
   base::FilePath messages_file = locale.Append(kMessagesFilename);
   std::string data = "{ \"name\":";
-  ASSERT_TRUE(base::WriteFile(messages_file, data.c_str(), data.length()));
+  ASSERT_EQ(static_cast<int>(data.length()),
+            base::WriteFile(messages_file, data.c_str(), data.length()));
 
   base::DictionaryValue manifest;
   manifest.SetString(keys::kDefaultLocale, "en");
   std::string error;
   EXPECT_FALSE(extension_l10n_util::ValidateExtensionLocales(
-      temp.path(), &manifest, &error));
+      temp.GetPath(), &manifest, &error));
   EXPECT_THAT(
       error,
       testing::HasSubstr(base::UTF16ToUTF8(messages_file.LossyDisplayName())));
@@ -55,7 +55,7 @@ TEST(ExtensionL10nUtil, GetValidLocalesEmptyLocaleFolder) {
   base::ScopedTempDir temp;
   ASSERT_TRUE(temp.CreateUniqueTempDir());
 
-  base::FilePath src_path = temp.path().Append(kLocaleFolder);
+  base::FilePath src_path = temp.GetPath().Append(kLocaleFolder);
   ASSERT_TRUE(base::CreateDirectory(src_path));
 
   std::string error;
@@ -70,7 +70,7 @@ TEST(ExtensionL10nUtil, GetValidLocalesWithValidLocaleNoMessagesFile) {
   base::ScopedTempDir temp;
   ASSERT_TRUE(temp.CreateUniqueTempDir());
 
-  base::FilePath src_path = temp.path().Append(kLocaleFolder);
+  base::FilePath src_path = temp.GetPath().Append(kLocaleFolder);
   ASSERT_TRUE(base::CreateDirectory(src_path));
   ASSERT_TRUE(base::CreateDirectory(src_path.AppendASCII("sr")));
 
@@ -86,14 +86,15 @@ TEST(ExtensionL10nUtil, GetValidLocalesWithUnsupportedLocale) {
   base::ScopedTempDir temp;
   ASSERT_TRUE(temp.CreateUniqueTempDir());
 
-  base::FilePath src_path = temp.path().Append(kLocaleFolder);
+  base::FilePath src_path = temp.GetPath().Append(kLocaleFolder);
   ASSERT_TRUE(base::CreateDirectory(src_path));
   // Supported locale.
   base::FilePath locale_1 = src_path.AppendASCII("sr");
   ASSERT_TRUE(base::CreateDirectory(locale_1));
   std::string data("whatever");
-  ASSERT_TRUE(base::WriteFile(
-      locale_1.Append(kMessagesFilename), data.c_str(), data.length()));
+  ASSERT_EQ(static_cast<int>(data.length()),
+            base::WriteFile(locale_1.Append(kMessagesFilename), data.c_str(),
+                            data.length()));
   // Unsupported locale.
   ASSERT_TRUE(base::CreateDirectory(src_path.AppendASCII("xxx_yyy")));
 
@@ -108,7 +109,7 @@ TEST(ExtensionL10nUtil, GetValidLocalesWithUnsupportedLocale) {
 
 TEST(ExtensionL10nUtil, GetValidLocalesWithValidLocalesAndMessagesFile) {
   base::FilePath install_dir;
-  ASSERT_TRUE(PathService::Get(DIR_TEST_DATA, &install_dir));
+  ASSERT_TRUE(base::PathService::Get(DIR_TEST_DATA, &install_dir));
   install_dir =
       install_dir.AppendASCII("extension_with_locales").Append(kLocaleFolder);
 
@@ -123,15 +124,15 @@ TEST(ExtensionL10nUtil, GetValidLocalesWithValidLocalesAndMessagesFile) {
 }
 
 TEST(ExtensionL10nUtil, LoadMessageCatalogsValidFallback) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("en-US");
   base::FilePath install_dir;
-  ASSERT_TRUE(PathService::Get(DIR_TEST_DATA, &install_dir));
+  ASSERT_TRUE(base::PathService::Get(DIR_TEST_DATA, &install_dir));
   install_dir =
       install_dir.AppendASCII("extension_with_locales").Append(kLocaleFolder);
 
   std::string error;
   std::unique_ptr<MessageBundle> bundle(
-      extension_l10n_util::LoadMessageCatalogs(install_dir, "sr", "en_US",
-                                               &error));
+      extension_l10n_util::LoadMessageCatalogs(install_dir, "sr", &error));
   ASSERT_FALSE(NULL == bundle.get());
   EXPECT_TRUE(error.empty());
   EXPECT_EQ("Color", bundle->GetL10nMessage("color"));
@@ -139,25 +140,27 @@ TEST(ExtensionL10nUtil, LoadMessageCatalogsValidFallback) {
 }
 
 TEST(ExtensionL10nUtil, LoadMessageCatalogsMissingFiles) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("sr");
   base::ScopedTempDir temp;
   ASSERT_TRUE(temp.CreateUniqueTempDir());
 
-  base::FilePath src_path = temp.path().Append(kLocaleFolder);
+  base::FilePath src_path = temp.GetPath().Append(kLocaleFolder);
   ASSERT_TRUE(base::CreateDirectory(src_path));
   ASSERT_TRUE(base::CreateDirectory(src_path.AppendASCII("en")));
   ASSERT_TRUE(base::CreateDirectory(src_path.AppendASCII("sr")));
 
   std::string error;
-  EXPECT_TRUE(NULL == extension_l10n_util::LoadMessageCatalogs(src_path, "en",
-                                                               "sr", &error));
+  EXPECT_TRUE(NULL ==
+              extension_l10n_util::LoadMessageCatalogs(src_path, "en", &error));
   EXPECT_FALSE(error.empty());
 }
 
 TEST(ExtensionL10nUtil, LoadMessageCatalogsBadJSONFormat) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("sr");
   base::ScopedTempDir temp;
   ASSERT_TRUE(temp.CreateUniqueTempDir());
 
-  base::FilePath src_path = temp.path().Append(kLocaleFolder);
+  base::FilePath src_path = temp.GetPath().Append(kLocaleFolder);
   ASSERT_TRUE(base::CreateDirectory(src_path));
 
   base::FilePath locale = src_path.AppendASCII("sr");
@@ -165,11 +168,12 @@ TEST(ExtensionL10nUtil, LoadMessageCatalogsBadJSONFormat) {
 
   std::string data = "{ \"name\":";
   base::FilePath messages_file = locale.Append(kMessagesFilename);
-  ASSERT_TRUE(base::WriteFile(messages_file, data.c_str(), data.length()));
+  ASSERT_EQ(static_cast<int>(data.length()),
+            base::WriteFile(messages_file, data.c_str(), data.length()));
 
   std::string error;
   EXPECT_TRUE(NULL == extension_l10n_util::LoadMessageCatalogs(
-                          src_path, "en_US", "sr", &error));
+                          src_path, "en_US", &error));
   EXPECT_EQ(ErrorUtils::FormatErrorMessage(
                 errors::kLocalesInvalidLocale,
                 base::UTF16ToUTF8(messages_file.LossyDisplayName()),
@@ -178,10 +182,11 @@ TEST(ExtensionL10nUtil, LoadMessageCatalogsBadJSONFormat) {
 }
 
 TEST(ExtensionL10nUtil, LoadMessageCatalogsDuplicateKeys) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("sr");
   base::ScopedTempDir temp;
   ASSERT_TRUE(temp.CreateUniqueTempDir());
 
-  base::FilePath src_path = temp.path().Append(kLocaleFolder);
+  base::FilePath src_path = temp.GetPath().Append(kLocaleFolder);
   ASSERT_TRUE(base::CreateDirectory(src_path));
 
   base::FilePath locale_1 = src_path.AppendASCII("en");
@@ -190,76 +195,80 @@ TEST(ExtensionL10nUtil, LoadMessageCatalogsDuplicateKeys) {
   std::string data =
       "{ \"name\": { \"message\": \"something\" }, "
       "\"name\": { \"message\": \"something else\" } }";
-  ASSERT_TRUE(base::WriteFile(
-      locale_1.Append(kMessagesFilename), data.c_str(), data.length()));
+  ASSERT_EQ(static_cast<int>(data.length()),
+            base::WriteFile(locale_1.Append(kMessagesFilename), data.c_str(),
+                            data.length()));
 
   base::FilePath locale_2 = src_path.AppendASCII("sr");
   ASSERT_TRUE(base::CreateDirectory(locale_2));
 
-  ASSERT_TRUE(base::WriteFile(
-      locale_2.Append(kMessagesFilename), data.c_str(), data.length()));
+  ASSERT_EQ(static_cast<int>(data.length()),
+            base::WriteFile(locale_2.Append(kMessagesFilename), data.c_str(),
+                            data.length()));
 
   std::string error;
   // JSON parser hides duplicates. We are going to get only one key/value
   // pair at the end.
   std::unique_ptr<MessageBundle> message_bundle(
-      extension_l10n_util::LoadMessageCatalogs(src_path, "en", "sr", &error));
+      extension_l10n_util::LoadMessageCatalogs(src_path, "en", &error));
   EXPECT_TRUE(NULL != message_bundle.get());
   EXPECT_TRUE(error.empty());
 }
 
 // Caller owns the returned object.
 MessageBundle* CreateManifestBundle() {
-  linked_ptr<base::DictionaryValue> catalog(new base::DictionaryValue);
+  auto catalog = std::make_unique<base::DictionaryValue>();
 
-  base::DictionaryValue* name_tree = new base::DictionaryValue();
+  auto name_tree = std::make_unique<base::DictionaryValue>();
   name_tree->SetString("message", "name");
-  catalog->Set("name", name_tree);
+  catalog->Set("name", std::move(name_tree));
 
-  base::DictionaryValue* short_name_tree = new base::DictionaryValue();
+  auto short_name_tree = std::make_unique<base::DictionaryValue>();
   short_name_tree->SetString("message", "short_name");
-  catalog->Set("short_name", short_name_tree);
+  catalog->Set("short_name", std::move(short_name_tree));
 
-  base::DictionaryValue* description_tree = new base::DictionaryValue();
+  auto description_tree = std::make_unique<base::DictionaryValue>();
   description_tree->SetString("message", "description");
-  catalog->Set("description", description_tree);
+  catalog->Set("description", std::move(description_tree));
 
-  base::DictionaryValue* action_title_tree = new base::DictionaryValue();
+  auto action_title_tree = std::make_unique<base::DictionaryValue>();
   action_title_tree->SetString("message", "action title");
-  catalog->Set("title", action_title_tree);
+  catalog->Set("title", std::move(action_title_tree));
 
-  base::DictionaryValue* omnibox_keyword_tree = new base::DictionaryValue();
+  auto omnibox_keyword_tree = std::make_unique<base::DictionaryValue>();
   omnibox_keyword_tree->SetString("message", "omnibox keyword");
-  catalog->Set("omnibox_keyword", omnibox_keyword_tree);
+  catalog->Set("omnibox_keyword", std::move(omnibox_keyword_tree));
 
-  base::DictionaryValue* file_handler_title_tree = new base::DictionaryValue();
+  auto file_handler_title_tree = std::make_unique<base::DictionaryValue>();
   file_handler_title_tree->SetString("message", "file handler title");
-  catalog->Set("file_handler_title", file_handler_title_tree);
+  catalog->Set("file_handler_title", std::move(file_handler_title_tree));
 
-  base::DictionaryValue* launch_local_path_tree = new base::DictionaryValue();
+  auto launch_local_path_tree = std::make_unique<base::DictionaryValue>();
   launch_local_path_tree->SetString("message", "main.html");
-  catalog->Set("launch_local_path", launch_local_path_tree);
+  catalog->Set("launch_local_path", std::move(launch_local_path_tree));
 
-  base::DictionaryValue* launch_web_url_tree = new base::DictionaryValue();
+  auto launch_web_url_tree = std::make_unique<base::DictionaryValue>();
   launch_web_url_tree->SetString("message", "http://www.google.com/");
-  catalog->Set("launch_web_url", launch_web_url_tree);
+  catalog->Set("launch_web_url", std::move(launch_web_url_tree));
 
-  base::DictionaryValue* first_command_description_tree =
-      new base::DictionaryValue();
+  auto first_command_description_tree =
+      std::make_unique<base::DictionaryValue>();
   first_command_description_tree->SetString("message", "first command");
-  catalog->Set("first_command_description", first_command_description_tree);
+  catalog->Set("first_command_description",
+               std::move(first_command_description_tree));
 
-  base::DictionaryValue* second_command_description_tree =
-      new base::DictionaryValue();
+  auto second_command_description_tree =
+      std::make_unique<base::DictionaryValue>();
   second_command_description_tree->SetString("message", "second command");
-  catalog->Set("second_command_description", second_command_description_tree);
+  catalog->Set("second_command_description",
+               std::move(second_command_description_tree));
 
-  base::DictionaryValue* url_country_tree = new base::DictionaryValue();
+  auto url_country_tree = std::make_unique<base::DictionaryValue>();
   url_country_tree->SetString("message", "de");
-  catalog->Set("country", url_country_tree);
+  catalog->Set("country", std::move(url_country_tree));
 
-  std::vector<linked_ptr<base::DictionaryValue> > catalogs;
-  catalogs.push_back(catalog);
+  std::vector<std::unique_ptr<base::DictionaryValue>> catalogs;
+  catalogs.push_back(std::move(catalog));
 
   std::string error;
   MessageBundle* bundle = MessageBundle::Create(catalogs, &error);
@@ -426,12 +435,13 @@ TEST(ExtensionL10nUtil, LocalizeManifestWithNameDescriptionFileHandlerTitle) {
   base::DictionaryValue manifest;
   manifest.SetString(keys::kName, "__MSG_name__");
   manifest.SetString(keys::kDescription, "__MSG_description__");
-  base::ListValue* handlers = new base::ListValue();
-  manifest.Set(keys::kFileBrowserHandlers, handlers);
-  base::DictionaryValue* handler = new base::DictionaryValue();
-  handlers->Append(handler);
-  handler->SetString(keys::kPageActionDefaultTitle,
-                     "__MSG_file_handler_title__");
+
+  base::DictionaryValue handler;
+  handler.SetString(keys::kPageActionDefaultTitle,
+                    "__MSG_file_handler_title__");
+  auto handlers = std::make_unique<base::ListValue>();
+  handlers->GetList().push_back(std::move(handler));
+  manifest.Set(keys::kFileBrowserHandlers, std::move(handlers));
 
   std::string error;
   std::unique_ptr<MessageBundle> messages(CreateManifestBundle());
@@ -446,7 +456,11 @@ TEST(ExtensionL10nUtil, LocalizeManifestWithNameDescriptionFileHandlerTitle) {
   ASSERT_TRUE(manifest.GetString(keys::kDescription, &result));
   EXPECT_EQ("description", result);
 
-  ASSERT_TRUE(handler->GetString(keys::kPageActionDefaultTitle, &result));
+  base::ListValue* handlers_raw = nullptr;
+  manifest.GetList(keys::kFileBrowserHandlers, &handlers_raw);
+  base::DictionaryValue* handler_raw = nullptr;
+  handlers_raw->GetList()[0].GetAsDictionary(&handler_raw);
+  ASSERT_TRUE(handler_raw->GetString(keys::kPageActionDefaultTitle, &result));
   EXPECT_EQ("file handler title", result);
 
   EXPECT_TRUE(error.empty());
@@ -456,19 +470,19 @@ TEST(ExtensionL10nUtil, LocalizeManifestWithNameDescriptionCommandDescription) {
   base::DictionaryValue manifest;
   manifest.SetString(keys::kName, "__MSG_name__");
   manifest.SetString(keys::kDescription, "__MSG_description__");
-  base::DictionaryValue* commands = new base::DictionaryValue();
+  auto commands = std::make_unique<base::DictionaryValue>();
   std::string commands_title(keys::kCommands);
-  manifest.Set(commands_title, commands);
 
-  base::DictionaryValue* first_command = new base::DictionaryValue();
-  commands->Set("first_command", first_command);
+  auto first_command = std::make_unique<base::DictionaryValue>();
   first_command->SetString(keys::kDescription,
                            "__MSG_first_command_description__");
+  commands->Set("first_command", std::move(first_command));
 
-  base::DictionaryValue* second_command = new base::DictionaryValue();
-  commands->Set("second_command", second_command);
+  auto second_command = std::make_unique<base::DictionaryValue>();
   second_command->SetString(keys::kDescription,
                             "__MSG_second_command_description__");
+  commands->Set("second_command", std::move(second_command));
+  manifest.Set(commands_title, std::move(commands));
 
   std::string error;
   std::unique_ptr<MessageBundle> messages(CreateManifestBundle());
@@ -533,19 +547,19 @@ TEST(ExtensionL10nUtil, LocalizeManifestWithSearchProviderMsgs) {
   manifest.SetString(keys::kName, "__MSG_name__");
   manifest.SetString(keys::kDescription, "__MSG_description__");
 
-  base::DictionaryValue* search_provider = new base::DictionaryValue;
+  auto search_provider = std::make_unique<base::DictionaryValue>();
   search_provider->SetString("name", "__MSG_country__");
   search_provider->SetString("keyword", "__MSG_omnibox_keyword__");
   search_provider->SetString("search_url", "http://www.foo.__MSG_country__");
   search_provider->SetString("favicon_url", "http://www.foo.__MSG_country__");
   search_provider->SetString("suggest_url", "http://www.foo.__MSG_country__");
-  manifest.Set(keys::kOverrideSearchProvider, search_provider);
+  manifest.Set(keys::kOverrideSearchProvider, std::move(search_provider));
 
   manifest.SetString(keys::kOverrideHomepage, "http://www.foo.__MSG_country__");
 
-  base::ListValue* startup_pages = new base::ListValue;
+  auto startup_pages = std::make_unique<base::ListValue>();
   startup_pages->AppendString("http://www.foo.__MSG_country__");
-  manifest.Set(keys::kOverrideStartupPage, startup_pages);
+  manifest.Set(keys::kOverrideStartupPage, std::move(startup_pages));
 
   std::string error;
   std::unique_ptr<MessageBundle> messages(CreateManifestBundle());
@@ -580,64 +594,105 @@ TEST(ExtensionL10nUtil, LocalizeManifestWithSearchProviderMsgs) {
   ASSERT_TRUE(manifest.GetString(keys::kOverrideHomepage, &result));
   EXPECT_EQ("http://www.foo.de", result);
 
-  ASSERT_TRUE(manifest.GetList(keys::kOverrideStartupPage, &startup_pages));
-  ASSERT_TRUE(startup_pages->GetString(0, &result));
+  base::ListValue* startup_pages_raw = nullptr;
+  ASSERT_TRUE(manifest.GetList(keys::kOverrideStartupPage, &startup_pages_raw));
+  ASSERT_TRUE(startup_pages_raw->GetString(0, &result));
   EXPECT_EQ("http://www.foo.de", result);
 
   EXPECT_TRUE(error.empty());
 }
 
-// Try with NULL manifest.
+// Tests that we don't relocalize with a null manifest.
 TEST(ExtensionL10nUtil, ShouldRelocalizeManifestWithNullManifest) {
   EXPECT_FALSE(extension_l10n_util::ShouldRelocalizeManifest(NULL));
 }
 
-// Try with default and current locales missing.
+// Tests that we don't relocalize with default and current locales missing.
 TEST(ExtensionL10nUtil, ShouldRelocalizeManifestEmptyManifest) {
   base::DictionaryValue manifest;
   EXPECT_FALSE(extension_l10n_util::ShouldRelocalizeManifest(&manifest));
 }
 
-// Try with missing current_locale.
+// Tests that we relocalize without a current locale.
 TEST(ExtensionL10nUtil, ShouldRelocalizeManifestWithDefaultLocale) {
   base::DictionaryValue manifest;
   manifest.SetString(keys::kDefaultLocale, "en_US");
   EXPECT_TRUE(extension_l10n_util::ShouldRelocalizeManifest(&manifest));
 }
 
-// Try with missing default_locale.
+// Tests that we don't relocalize without a default locale.
 TEST(ExtensionL10nUtil, ShouldRelocalizeManifestWithCurrentLocale) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("en-US");
   base::DictionaryValue manifest;
-  manifest.SetString(keys::kCurrentLocale,
-                     extension_l10n_util::CurrentLocaleOrDefault());
+  manifest.SetString(keys::kCurrentLocale, "en_US");
   EXPECT_FALSE(extension_l10n_util::ShouldRelocalizeManifest(&manifest));
 }
 
-// Try with all data present, but with same current_locale as system locale.
+// Tests that we don't relocalize with same current_locale as system locale.
 TEST(ExtensionL10nUtil, ShouldRelocalizeManifestSameCurrentLocale) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("en-US");
   base::DictionaryValue manifest;
   manifest.SetString(keys::kDefaultLocale, "en_US");
-  manifest.SetString(keys::kCurrentLocale,
-                     extension_l10n_util::CurrentLocaleOrDefault());
+  manifest.SetString(keys::kCurrentLocale, "en_US");
   EXPECT_FALSE(extension_l10n_util::ShouldRelocalizeManifest(&manifest));
 }
 
-// Try with all data present, but with different current_locale.
+// Tests that we relocalize with a different current_locale.
 TEST(ExtensionL10nUtil, ShouldRelocalizeManifestDifferentCurrentLocale) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("en-US");
   base::DictionaryValue manifest;
   manifest.SetString(keys::kDefaultLocale, "en_US");
   manifest.SetString(keys::kCurrentLocale, "sr");
   EXPECT_TRUE(extension_l10n_util::ShouldRelocalizeManifest(&manifest));
 }
 
+// Tests that we don't relocalize with the same current_locale as preferred
+// locale.
+TEST(ExtensionL10nUtil, ShouldRelocalizeManifestSameCurrentLocaleAsPreferred) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("en-GB", "en-CA");
+  base::DictionaryValue manifest;
+  manifest.SetString(keys::kDefaultLocale, "en_US");
+  manifest.SetString(keys::kCurrentLocale, "en_CA");
+
+  // Preferred and current locale are both en_CA.
+  EXPECT_FALSE(extension_l10n_util::ShouldRelocalizeManifest(&manifest));
+}
+
+// Tests that we relocalize with a different current_locale from the preferred
+// locale.
+TEST(ExtensionL10nUtil,
+     ShouldRelocalizeManifestDifferentCurrentLocaleThanPreferred) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("en-GB", "en-CA");
+  base::DictionaryValue manifest;
+  manifest.SetString(keys::kDefaultLocale, "en_US");
+  manifest.SetString(keys::kCurrentLocale, "en_GB");
+
+  // Requires relocalization as the preferred (en_CA) differs from current
+  // (en_GB).
+  EXPECT_TRUE(extension_l10n_util::ShouldRelocalizeManifest(&manifest));
+}
+
 TEST(ExtensionL10nUtil, GetAllFallbackLocales) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("en-US");
   std::vector<std::string> fallback_locales;
-  extension_l10n_util::GetAllFallbackLocales("en_US", "all", &fallback_locales);
+  extension_l10n_util::GetAllFallbackLocales("all", &fallback_locales);
   ASSERT_EQ(3U, fallback_locales.size());
 
-  CHECK_EQ("en_US", fallback_locales[0]);
-  CHECK_EQ("en", fallback_locales[1]);
-  CHECK_EQ("all", fallback_locales[2]);
+  EXPECT_EQ("en_US", fallback_locales[0]);
+  EXPECT_EQ("en", fallback_locales[1]);
+  EXPECT_EQ("all", fallback_locales[2]);
+}
+
+TEST(ExtensionL10nUtil, GetAllFallbackLocalesWithPreferredLocale) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("en-GB", "en-CA");
+  std::vector<std::string> fallback_locales;
+  extension_l10n_util::GetAllFallbackLocales("all", &fallback_locales);
+  ASSERT_EQ(4U, fallback_locales.size());
+
+  EXPECT_EQ("en_CA", fallback_locales[0]);
+  EXPECT_EQ("en_GB", fallback_locales[1]);
+  EXPECT_EQ("en", fallback_locales[2]);
+  EXPECT_EQ("all", fallback_locales[3]);
 }
 
 }  // namespace

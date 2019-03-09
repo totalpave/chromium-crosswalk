@@ -14,10 +14,8 @@
 
 #include "base/files/file_path.h"
 #include "base/mac/scoped_nsobject.h"
-#include "base/observer_list.h"
 #include "base/time/time.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "ui/base/work_area_watcher_observer.h"
 
 class AppControllerProfileObserver;
 @class AppShimMenuController;
@@ -31,10 +29,7 @@ class Profile;
 @class ProfileMenuController;
 class QuitWithAppsController;
 class ScopedKeepAlive;
-
-namespace ui {
-class WorkAreaWatcherObserver;
-}
+@class ShareMenuController;
 
 // The application controller object, created by loading the MainMenu nib.
 // This handles things like responding to menus when there are no windows
@@ -61,7 +56,8 @@ class WorkAreaWatcherObserver;
   // a weak pointer that is updated to match the corresponding cache entry
   // during a profile switch.
   BookmarkMenuBridge* bookmarkMenuBridge_;
-  std::map<base::FilePath, BookmarkMenuBridge*> profileBookmarkMenuBridgeMap_;
+  std::map<base::FilePath, std::unique_ptr<BookmarkMenuBridge>>
+      profileBookmarkMenuBridgeMap_;
 
   std::unique_ptr<HistoryMenuBridge> historyMenuBridge_;
 
@@ -72,6 +68,9 @@ class WorkAreaWatcherObserver;
   // available when multiple profiles is enabled.
   base::scoped_nsobject<ProfileMenuController> profileMenuController_;
 
+  // Controller for the macOS system share menu.
+  base::scoped_nsobject<ShareMenuController> shareMenuController_;
+
   // If we're told to open URLs (in particular, via |-application:openFiles:| by
   // Launch Services) before we've launched the browser, we queue them up in
   // |startupUrls_| so that they can go in the first browser window/tab.
@@ -81,19 +80,12 @@ class WorkAreaWatcherObserver;
   // Outlets for the close tab/window menu items so that we can adjust the
   // commmand-key equivalent depending on the kind of window and how many
   // tabs it has.
-  IBOutlet NSMenuItem* closeTabMenuItem_;
-  IBOutlet NSMenuItem* closeWindowMenuItem_;
-
-  // Outlet for the help menu so we can bless it so Cocoa adds the search item
-  // to it.
-  IBOutlet NSMenu* helpMenu_;
+  NSMenuItem* closeTabMenuItem_;
+  NSMenuItem* closeWindowMenuItem_;
 
   // If we are expecting a workspace change in response to a reopen
   // event, the time we got the event. A null time otherwise.
   base::TimeTicks reopenTime_;
-
-  // Observers that listen to the work area changes.
-  base::ObserverList<ui::WorkAreaWatcherObserver> workAreaChangeObservers_;
 
   std::unique_ptr<PrefChangeRegistrar> profilePrefRegistrar_;
   PrefChangeRegistrar localPrefRegistrar_;
@@ -118,11 +110,9 @@ class WorkAreaWatcherObserver;
 @property(readonly, nonatomic) BOOL startupComplete;
 @property(readonly, nonatomic) Profile* lastProfile;
 
-// Helper method used to update the "Signin" menu item in the main menu and the
-// wrench menu to reflect the current signed in state.
-+ (void)updateSigninItem:(id)signinItem
-              shouldShow:(BOOL)showSigninMenuItem
-          currentProfile:(Profile*)profile;
+// This method is called very early in application startup after the main menu
+// has been created.
+- (void)mainMenuCreated;
 
 - (void)didEndMainMessageLoop;
 
@@ -132,6 +122,10 @@ class WorkAreaWatcherObserver;
 // Stop trying to terminate the application. That is, prevent the final browser
 // window closure from causing the application to quit.
 - (void)stopTryingToTerminateApplication:(NSApplication*)app;
+
+// Run the quit confirmation panel and return whether or not to continue
+// quitting.
+- (BOOL)runConfirmQuitPanel;
 
 // Indicate that the system is powering off or logging out.
 - (void)willPowerOff:(NSNotification*)inNotification;
@@ -169,10 +163,6 @@ class WorkAreaWatcherObserver;
 - (BookmarkMenuBridge*)bookmarkMenuBridge;
 - (HistoryMenuBridge*)historyMenuBridge;
 
-// Subscribes/unsubscribes from the work area change notification.
-- (void)addObserverForWorkAreaChange:(ui::WorkAreaWatcherObserver*)observer;
-- (void)removeObserverForWorkAreaChange:(ui::WorkAreaWatcherObserver*)observer;
-
 // Initializes the AppShimMenuController. This enables changing the menu bar for
 // apps.
 - (void)initAppShimMenuController;
@@ -182,6 +172,13 @@ class WorkAreaWatcherObserver;
 // no-op if the new profile is the same as the current one. This will always be
 // the original profile and never incognito.
 - (void)windowChangedToProfile:(Profile*)profile;
+
+// Certain NSMenuItems [Close Tab and Close Window] have different
+// keyEquivalents depending on context. This must be invoked in two locations:
+//   * In menuNeedsUpdate:, which is called prior to showing the NSMenu.
+//   * In CommandDispatcher, which independently searches for a matching
+//     keyEquivalent.
+- (void)updateMenuItemKeyEquivalents;
 
 @end
 
@@ -196,6 +193,14 @@ namespace app_controller_mac {
 // different models of application lifetime.
 bool IsOpeningNewWindow();
 
+// Create a guest profile if one is needed. Afterwards, even if the profile
+// already existed, notify the AppController of the profile in use.
+void CreateGuestProfileIfNeeded();
+
+// Called when Enterprise startup dialog is close and repost
+// applicationDidFinished notification.
+void EnterpriseStartupDialogClosed();
+
 }  // namespace app_controller_mac
 
-#endif
+#endif  // CHROME_BROWSER_APP_CONTROLLER_MAC_H_

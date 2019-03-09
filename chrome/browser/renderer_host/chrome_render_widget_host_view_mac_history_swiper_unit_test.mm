@@ -6,11 +6,13 @@
 
 #include "base/mac/scoped_nsobject.h"
 #import "base/mac/sdk_forward_declarations.h"
-#import "chrome/browser/ui/cocoa/cocoa_test_helper.h"
+#import "chrome/browser/ui/cocoa/test/cocoa_test_helper.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
+#include "third_party/blink/public/platform/web_input_event.h"
+#include "third_party/blink/public/platform/web_mouse_wheel_event.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/ocmock_extensions.h"
+#include "ui/events/blink/did_overscroll_params.h"
 
 @interface HistorySwiper (MacHistorySwiperTest)
 - (BOOL)systemSettingsAllowHistorySwiping:(NSEvent*)event;
@@ -97,6 +99,7 @@ class MacHistorySwiperTest : public CocoaTest {
   void momentumMoveGestureAtPoint(NSPoint point);
   void endGestureAtPoint(NSPoint point);
   void rendererACKForBeganEvent();
+  void onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType);
 
   // These methods send a single type of event.
   void sendBeginGestureEventInMiddle();
@@ -198,9 +201,16 @@ void MacHistorySwiperTest::endGestureAtPoint(NSPoint point) {
   sendEndGestureEventAtPoint(point);
 }
 
+void MacHistorySwiperTest::onOverscrolled(
+    cc::OverscrollBehavior::OverscrollBehaviorType behavior) {
+  ui::DidOverscrollParams params;
+  params.overscroll_behavior.x = behavior;
+  [historySwiper_ onOverscrolled:params];
+}
+
 void MacHistorySwiperTest::rendererACKForBeganEvent() {
   blink::WebMouseWheelEvent event;
-  event.phase = blink::WebMouseWheelEvent::PhaseBegan;
+  event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
   [historySwiper_ rendererHandledWheelEvent:event consumed:NO];
 }
 
@@ -223,6 +233,8 @@ TEST_F(MacHistorySwiperTest, SwipeLeft) {
 
   startGestureInMiddle();
   moveGestureInMiddle();
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
 
   EXPECT_EQ(begin_count_, 0);
   EXPECT_EQ(end_count_, 0);
@@ -249,6 +261,8 @@ TEST_F(MacHistorySwiperTest, SwipeRight) {
 
   startGestureInMiddle();
   moveGestureInMiddle();
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
 
   EXPECT_EQ(begin_count_, 0);
   EXPECT_EQ(end_count_, 0);
@@ -276,6 +290,8 @@ TEST_F(MacHistorySwiperTest, SwipeLeftSmallAmount) {
 
   startGestureInMiddle();
   moveGestureInMiddle();
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
   moveGestureAtPoint(makePoint(0.45, 0.5));
   endGestureAtPoint(makePoint(0.45, 0.5));
   EXPECT_EQ(begin_count_, 1);
@@ -294,6 +310,8 @@ TEST_F(MacHistorySwiperTest, SwipeDiagonal) {
 
   startGestureInMiddle();
   moveGestureInMiddle();
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
   moveGestureInMiddle();
   moveGestureAtPoint(makePoint(0.6, 0.59));
   endGestureAtPoint(makePoint(0.6, 0.59));
@@ -314,6 +332,8 @@ TEST_F(MacHistorySwiperTest, SwipeLeftThenDown) {
 
   startGestureInMiddle();
   moveGestureInMiddle();
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
   moveGestureAtPoint(makePoint(0.4, 0.5));
   moveGestureAtPoint(makePoint(0.4, 0.3));
   endGestureAtPoint(makePoint(0.2, 0.2));
@@ -335,6 +355,8 @@ TEST_F(MacHistorySwiperTest, MomentumSwipeLeft) {
 
   // Send a momentum move gesture.
   momentumMoveGestureAtPoint(makePoint(0.5, 0.5));
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
   EXPECT_EQ(begin_count_, 0);
   EXPECT_EQ(end_count_, 0);
 
@@ -361,6 +383,8 @@ TEST_F(MacHistorySwiperTest, MagicMouseMomentumSwipe) {
   // Magic mouse events don't generate 'touches*' callbacks.
   NSEvent* event = mockEventWithPoint(makePoint(0.5, 0.5), NSEventTypeGesture);
   [historySwiper_ beginGestureWithEvent:event];
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
   NSEvent* scrollEvent = scrollWheelEventWithPhase(NSEventPhaseBegan);
   [historySwiper_ handleEvent:scrollEvent];
 
@@ -384,6 +408,8 @@ TEST_F(MacHistorySwiperTest, NoSwipe) {
 
   startGestureInMiddle();
   moveGestureInMiddle();
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
 
   // Starts the gesture.
   moveGestureAtPoint(makePoint(0.44, 0.44));
@@ -408,6 +434,8 @@ TEST_F(MacHistorySwiperTest, TouchEventAfterGestureFinishes) {
   // Successfully pass through a gesture.
   startGestureInMiddle();
   moveGestureInMiddle();
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
   moveGestureAtPoint(makePoint(0.8, 0.5));
   endGestureAtPoint(makePoint(0.8, 0.5));
   EXPECT_TRUE(navigated_right_);
@@ -434,6 +462,8 @@ TEST_F(MacHistorySwiperTest, SwipeRightEventOrdering) {
   NSEvent* scrollEvent = scrollWheelEventWithPhase(NSEventPhaseBegan);
   NSEvent* event = mockEventWithPoint(makePoint(0.5, 0.5), NSEventTypeGesture);
   [historySwiper_ touchesBeganWithEvent:event];
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
   [historySwiper_ handleEvent:scrollEvent];
   rendererACKForBeganEvent();
 
@@ -473,6 +503,8 @@ TEST_F(MacHistorySwiperTest, SubstantialVerticalThenHorizontal) {
 
   startGestureInMiddle();
   moveGestureInMiddle();
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
 
   // Move up, then move down.
   for (CGFloat y = 0.51; y < 0.6; y += 0.01)
@@ -508,6 +540,8 @@ TEST_F(MacHistorySwiperTest, MagicMouseStateResetsCorrectly) {
   //  - endGesture
   sendBeginGestureEventInMiddle();
   [historySwiper_ handleEvent:scrollWheelEventWithPhase(NSEventPhaseBegan)];
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeAuto);
 
   // Callback from Blink to set the relevant state for history swiping.
   rendererACKForBeganEvent();
@@ -544,4 +578,79 @@ TEST_F(MacHistorySwiperTest, MagicMouseStateResetsCorrectly) {
 
   // Vertical motion should never trigger a history swipe!
   EXPECT_FALSE(magic_mouse_history_swipe_);
+}
+
+// With overscroll-behavior value as contain, the page should not navigate,
+// nor should the history overlay appear.
+TEST_F(MacHistorySwiperTest, OverscrollBehaviorContainPreventsNavigation) {
+  // These tests require 10.7+ APIs.
+  if (![NSEvent
+          respondsToSelector:@selector(isSwipeTrackingFromScrollEventsEnabled)])
+    return;
+
+  startGestureInMiddle();
+  moveGestureInMiddle();
+
+  EXPECT_EQ(begin_count_, 0);
+  EXPECT_EQ(end_count_, 0);
+
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeContain);
+  moveGestureAtPoint(makePoint(0.2, 0.5));
+  EXPECT_EQ(begin_count_, 0);
+  EXPECT_EQ(end_count_, 0);
+  EXPECT_FALSE(navigated_right_);
+  EXPECT_FALSE(navigated_left_);
+
+  endGestureAtPoint(makePoint(0.2, 0.5));
+  EXPECT_EQ(begin_count_, 0);
+  EXPECT_EQ(end_count_, 0);
+  EXPECT_FALSE(navigated_right_);
+  EXPECT_FALSE(navigated_left_);
+}
+
+// With overscroll-behavior value as none, the page should not navigate,
+// nor should the history overlay appear.
+TEST_F(MacHistorySwiperTest, OverscrollBehaviorNonePreventsNavigation) {
+  startGestureInMiddle();
+  moveGestureInMiddle();
+
+  EXPECT_EQ(begin_count_, 0);
+  EXPECT_EQ(end_count_, 0);
+
+  onOverscrolled(cc::OverscrollBehavior::OverscrollBehaviorType::
+                     kOverscrollBehaviorTypeNone);
+  moveGestureAtPoint(makePoint(0.2, 0.5));
+  EXPECT_EQ(begin_count_, 0);
+  EXPECT_EQ(end_count_, 0);
+  EXPECT_FALSE(navigated_right_);
+  EXPECT_FALSE(navigated_left_);
+
+  endGestureAtPoint(makePoint(0.2, 0.5));
+  EXPECT_EQ(begin_count_, 0);
+  EXPECT_EQ(end_count_, 0);
+  EXPECT_FALSE(navigated_right_);
+  EXPECT_FALSE(navigated_left_);
+}
+
+// Without overscroll msg from renderer, the page should not navigate, nor
+// should the history overlay appear.
+TEST_F(MacHistorySwiperTest, NoNavigationWithoutOverscrollMsg) {
+  startGestureInMiddle();
+  moveGestureInMiddle();
+
+  EXPECT_EQ(begin_count_, 0);
+  EXPECT_EQ(end_count_, 0);
+
+  moveGestureAtPoint(makePoint(0.2, 0.5));
+  EXPECT_EQ(begin_count_, 0);
+  EXPECT_EQ(end_count_, 0);
+  EXPECT_FALSE(navigated_right_);
+  EXPECT_FALSE(navigated_left_);
+
+  endGestureAtPoint(makePoint(0.2, 0.5));
+  EXPECT_EQ(begin_count_, 0);
+  EXPECT_EQ(end_count_, 0);
+  EXPECT_FALSE(navigated_right_);
+  EXPECT_FALSE(navigated_left_);
 }

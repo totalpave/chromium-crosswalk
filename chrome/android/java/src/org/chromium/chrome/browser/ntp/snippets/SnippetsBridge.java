@@ -7,29 +7,44 @@ package org.chromium.chrome.browser.ntp.snippets;
 import android.graphics.Bitmap;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ObserverList;
 import org.chromium.base.annotations.CalledByNative;
+import org.chromium.chrome.browser.ntp.cards.SuggestionsCategoryInfo;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.suggestions.ContentSuggestionsAdditionalAction;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Provides access to the snippets to display on the NTP using the C++ NTP Snippets Service
+ * Provides access to the snippets to display on the NTP using the C++ ContentSuggestionsService.
  */
-public class SnippetsBridge {
-    private static final String TAG = "SnippetsBridge";
-
+public class SnippetsBridge implements SuggestionsSource {
     private long mNativeSnippetsBridge;
-    private SnippetsObserver mObserver;
+    private final ObserverList<Observer> mObserverList = new ObserverList<>();
 
-    /**
-     * An observer for events in the snippets service.
-     */
-    public interface SnippetsObserver {
-        void onSnippetsReceived(List<SnippetArticle> snippets);
+    public static boolean isCategoryStatusAvailable(@CategoryStatus int status) {
+        // Note: This code is duplicated in category_status.cc.
+        return status == CategoryStatus.AVAILABLE_LOADING || status == CategoryStatus.AVAILABLE;
+    }
 
-        /** Called when the service is about to change its state. */
-        void onDisabledReasonChanged(int disabledReason);
+    public static boolean isCategoryRemote(@CategoryInt int category) {
+        return category > KnownCategories.REMOTE_CATEGORIES_OFFSET;
+    }
+
+    /** Returns whether the category is considered "enabled", and can show content suggestions. */
+    public static boolean isCategoryEnabled(@CategoryStatus int status) {
+        switch (status) {
+            case CategoryStatus.INITIALIZING:
+            case CategoryStatus.AVAILABLE:
+            case CategoryStatus.AVAILABLE_LOADING:
+                return true;
+        }
+        return false;
+    }
+
+    public static boolean isCategoryLoading(@CategoryStatus int status) {
+        return status == CategoryStatus.AVAILABLE_LOADING || status == CategoryStatus.INITIALIZING;
     }
 
     /**
@@ -41,109 +56,230 @@ public class SnippetsBridge {
         mNativeSnippetsBridge = nativeInit(profile);
     }
 
-    /**
-     * Destroys the native service and unregisters observers. This object can't be reused to
-     * communicate with any native service and should be discarded.
-     */
+    @Override
     public void destroy() {
         assert mNativeSnippetsBridge != 0;
         nativeDestroy(mNativeSnippetsBridge);
         mNativeSnippetsBridge = 0;
-        mObserver = null;
+        mObserverList.clear();
     }
 
     /**
-     * Fetches new snippets.
+     * Notifies that Chrome on Android has been upgraded.
      */
-    public static void fetchSnippets() {
-        nativeFetchSnippets();
+    public static void onBrowserUpgraded() {
+        nativeRemoteSuggestionsSchedulerOnBrowserUpgraded();
     }
 
     /**
-     * Reschedules the fetching of snippets. Used to support different fetching intervals for
-     * different times of day.
+     * Notifies that the persistent fetching scheduler woke up.
      */
-    public static void rescheduleFetching() {
-        nativeRescheduleFetching();
+    public static void onPersistentSchedulerWakeUp() {
+        nativeRemoteSuggestionsSchedulerOnPersistentSchedulerWakeUp();
     }
 
-    /**
-     * Tells the native service to discard a snippet. It will be removed from the native side
-     * storage and will also be discarded from subsequent fetch results.
-     *
-     * @param snippet Snippet to discard.
-     */
-    public void discardSnippet(SnippetArticle snippet) {
+    @Override
+    public boolean areRemoteSuggestionsEnabled() {
         assert mNativeSnippetsBridge != 0;
-        nativeDiscardSnippet(mNativeSnippetsBridge, snippet.mId);
+        return nativeAreRemoteSuggestionsEnabled(mNativeSnippetsBridge);
     }
 
-    /**
-     * Fetches the thumbnail image for a snippet.
-     */
-    public void fetchSnippetImage(SnippetArticle snippet, Callback<Bitmap> callback) {
-        nativeFetchImage(mNativeSnippetsBridge, snippet.mId, callback);
+    public static void setContentSuggestionsNotificationsEnabled(boolean enabled) {
+        nativeSetContentSuggestionsNotificationsEnabled(enabled);
     }
 
-    /**
-     * Checks whether a snippet has been visited by querying the history for the snippet's URL.
-     */
-    public void getSnippedVisited(SnippetArticle snippet, Callback<Boolean> callback) {
+    public static boolean areContentSuggestionsNotificationsEnabled() {
+        return nativeAreContentSuggestionsNotificationsEnabled();
+    }
+
+    @Override
+    public void fetchRemoteSuggestions() {
         assert mNativeSnippetsBridge != 0;
-        nativeSnippetVisited(mNativeSnippetsBridge, callback, snippet.mUrl);
+        nativeReloadSuggestions(mNativeSnippetsBridge);
     }
 
-    /**
-     * Sets the recipient for the fetched snippets.
-     *
-     * An observer needs to be set before the native code attempts to transmit snippets them to
-     * java. Upon registration, the observer will be notified of already fetched snippets.
-     *
-     * @param observer object to notify when snippets are received, or {@code null} if we want to
-     *                 stop observing.
-     */
-    public void setObserver(SnippetsObserver observer) {
-        assert mObserver == null || mObserver == observer;
-
-        mObserver = observer;
-        nativeSetObserver(mNativeSnippetsBridge, observer == null ? null : this);
-    }
-
-    public int getDisabledReason() {
+    @Override
+    public int[] getCategories() {
         assert mNativeSnippetsBridge != 0;
-        return nativeGetDisabledReason(mNativeSnippetsBridge);
+        return nativeGetCategories(mNativeSnippetsBridge);
+    }
+
+    @Override
+    @CategoryStatus
+    public int getCategoryStatus(int category) {
+        assert mNativeSnippetsBridge != 0;
+        return nativeGetCategoryStatus(mNativeSnippetsBridge, category);
+    }
+
+    @Override
+    public SuggestionsCategoryInfo getCategoryInfo(int category) {
+        assert mNativeSnippetsBridge != 0;
+        return nativeGetCategoryInfo(mNativeSnippetsBridge, category);
+    }
+
+    @Override
+    public List<SnippetArticle> getSuggestionsForCategory(int category) {
+        assert mNativeSnippetsBridge != 0;
+        return nativeGetSuggestionsForCategory(mNativeSnippetsBridge, category);
+    }
+
+    @Override
+    public void fetchSuggestionImage(SnippetArticle suggestion, Callback<Bitmap> callback) {
+        assert mNativeSnippetsBridge != 0;
+        nativeFetchSuggestionImage(mNativeSnippetsBridge, suggestion.mCategory,
+                suggestion.mIdWithinCategory, callback);
+    }
+
+    @Override
+    public void fetchSuggestionFavicon(SnippetArticle suggestion, int minimumSizePx,
+            int desiredSizePx, Callback<Bitmap> callback) {
+        assert mNativeSnippetsBridge != 0;
+        nativeFetchSuggestionFavicon(mNativeSnippetsBridge, suggestion.mCategory,
+                suggestion.mIdWithinCategory, minimumSizePx, desiredSizePx, callback);
+    }
+
+    @Override
+    public void fetchContextualSuggestions(String url, Callback<List<SnippetArticle>> callback) {
+    }
+
+    @Override
+    public void fetchContextualSuggestionImage(
+            SnippetArticle suggestion, Callback<Bitmap> callback) {
+    }
+
+    @Override
+    public void dismissSuggestion(SnippetArticle suggestion) {
+        assert mNativeSnippetsBridge != 0;
+        nativeDismissSuggestion(mNativeSnippetsBridge, suggestion.mUrl, suggestion.getGlobalRank(),
+                suggestion.mCategory, suggestion.getPerSectionRank(), suggestion.mIdWithinCategory);
+    }
+
+    @Override
+    public void dismissCategory(@CategoryInt int category) {
+        assert mNativeSnippetsBridge != 0;
+        nativeDismissCategory(mNativeSnippetsBridge, category);
+    }
+
+    @Override
+    public void restoreDismissedCategories() {
+        assert mNativeSnippetsBridge != 0;
+        nativeRestoreDismissedCategories(mNativeSnippetsBridge);
+    }
+
+    @Override
+    public void addObserver(Observer observer) {
+        assert observer != null;
+        mObserverList.addObserver(observer);
+    }
+
+    @Override
+    public void removeObserver(Observer observer) {
+        mObserverList.removeObserver(observer);
+    }
+
+    @Override
+    public void fetchSuggestions(@CategoryInt int category, String[] displayedSuggestionIds,
+            Callback<List<SnippetArticle>> successCallback, Runnable failureRunnable) {
+        assert mNativeSnippetsBridge != 0;
+        // We have nice JNI support for Callbacks but not for Runnables, so wrap the Runnable
+        // in a Callback and discard the parameter.
+        // TODO(peconn): Use a Runnable here if they get nice JNI support.
+        nativeFetch(mNativeSnippetsBridge, category, displayedSuggestionIds, successCallback,
+                ignored -> failureRunnable.run());
     }
 
     @CalledByNative
-    private void onSnippetsAvailable(String[] ids, String[] titles, String[] urls, String[] ampUrls,
-            String[] thumbnailUrls, String[] previewText, long[] timestamps, String[] publishers,
-            float[] scores) {
-        assert mNativeSnippetsBridge != 0;
-        assert mObserver != null;
+    private static List<SnippetArticle> createSuggestionList() {
+        return new ArrayList<>();
+    }
 
-        List<SnippetArticle> newSnippets = new ArrayList<>(ids.length);
-        for (int i = 0; i < ids.length; i++) {
-            newSnippets.add(new SnippetArticle(ids[i], titles[i], publishers[i], previewText[i],
-                    urls[i], ampUrls[i], thumbnailUrls[i], timestamps[i], scores[i], i));
+    @CalledByNative
+    private static SnippetArticle addSuggestion(List<SnippetArticle> suggestions, int category,
+            String id, String title, String publisher, String url, long timestamp, float score,
+            long fetchTime, boolean isVideoSuggestion, int thumbnailDominantColor) {
+        int position = suggestions.size();
+        // thumbnailDominantColor equal to 0 encodes absence of the value. 0 is not a valid color,
+        // because the passed color cannot be fully transparent.
+        suggestions.add(new SnippetArticle(category, id, title, publisher, url, timestamp, score,
+                fetchTime, isVideoSuggestion,
+                thumbnailDominantColor == 0 ? null : thumbnailDominantColor));
+        return suggestions.get(position);
+    }
+
+    @CalledByNative
+    private static void setAssetDownloadDataForSuggestion(
+            SnippetArticle suggestion, String downloadGuid, String filePath, String mimeType) {
+        suggestion.setAssetDownloadData(downloadGuid, filePath, mimeType);
+    }
+
+    @CalledByNative
+    private static void setOfflinePageDownloadDataForSuggestion(
+            SnippetArticle suggestion, long offlinePageId) {
+        suggestion.setOfflinePageDownloadData(offlinePageId);
+    }
+
+    @CalledByNative
+    private static SuggestionsCategoryInfo createSuggestionsCategoryInfo(int category, String title,
+            @ContentSuggestionsCardLayout int cardLayout,
+            @ContentSuggestionsAdditionalAction int additionalAction, boolean showIfEmpty,
+            String noSuggestionsMessage) {
+        return new SuggestionsCategoryInfo(
+                category, title, cardLayout, additionalAction, showIfEmpty, noSuggestionsMessage);
+    }
+
+    @CalledByNative
+    private void onNewSuggestions(@CategoryInt int category) {
+        for (Observer observer : mObserverList) observer.onNewSuggestions(category);
+    }
+
+    @CalledByNative
+    private void onCategoryStatusChanged(@CategoryInt int category, @CategoryStatus int newStatus) {
+        for (Observer observer : mObserverList) {
+            observer.onCategoryStatusChanged(category, newStatus);
         }
-
-        mObserver.onSnippetsReceived(newSnippets);
     }
 
     @CalledByNative
-    private void onDisabledReasonChanged(int disabledReason) {
-        if (mObserver != null) mObserver.onDisabledReasonChanged(disabledReason);
+    private void onSuggestionInvalidated(@CategoryInt int category, String idWithinCategory) {
+        for (Observer observer : mObserverList) {
+            observer.onSuggestionInvalidated(category, idWithinCategory);
+        }
+    }
+
+    @CalledByNative
+    private void onFullRefreshRequired() {
+        for (Observer observer : mObserverList) observer.onFullRefreshRequired();
+    }
+
+    @CalledByNative
+    private void onSuggestionsVisibilityChanged(@CategoryInt int category) {
+        for (Observer observer : mObserverList) observer.onSuggestionsVisibilityChanged(category);
     }
 
     private native long nativeInit(Profile profile);
     private native void nativeDestroy(long nativeNTPSnippetsBridge);
-    private static native void nativeFetchSnippets();
-    private static native void nativeRescheduleFetching();
-    private native void nativeDiscardSnippet(long nativeNTPSnippetsBridge, String snippetId);
-    private native void nativeSetObserver(long nativeNTPSnippetsBridge, SnippetsBridge bridge);
-    private static native void nativeSnippetVisited(long nativeNTPSnippetsBridge,
-            Callback<Boolean> callback, String url);
-    private native void nativeFetchImage(
-            long nativeNTPSnippetsBridge, String snippetId, Callback<Bitmap> callback);
-    private native int nativeGetDisabledReason(long nativeNTPSnippetsBridge);
+    private native void nativeReloadSuggestions(long nativeNTPSnippetsBridge);
+    private static native void nativeRemoteSuggestionsSchedulerOnPersistentSchedulerWakeUp();
+    private static native void nativeRemoteSuggestionsSchedulerOnBrowserUpgraded();
+    private native boolean nativeAreRemoteSuggestionsEnabled(long nativeNTPSnippetsBridge);
+    private static native void nativeSetContentSuggestionsNotificationsEnabled(boolean enabled);
+    private static native boolean nativeAreContentSuggestionsNotificationsEnabled();
+    private native int[] nativeGetCategories(long nativeNTPSnippetsBridge);
+    private native int nativeGetCategoryStatus(long nativeNTPSnippetsBridge, int category);
+    private native SuggestionsCategoryInfo nativeGetCategoryInfo(
+            long nativeNTPSnippetsBridge, int category);
+    private native List<SnippetArticle> nativeGetSuggestionsForCategory(
+            long nativeNTPSnippetsBridge, int category);
+    private native void nativeFetchSuggestionImage(long nativeNTPSnippetsBridge, int category,
+            String idWithinCategory, Callback<Bitmap> callback);
+    private native void nativeFetchSuggestionFavicon(long nativeNTPSnippetsBridge, int category,
+            String idWithinCategory, int minimumSizePx, int desiredSizePx,
+            Callback<Bitmap> callback);
+    private native void nativeFetch(long nativeNTPSnippetsBridge, int category,
+            String[] knownSuggestions, Callback<List<SnippetArticle>> successCallback,
+            Callback<Integer> failureCallback);
+    private native void nativeDismissSuggestion(long nativeNTPSnippetsBridge, String url,
+            int globalPosition, int category, int positionInCategory, String idWithinCategory);
+    private native void nativeDismissCategory(long nativeNTPSnippetsBridge, int category);
+    private native void nativeRestoreDismissedCategories(long nativeNTPSnippetsBridge);
 }

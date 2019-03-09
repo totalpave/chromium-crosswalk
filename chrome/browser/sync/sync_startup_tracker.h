@@ -7,17 +7,15 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "components/sync_driver/sync_service_observer.h"
-
-class Profile;
+#include "components/sync/driver/sync_service_observer.h"
 
 // SyncStartupTracker provides a centralized way for observers to detect when
-// ProfileSyncService has successfully started up, or when startup has failed
+// SyncService has successfully started up, or when startup has failed
 // due to some kind of error. This code was originally part of SigninTracker
 // but now that sync initialization is no longer a required part of signin,
 // it has been broken out of that class so only those places that care about
 // sync initialization depend on it.
-class SyncStartupTracker : public sync_driver::SyncServiceObserver {
+class SyncStartupTracker : public syncer::SyncServiceObserver {
  public:
   // Observer interface used to notify observers when sync has started up.
   class Observer {
@@ -28,7 +26,7 @@ class SyncStartupTracker : public sync_driver::SyncServiceObserver {
     virtual void SyncStartupFailed() = 0;
   };
 
-  SyncStartupTracker(Profile* profile, Observer* observer);
+  SyncStartupTracker(syncer::SyncService* sync_service, Observer* observer);
   ~SyncStartupTracker() override;
 
   enum SyncServiceState {
@@ -37,16 +35,17 @@ class SyncStartupTracker : public sync_driver::SyncServiceObserver {
     // An error has been detected that prevents the sync backend from starting
     // up.
     SYNC_STARTUP_ERROR,
-    // Sync startup has completed (i.e. ProfileSyncService::IsSyncActive()
+    // Sync startup has completed (i.e. SyncService::IsEngineInitialized()
     // returns true).
     SYNC_STARTUP_COMPLETE
   };
 
   // Returns the current state of the sync service.
-  static SyncServiceState GetSyncServiceState(Profile* profile);
+  static SyncServiceState GetSyncServiceState(
+      syncer::SyncService* sync_service);
 
-  // sync_driver::SyncServiceObserver implementation.
-  void OnStateChanged() override;
+  // syncer::SyncServiceObserver implementation.
+  void OnStateChanged(syncer::SyncService* sync) override;
 
  private:
   // Checks the current service state and notifies |observer_| if the state
@@ -54,8 +53,8 @@ class SyncStartupTracker : public sync_driver::SyncServiceObserver {
   // object, so callers should not reference this object after making this call.
   void CheckServiceState();
 
-  // Profile whose ProfileSyncService we should track.
-  Profile* profile_;
+  // The SyncService we should track.
+  syncer::SyncService* sync_service_;
 
   // Weak pointer to the observer to notify.
   Observer* observer_;

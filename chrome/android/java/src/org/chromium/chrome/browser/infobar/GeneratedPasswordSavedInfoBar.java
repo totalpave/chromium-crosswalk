@@ -6,33 +6,34 @@ package org.chromium.chrome.browser.infobar;
 
 import android.text.SpannableString;
 import android.text.Spanned;
-import android.text.style.ClickableSpan;
-import android.view.View;
+
+import org.chromium.ui.text.NoUnderlineClickableSpan;
 
 /**
  * An infobar to notify that the generated password was saved.
  */
-public class GeneratedPasswordSavedInfoBar extends InfoBar {
-    private final String mMessageText;
+public class GeneratedPasswordSavedInfoBar extends ConfirmInfoBar {
     private final int mInlineLinkRangeStart;
     private final int mInlineLinkRangeEnd;
-    private final String mButtonLabel;
+    private final String mDetailsMessage;
 
     /**
      * Creates and shows the infobar to notify that the generated password was saved.
      * @param iconDrawableId Drawable ID corresponding to the icon that the infobar will show.
      * @param messageText Message to display in the infobar.
+     * @param detailsMessageText  Message containing additional details to be displayed in the
+     * infobar.
      * @param inlineLinkRangeStart The start of the range of the messageText that should be a link.
      * @param inlineLinkRangeEnd The end of the range of the messageText that should be a link.
      * @param buttonLabel String to display on the button.
      */
     public GeneratedPasswordSavedInfoBar(int iconDrawableId, String messageText,
-            int inlineLinkRangeStart, int inlineLinkRangeEnd, String buttonLabel) {
-        super(iconDrawableId, null, null);
-        mMessageText = messageText;
+            String detailsMessageText, int inlineLinkRangeStart, int inlineLinkRangeEnd,
+            String buttonLabel) {
+        super(iconDrawableId, null, messageText, null, buttonLabel, null);
+        mDetailsMessage = detailsMessageText;
         mInlineLinkRangeStart = inlineLinkRangeStart;
         mInlineLinkRangeEnd = inlineLinkRangeEnd;
-        mButtonLabel = buttonLabel;
     }
 
     /**
@@ -42,24 +43,12 @@ public class GeneratedPasswordSavedInfoBar extends InfoBar {
      */
     @Override
     public void createContent(InfoBarLayout layout) {
-        layout.setButtons(mButtonLabel, null);
-        SpannableString message = new SpannableString(mMessageText);
-        message.setSpan(
-                new ClickableSpan() {
-                    @Override
-                    public void onClick(View view) {
-                        onLinkClicked();
-                    }
-                }, mInlineLinkRangeStart, mInlineLinkRangeEnd, Spanned.SPAN_INCLUSIVE_INCLUSIVE);
-        layout.setMessage(message);
-    }
-
-    /**
-     * Called when the button is clicked. Notifies the native infobar, which closes the infobar.
-     * @param isPrimaryButton True if the clicked button is primary.
-     */
-    @Override
-    public void onButtonClicked(boolean isPrimaryButton) {
-        onButtonClicked(ActionType.OK);
+        super.createContent(layout);
+        InfoBarControlLayout detailsMessageLayout = layout.addControlLayout();
+        SpannableString detailsMessageWithLink = new SpannableString(mDetailsMessage);
+        detailsMessageWithLink.setSpan(
+                new NoUnderlineClickableSpan(layout.getResources(), (view) -> onLinkClicked()),
+                mInlineLinkRangeStart, mInlineLinkRangeEnd, Spanned.SPAN_INCLUSIVE_INCLUSIVE);
+        detailsMessageLayout.addDescription(detailsMessageWithLink);
     }
 }

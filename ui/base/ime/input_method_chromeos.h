@@ -11,13 +11,15 @@
 #include <set>
 #include <string>
 
+#include "base/callback_forward.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "ui/base/ime/chromeos/character_composer.h"
+#include "ui/base/ime/character_composer.h"
 #include "ui/base/ime/composition_text.h"
 #include "ui/base/ime/ime_input_context_handler_interface.h"
 #include "ui/base/ime/input_method_base.h"
+#include "ui/base/ime/text_input_client.h"
 
 namespace ui {
 
@@ -27,16 +29,23 @@ class UI_BASE_IME_EXPORT InputMethodChromeOS : public InputMethodBase {
   explicit InputMethodChromeOS(internal::InputMethodDelegate* delegate);
   ~InputMethodChromeOS() override;
 
+  using AckCallback = base::OnceCallback<void(bool)>;
+  ui::EventDispatchDetails DispatchKeyEvent(ui::KeyEvent* event,
+                                            AckCallback ack_callback);
+
   // Overridden from InputMethod:
-  bool OnUntranslatedIMEMessage(const base::NativeEvent& event,
-                                NativeEventResult* result) override;
-  void DispatchKeyEvent(ui::KeyEvent* event) override;
+  ui::EventDispatchDetails DispatchKeyEvent(ui::KeyEvent* event) override;
   void OnTextInputTypeChanged(const TextInputClient* client) override;
   void OnCaretBoundsChanged(const TextInputClient* client) override;
   void CancelComposition(const TextInputClient* client) override;
-  void OnInputLocaleChanged() override;
-  std::string GetInputLocale() override;
   bool IsCandidatePopupOpen() const override;
+  InputMethodKeyboardController* GetInputMethodKeyboardController() override;
+
+  // Overridden from InputMethodBase:
+  void OnWillChangeFocusedClient(TextInputClient* focused_before,
+                                 TextInputClient* focused) override;
+  void OnDidChangeFocusedClient(TextInputClient* focused_before,
+                                TextInputClient* focused) override;
 
  protected:
   // Converts |text| into CompositionText.
@@ -45,20 +54,18 @@ class UI_BASE_IME_EXPORT InputMethodChromeOS : public InputMethodBase {
                               CompositionText* out_composition) const;
 
   // Process a key returned from the input method.
-  virtual void ProcessKeyEventPostIME(ui::KeyEvent* event,
-                                      bool handled);
+  virtual ui::EventDispatchDetails ProcessKeyEventPostIME(
+      ui::KeyEvent* event,
+      ResultCallback result_callback,
+      bool skip_process_filtered,
+      bool handled,
+      bool stopped_propagation) WARN_UNUSED_RESULT;
 
   // Resets context and abandon all pending results and key events.
   void ResetContext();
 
  private:
   class PendingKeyEvent;
-
-  // Overridden from InputMethodBase:
-  void OnWillChangeFocusedClient(TextInputClient* focused_before,
-                                 TextInputClient* focused) override;
-  void OnDidChangeFocusedClient(TextInputClient* focused_before,
-                                TextInputClient* focused) override;
 
   // Asks the client to confirm current composition text.
   void ConfirmCompositionText();
@@ -71,10 +78,28 @@ class UI_BASE_IME_EXPORT InputMethodChromeOS : public InputMethodBase {
   // A VKEY_PROCESSKEY may be dispatched to the EventTargets.
   // It returns the result of whether the event has been stopped propagation
   // when dispatching post IME.
-  void ProcessFilteredKeyPressEvent(ui::KeyEvent* event);
+  ui::EventDispatchDetails ProcessFilteredKeyPressEvent(
+      ui::KeyEvent* event,
+      ResultCallback result_callback) WARN_UNUSED_RESULT;
+
+  // Post processes a key event that was already filtered by the input method.
+  void PostProcessFilteredKeyPressEvent(ui::KeyEvent* event,
+                                        TextInputClient* prev_client,
+                                        ResultCallback result_callback,
+                                        bool handled,
+                                        bool stopped_propagation);
 
   // Processes a key event that was not filtered by the input method.
-  void ProcessUnfilteredKeyPressEvent(ui::KeyEvent* event);
+  ui::EventDispatchDetails ProcessUnfilteredKeyPressEvent(
+      ui::KeyEvent* event,
+      ResultCallback result_callback) WARN_UNUSED_RESULT;
+
+  // Post processes a key event that was unfiltered by the input method.
+  void PostProcessUnfilteredKeyPressEvent(ui::KeyEvent* event,
+                                          TextInputClient* prev_client,
+                                          ResultCallback result_callback,
+                                          bool handled,
+                                          bool stopped_propagation);
 
   // Sends input method result caused by the given key event to the focused text
   // input client.
@@ -102,13 +127,22 @@ class UI_BASE_IME_EXPORT InputMethodChromeOS : public InputMethodBase {
   void HidePreeditText();
 
   // Callback function for IMEEngineHandlerInterface::ProcessKeyEvent.
-  void ProcessKeyEventDone(ui::KeyEvent* event, bool is_handled);
+  void KeyEventDoneCallback(ui::KeyEvent* event,
+                            ResultCallback result_callback,
+                            bool is_handled);
+  ui::EventDispatchDetails ProcessKeyEventDone(ui::KeyEvent* event,
+                                               ResultCallback result_callback,
+                                               bool is_handled)
+      WARN_UNUSED_RESULT;
 
   // Returns whether an non-password input field is focused.
   bool IsNonPasswordInputFieldFocused();
 
   // Returns true if an text input field is focused.
   bool IsInputFieldFocused();
+
+  // Gets the reason how the focused text input client was focused.
+  TextInputClient::FocusReason GetClientFocusReason() const;
 
   // Pending composition text generated by the current pending key event.
   // It'll be sent to the focused text input client as soon as we receive the

@@ -18,21 +18,11 @@ class DistillerUIHandleAndroid : public DistillerUIHandle {
   DistillerUIHandleAndroid() {}
   ~DistillerUIHandleAndroid() override {}
 
-  // ExternalFeedbackReporter implementation.
-  void ReportExternalFeedback(content::WebContents* web_contents,
-                              const GURL& url,
-                              const bool good) override;
-
   void OpenSettings(content::WebContents* web_contents) override;
-
-  void ClosePanel(bool animate) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(DistillerUIHandleAndroid);
 };
-
-// Registers the FeedbackReporter's native methods through JNI.
-bool RegisterUIHandle(JNIEnv* env);
 
 }  // namespace android
 

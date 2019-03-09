@@ -7,38 +7,43 @@
  * to interact with the browser.
  */
 
+
 cr.define('settings', function() {
   /** @interface */
-  function ClearBrowsingDataBrowserProxy() {}
-
-  ClearBrowsingDataBrowserProxy.prototype = {
+  class ClearBrowsingDataBrowserProxy {
     /**
-     * @return {!Promise} A promise resolved when data clearing has completed.
+     * @param {!Array<string>} dataTypes
+     * @param {number} timePeriod
+     * @return {!Promise<boolean>}
+     *     A promise resolved when data clearing has completed. The boolean
+     *     indicates whether an additional dialog should be shown, informing the
+     *     user about other forms of browsing history.
      */
-    clearBrowsingData: function() {},
+    clearBrowsingData(dataTypes, timePeriod) {}
 
-    /** Initializes the dialog. */
-    initialize: function() {},
-  };
+    /**
+     * Kick off counter updates and return initial state.
+     * @return {!Promise<void>} Signal when the setup is complete.
+     */
+    initialize() {}
+  }
 
   /**
-   * @constructor
    * @implements {settings.ClearBrowsingDataBrowserProxy}
    */
-  function ClearBrowsingDataBrowserProxyImpl() {}
+  class ClearBrowsingDataBrowserProxyImpl {
+    /** @override */
+    clearBrowsingData(dataTypes, timePeriod) {
+      return cr.sendWithPromise('clearBrowsingData', dataTypes, timePeriod);
+    }
+
+    /** @override */
+    initialize() {
+      return cr.sendWithPromise('initializeClearBrowsingData');
+    }
+  }
+
   cr.addSingletonGetter(ClearBrowsingDataBrowserProxyImpl);
-
-  ClearBrowsingDataBrowserProxyImpl.prototype = {
-    /** @override */
-    clearBrowsingData: function() {
-      return cr.sendWithPromise('clearBrowsingData');
-    },
-
-    /** @override */
-    initialize: function() {
-      chrome.send('initializeClearBrowsingData');
-    },
-  };
 
   return {
     ClearBrowsingDataBrowserProxy: ClearBrowsingDataBrowserProxy,

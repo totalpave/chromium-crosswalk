@@ -11,9 +11,7 @@
 
 #include "base/bind.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util_proxy.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/sequenced_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "storage/browser/fileapi/async_file_util_adapter.h"
@@ -43,8 +41,7 @@ IsolatedFileSystemBackend::IsolatedFileSystemBackend(
       transient_file_util_(new AsyncFileUtilAdapter(new TransientFileUtil())) {
 }
 
-IsolatedFileSystemBackend::~IsolatedFileSystemBackend() {
-}
+IsolatedFileSystemBackend::~IsolatedFileSystemBackend() = default;
 
 bool IsolatedFileSystemBackend::CanHandleType(FileSystemType type) const {
   switch (type) {
@@ -64,17 +61,13 @@ bool IsolatedFileSystemBackend::CanHandleType(FileSystemType type) const {
 void IsolatedFileSystemBackend::Initialize(FileSystemContext* context) {
 }
 
-void IsolatedFileSystemBackend::ResolveURL(
-    const FileSystemURL& url,
-    OpenFileSystemMode mode,
-    const OpenFileSystemCallback& callback) {
+void IsolatedFileSystemBackend::ResolveURL(const FileSystemURL& url,
+                                           OpenFileSystemMode mode,
+                                           OpenFileSystemCallback callback) {
   // We never allow opening a new isolated FileSystem via usual ResolveURL.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(callback,
-                 GURL(),
-                 std::string(),
-                 base::File::FILE_ERROR_SECURITY));
+      FROM_HERE, base::BindOnce(std::move(callback), GURL(), std::string(),
+                                base::File::FILE_ERROR_SECURITY));
 }
 
 AsyncFileUtil* IsolatedFileSystemBackend::GetAsyncFileUtil(
@@ -89,12 +82,12 @@ AsyncFileUtil* IsolatedFileSystemBackend::GetAsyncFileUtil(
     default:
       NOTREACHED();
   }
-  return NULL;
+  return nullptr;
 }
 
 WatcherManager* IsolatedFileSystemBackend::GetWatcherManager(
     FileSystemType type) {
-  return NULL;
+  return nullptr;
 }
 
 CopyOrMoveFileValidatorFactory*
@@ -102,7 +95,7 @@ IsolatedFileSystemBackend::GetCopyOrMoveFileValidatorFactory(
     FileSystemType type, base::File::Error* error_code) {
   DCHECK(error_code);
   *error_code = base::File::FILE_OK;
-  return NULL;
+  return nullptr;
 }
 
 FileSystemOperation* IsolatedFileSystemBackend::CreateFileSystemOperation(
@@ -110,7 +103,7 @@ FileSystemOperation* IsolatedFileSystemBackend::CreateFileSystemOperation(
     FileSystemContext* context,
     base::File::Error* error_code) const {
   return FileSystemOperation::Create(
-      url, context, base::WrapUnique(new FileSystemOperationContext(context)));
+      url, context, std::make_unique<FileSystemOperationContext>(context));
 }
 
 bool IsolatedFileSystemBackend::SupportsStreaming(
@@ -132,10 +125,9 @@ IsolatedFileSystemBackend::CreateFileStreamReader(
     int64_t max_bytes_to_read,
     const base::Time& expected_modification_time,
     FileSystemContext* context) const {
-  return std::unique_ptr<storage::FileStreamReader>(
-      storage::FileStreamReader::CreateForLocalFile(
-          context->default_file_task_runner(), url.path(), offset,
-          expected_modification_time));
+  return storage::FileStreamReader::CreateForLocalFile(
+      context->default_file_task_runner(), url.path(), offset,
+      expected_modification_time);
 }
 
 std::unique_ptr<FileStreamWriter>
@@ -143,29 +135,29 @@ IsolatedFileSystemBackend::CreateFileStreamWriter(
     const FileSystemURL& url,
     int64_t offset,
     FileSystemContext* context) const {
-  return std::unique_ptr<FileStreamWriter>(FileStreamWriter::CreateForLocalFile(
+  return FileStreamWriter::CreateForLocalFile(
       context->default_file_task_runner(), url.path(), offset,
-      FileStreamWriter::OPEN_EXISTING_FILE));
+      FileStreamWriter::OPEN_EXISTING_FILE);
 }
 
 FileSystemQuotaUtil* IsolatedFileSystemBackend::GetQuotaUtil() {
   // No quota support.
-  return NULL;
+  return nullptr;
 }
 
 const UpdateObserverList* IsolatedFileSystemBackend::GetUpdateObservers(
     FileSystemType type) const {
-  return NULL;
+  return nullptr;
 }
 
 const ChangeObserverList* IsolatedFileSystemBackend::GetChangeObservers(
     FileSystemType type) const {
-  return NULL;
+  return nullptr;
 }
 
 const AccessObserverList* IsolatedFileSystemBackend::GetAccessObservers(
     FileSystemType type) const {
-  return NULL;
+  return nullptr;
 }
 
 }  // namespace storage

@@ -14,7 +14,6 @@
 #include "cc/layers/layer.h"
 #include "third_party/skia/include/core/SkColor.h"
 
-namespace chrome {
 namespace android {
 
 // A native-side, cc::Layer based representation of how a scene should be drawn.
@@ -22,13 +21,17 @@ namespace android {
 // counterpart.
 class SceneLayer {
  public:
-  static SceneLayer* FromJavaObject(JNIEnv* env, jobject jobj);
+  static SceneLayer* FromJavaObject(
+      JNIEnv* env,
+      const base::android::JavaRef<jobject>& jobj);
 
   // Create SceneLayer and creates an empty cc::Layer.
-  SceneLayer(JNIEnv* env, jobject jobj);
+  SceneLayer(JNIEnv* env, const base::android::JavaRef<jobject>& jobj);
   // Create SceneLayer with the already-instantiated |layer|.
 
-  SceneLayer(JNIEnv* env, jobject jobj, scoped_refptr<cc::Layer> layer);
+  SceneLayer(JNIEnv* env,
+             const base::android::JavaRef<jobject>& jobj,
+             scoped_refptr<cc::Layer> layer);
   virtual ~SceneLayer();
 
   // Notifies that this scene layer is about to be detached from its parent.
@@ -56,9 +59,6 @@ class SceneLayer {
   DISALLOW_COPY_AND_ASSIGN(SceneLayer);
 };
 
-bool RegisterSceneLayer(JNIEnv* env);
-
 }  // namespace android
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_ANDROID_COMPOSITOR_SCENE_LAYER_SCENE_LAYER_H_

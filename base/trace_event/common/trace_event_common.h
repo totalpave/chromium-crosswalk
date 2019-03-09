@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef BASE_TRACE_EVENT_COMMON_TRACE_EVENT_COMMON_H_
+#define BASE_TRACE_EVENT_COMMON_TRACE_EVENT_COMMON_H_
+
 // This header file defines the set of trace_event macros without specifying
 // how the events actually get collected and stored. If you need to expose trace
 // events to some other universe, you can copy-and-paste this file as well as
@@ -189,6 +192,8 @@
 // trace points would carry a significant performance cost of acquiring a lock
 // and resolving the category.
 
+// Check that nobody includes this file directly.  Clients are supposed to
+// include the surrounding "trace_event.h" of their project instead.
 #if defined(TRACE_EVENT0)
 #error "Another copy of this file has already been included."
 #endif
@@ -223,49 +228,6 @@
                                             flow_flags, arg1_name, arg1_val, \
                                             arg2_name, arg2_val)
 
-// UNSHIPPED_TRACE_EVENT* are like TRACE_EVENT* except that they are not
-// included in official builds.
-
-#if OFFICIAL_BUILD
-#undef TRACING_IS_OFFICIAL_BUILD
-#define TRACING_IS_OFFICIAL_BUILD 1
-#elif !defined(TRACING_IS_OFFICIAL_BUILD)
-#define TRACING_IS_OFFICIAL_BUILD 0
-#endif
-
-#if TRACING_IS_OFFICIAL_BUILD
-#define UNSHIPPED_TRACE_EVENT0(category_group, name) (void)0
-#define UNSHIPPED_TRACE_EVENT1(category_group, name, arg1_name, arg1_val) \
-  (void)0
-#define UNSHIPPED_TRACE_EVENT2(category_group, name, arg1_name, arg1_val, \
-                               arg2_name, arg2_val)                       \
-  (void)0
-#define UNSHIPPED_TRACE_EVENT_INSTANT0(category_group, name, scope) (void)0
-#define UNSHIPPED_TRACE_EVENT_INSTANT1(category_group, name, scope, arg1_name, \
-                                       arg1_val)                               \
-  (void)0
-#define UNSHIPPED_TRACE_EVENT_INSTANT2(category_group, name, scope, arg1_name, \
-                                       arg1_val, arg2_name, arg2_val)          \
-  (void)0
-#else
-#define UNSHIPPED_TRACE_EVENT0(category_group, name) \
-  TRACE_EVENT0(category_group, name)
-#define UNSHIPPED_TRACE_EVENT1(category_group, name, arg1_name, arg1_val) \
-  TRACE_EVENT1(category_group, name, arg1_name, arg1_val)
-#define UNSHIPPED_TRACE_EVENT2(category_group, name, arg1_name, arg1_val, \
-                               arg2_name, arg2_val)                       \
-  TRACE_EVENT2(category_group, name, arg1_name, arg1_val, arg2_name, arg2_val)
-#define UNSHIPPED_TRACE_EVENT_INSTANT0(category_group, name, scope) \
-  TRACE_EVENT_INSTANT0(category_group, name, scope)
-#define UNSHIPPED_TRACE_EVENT_INSTANT1(category_group, name, scope, arg1_name, \
-                                       arg1_val)                               \
-  TRACE_EVENT_INSTANT1(category_group, name, scope, arg1_name, arg1_val)
-#define UNSHIPPED_TRACE_EVENT_INSTANT2(category_group, name, scope, arg1_name, \
-                                       arg1_val, arg2_name, arg2_val)          \
-  TRACE_EVENT_INSTANT2(category_group, name, scope, arg1_name, arg1_val,       \
-                       arg2_name, arg2_val)
-#endif
-
 // Records a single event called "name" immediately, with 0, 1 or 2
 // associated arguments. If the category is not enabled, then this
 // does nothing.
@@ -297,19 +259,15 @@
 
 #define TRACE_EVENT_INSTANT_WITH_TIMESTAMP0(category_group, name, scope, \
                                             timestamp)                   \
-  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                    \
-      TRACE_EVENT_PHASE_INSTANT, category_group, name, 0, 0, timestamp,  \
+  INTERNAL_TRACE_EVENT_ADD_WITH_TIMESTAMP(                               \
+      TRACE_EVENT_PHASE_INSTANT, category_group, name, timestamp,        \
       TRACE_EVENT_FLAG_NONE | scope)
 
-// Syntactic sugars for the sampling tracing in the main thread.
-#define TRACE_EVENT_SCOPED_SAMPLING_STATE(category, name) \
-  TRACE_EVENT_SCOPED_SAMPLING_STATE_FOR_BUCKET(0, category, name)
-#define TRACE_EVENT_GET_SAMPLING_STATE() \
-  TRACE_EVENT_GET_SAMPLING_STATE_FOR_BUCKET(0)
-#define TRACE_EVENT_SET_SAMPLING_STATE(category, name) \
-  TRACE_EVENT_SET_SAMPLING_STATE_FOR_BUCKET(0, category, name)
-#define TRACE_EVENT_SET_NONCONST_SAMPLING_STATE(categoryAndName) \
-  TRACE_EVENT_SET_NONCONST_SAMPLING_STATE_FOR_BUCKET(0, categoryAndName)
+#define TRACE_EVENT_INSTANT_WITH_TIMESTAMP1(category_group, name, scope,  \
+                                            timestamp, arg_name, arg_val) \
+  INTERNAL_TRACE_EVENT_ADD_WITH_TIMESTAMP(                                \
+      TRACE_EVENT_PHASE_INSTANT, category_group, name, timestamp,         \
+      TRACE_EVENT_FLAG_NONE | scope, arg_name, arg_val)
 
 // Records a single BEGIN event called "name" immediately, with 0, 1 or 2
 // associated arguments. If the category is not enabled, then this
@@ -395,19 +353,34 @@
                            TRACE_EVENT_FLAG_COPY, arg1_name, arg1_val,   \
                            arg2_name, arg2_val)
 
+#define TRACE_EVENT_MARK_WITH_TIMESTAMP0(category_group, name, timestamp) \
+  INTERNAL_TRACE_EVENT_ADD_WITH_TIMESTAMP(                                \
+      TRACE_EVENT_PHASE_MARK, category_group, name, timestamp,            \
+      TRACE_EVENT_FLAG_NONE)
+
 #define TRACE_EVENT_MARK_WITH_TIMESTAMP1(category_group, name, timestamp, \
                                          arg1_name, arg1_val)             \
-  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                     \
-      TRACE_EVENT_PHASE_MARK, category_group, name, 0, 0, timestamp,      \
+  INTERNAL_TRACE_EVENT_ADD_WITH_TIMESTAMP(                                \
+      TRACE_EVENT_PHASE_MARK, category_group, name, timestamp,            \
       TRACE_EVENT_FLAG_NONE, arg1_name, arg1_val)
+
+#define TRACE_EVENT_MARK_WITH_TIMESTAMP2(                                      \
+    category_group, name, timestamp, arg1_name, arg1_val, arg2_name, arg2_val) \
+  INTERNAL_TRACE_EVENT_ADD_WITH_TIMESTAMP(                                     \
+      TRACE_EVENT_PHASE_MARK, category_group, name, timestamp,                 \
+      TRACE_EVENT_FLAG_NONE, arg1_name, arg1_val, arg2_name, arg2_val)
 
 #define TRACE_EVENT_COPY_MARK(category_group, name)                      \
   INTERNAL_TRACE_EVENT_ADD(TRACE_EVENT_PHASE_MARK, category_group, name, \
                            TRACE_EVENT_FLAG_COPY)
 
+#define TRACE_EVENT_COPY_MARK1(category_group, name, arg1_name, arg1_val) \
+  INTERNAL_TRACE_EVENT_ADD(TRACE_EVENT_PHASE_MARK, category_group, name,  \
+                           TRACE_EVENT_FLAG_COPY, arg1_name, arg1_val)
+
 #define TRACE_EVENT_COPY_MARK_WITH_TIMESTAMP(category_group, name, timestamp) \
-  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                         \
-      TRACE_EVENT_PHASE_MARK, category_group, name, 0, 0, timestamp,          \
+  INTERNAL_TRACE_EVENT_ADD_WITH_TIMESTAMP(                                    \
+      TRACE_EVENT_PHASE_MARK, category_group, name, timestamp,                \
       TRACE_EVENT_FLAG_COPY)
 
 // Similar to TRACE_EVENT_ENDx but with a custom |at| timestamp provided.
@@ -544,6 +517,12 @@
       TRACE_EVENT_PHASE_SAMPLE, category_group, name, 0, thread_id, timestamp, \
       TRACE_EVENT_FLAG_NONE, arg1_name, arg1_val, arg2_name, arg2_val)
 
+#define TRACE_EVENT_SAMPLE_WITH_ID1(category_group, name, id, arg1_name,       \
+                                    arg1_val)                                  \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID(TRACE_EVENT_PHASE_SAMPLE, category_group,   \
+                                   name, id, TRACE_EVENT_FLAG_NONE, arg1_name, \
+                                   arg1_val)
+
 // ASYNC_STEP_* APIs should be only used by legacy code. New code should
 // consider using NESTABLE_ASYNC_* APIs to describe substeps within an async
 // event.
@@ -612,6 +591,13 @@
       TRACE_EVENT_PHASE_ASYNC_BEGIN, category_group, name, id,             \
       TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_NONE, \
       arg1_name, arg1_val)
+#define TRACE_EVENT_ASYNC_BEGIN_WITH_TIMESTAMP2(category_group, name, id,      \
+                                                timestamp, arg1_name,          \
+                                                arg1_val, arg2_name, arg2_val) \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                          \
+      TRACE_EVENT_PHASE_ASYNC_BEGIN, category_group, name, id,                 \
+      TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_NONE,     \
+      arg1_name, arg1_val, arg2_name, arg2_val)
 #define TRACE_EVENT_COPY_ASYNC_BEGIN_WITH_TIMESTAMP0(category_group, name, id, \
                                                      timestamp)                \
   INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                          \
@@ -701,6 +687,18 @@
       TRACE_EVENT_PHASE_ASYNC_END, category_group, name, id,                  \
       TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_NONE,    \
       arg1_name, arg1_val)
+#define TRACE_EVENT_ASYNC_END_WITH_TIMESTAMP2(category_group, name, id,       \
+                                              timestamp, arg1_name, arg1_val, \
+                                              arg2_name, arg2_val)            \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                         \
+      TRACE_EVENT_PHASE_ASYNC_END, category_group, name, id,                  \
+      TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_NONE,    \
+      arg1_name, arg1_val, arg2_name, arg2_val)
+#define TRACE_EVENT_COPY_ASYNC_END_WITH_TIMESTAMP0(category_group, name, id, \
+                                                   timestamp)                \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                        \
+      TRACE_EVENT_PHASE_ASYNC_END, category_group, name, id,                 \
+      TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_COPY)
 
 // NESTABLE_ASYNC_* APIs are used to describe an async operation, which can
 // be nested within a NESTABLE_ASYNC event and/or have inner NESTABLE_ASYNC
@@ -760,16 +758,19 @@
       TRACE_EVENT_FLAG_NONE, arg1_name, arg1_val, arg2_name, arg2_val)
 
 // Records a single NESTABLE_ASYNC_INSTANT event called "name" immediately,
-// with one associated argument. If the category is not enabled, then this
-// does nothing.
+// with none, one or two associated argument. If the category is not enabled,
+// then this does nothing.
+#define TRACE_EVENT_NESTABLE_ASYNC_INSTANT0(category_group, name, id)        \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID(TRACE_EVENT_PHASE_NESTABLE_ASYNC_INSTANT, \
+                                   category_group, name, id,                 \
+                                   TRACE_EVENT_FLAG_NONE)
+
 #define TRACE_EVENT_NESTABLE_ASYNC_INSTANT1(category_group, name, id,        \
                                             arg1_name, arg1_val)             \
   INTERNAL_TRACE_EVENT_ADD_WITH_ID(TRACE_EVENT_PHASE_NESTABLE_ASYNC_INSTANT, \
                                    category_group, name, id,                 \
                                    TRACE_EVENT_FLAG_NONE, arg1_name, arg1_val)
-// Records a single NESTABLE_ASYNC_INSTANT event called "name" immediately,
-// with 2 associated arguments. If the category is not enabled, then this
-// does nothing.
+
 #define TRACE_EVENT_NESTABLE_ASYNC_INSTANT2(                              \
     category_group, name, id, arg1_name, arg1_val, arg2_name, arg2_val)   \
   INTERNAL_TRACE_EVENT_ADD_WITH_ID(                                       \
@@ -796,13 +797,22 @@
   INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                          \
       TRACE_EVENT_PHASE_NESTABLE_ASYNC_BEGIN, category_group, name, id,        \
       TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_NONE)
-
 #define TRACE_EVENT_NESTABLE_ASYNC_END_WITH_TIMESTAMP0(category_group, name, \
                                                        id, timestamp)        \
   INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                        \
       TRACE_EVENT_PHASE_NESTABLE_ASYNC_END, category_group, name, id,        \
       TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_NONE)
-
+#define TRACE_EVENT_NESTABLE_ASYNC_END_WITH_TIMESTAMP1(                    \
+    category_group, name, id, timestamp, arg1_name, arg1_val)              \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                      \
+      TRACE_EVENT_PHASE_NESTABLE_ASYNC_END, category_group, name, id,      \
+      TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_NONE, \
+      arg1_name, arg1_val)
+#define TRACE_EVENT_NESTABLE_ASYNC_INSTANT_WITH_TIMESTAMP0(               \
+    category_group, name, id, timestamp)                                  \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                     \
+      TRACE_EVENT_PHASE_NESTABLE_ASYNC_INSTANT, category_group, name, id, \
+      TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_NONE)
 #define TRACE_EVENT_COPY_NESTABLE_ASYNC_BEGIN_WITH_TIMESTAMP0(          \
     category_group, name, id, timestamp)                                \
   INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                   \
@@ -813,15 +823,6 @@
   INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                 \
       TRACE_EVENT_PHASE_NESTABLE_ASYNC_END, category_group, name, id, \
       TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_COPY)
-
-// Records a single NESTABLE_ASYNC_INSTANT event called "name" immediately,
-// with 2 associated arguments. If the category is not enabled, then this
-// does nothing.
-#define TRACE_EVENT_NESTABLE_ASYNC_INSTANT2(                              \
-    category_group, name, id, arg1_name, arg1_val, arg2_name, arg2_val)   \
-  INTERNAL_TRACE_EVENT_ADD_WITH_ID(                                       \
-      TRACE_EVENT_PHASE_NESTABLE_ASYNC_INSTANT, category_group, name, id, \
-      TRACE_EVENT_FLAG_NONE, arg1_name, arg1_val, arg2_name, arg2_val)
 
 // Records a single FLOW_BEGIN event called "name" immediately, with 0, 1 or 2
 // associated arguments. If the category is not enabled, then this
@@ -944,48 +945,56 @@
 #define TRACE_EVENT_CLOCK_SYNC_ISSUER(sync_id, issue_ts, issue_end_ts)         \
   INTERNAL_TRACE_EVENT_ADD_WITH_TIMESTAMP(                                     \
       TRACE_EVENT_PHASE_CLOCK_SYNC, "__metadata", "clock_sync",                \
-      issue_end_ts.ToInternalValue(), TRACE_EVENT_FLAG_NONE,                   \
-      "sync_id", sync_id, "issue_ts", issue_ts.ToInternalValue())
+      issue_end_ts, TRACE_EVENT_FLAG_NONE,                                     \
+      "sync_id", sync_id, "issue_ts", issue_ts)
 
 // Macros to track the life time and value of arbitrary client objects.
 // See also TraceTrackableObject.
 #define TRACE_EVENT_OBJECT_CREATED_WITH_ID(category_group, name, id) \
   INTERNAL_TRACE_EVENT_ADD_WITH_ID(                                  \
-      TRACE_EVENT_PHASE_CREATE_OBJECT, category_group, name,         \
-      TRACE_ID_DONT_MANGLE(id), TRACE_EVENT_FLAG_NONE)
+      TRACE_EVENT_PHASE_CREATE_OBJECT, category_group, name, id,     \
+      TRACE_EVENT_FLAG_NONE)
 
 #define TRACE_EVENT_OBJECT_SNAPSHOT_WITH_ID(category_group, name, id, \
                                             snapshot)                 \
   INTERNAL_TRACE_EVENT_ADD_WITH_ID(                                   \
       TRACE_EVENT_PHASE_SNAPSHOT_OBJECT, category_group, name,        \
-      TRACE_ID_DONT_MANGLE(id), TRACE_EVENT_FLAG_NONE, "snapshot", snapshot)
+      id, TRACE_EVENT_FLAG_NONE, "snapshot", snapshot)
 
-#define TRACE_EVENT_OBJECT_SNAPSHOT_WITH_ID_AND_TIMESTAMP(                    \
-    category_group, name, id, timestamp, snapshot)                            \
-  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                         \
-      TRACE_EVENT_PHASE_SNAPSHOT_OBJECT, category_group, name,                \
-      TRACE_ID_DONT_MANGLE(id), TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, \
-      TRACE_EVENT_FLAG_NONE, "snapshot", snapshot)
+#define TRACE_EVENT_OBJECT_SNAPSHOT_WITH_ID_AND_TIMESTAMP(                     \
+    category_group, name, id, timestamp, snapshot)                             \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID_TID_AND_TIMESTAMP(                          \
+      TRACE_EVENT_PHASE_SNAPSHOT_OBJECT, category_group, name,                 \
+      id, TRACE_EVENT_API_CURRENT_THREAD_ID, timestamp, TRACE_EVENT_FLAG_NONE, \
+      "snapshot", snapshot)
 
 #define TRACE_EVENT_OBJECT_DELETED_WITH_ID(category_group, name, id) \
   INTERNAL_TRACE_EVENT_ADD_WITH_ID(                                  \
-      TRACE_EVENT_PHASE_DELETE_OBJECT, category_group, name,         \
-      TRACE_ID_DONT_MANGLE(id), TRACE_EVENT_FLAG_NONE)
+      TRACE_EVENT_PHASE_DELETE_OBJECT, category_group, name, id,     \
+      TRACE_EVENT_FLAG_NONE)
 
 // Records entering and leaving trace event contexts. |category_group| and
 // |name| specify the context category and type. |context| is a
 // snapshotted context object id.
-#define TRACE_EVENT_ENTER_CONTEXT(category_group, name, context) \
-  INTERNAL_TRACE_EVENT_ADD_WITH_ID(                              \
-      TRACE_EVENT_PHASE_ENTER_CONTEXT, category_group, name,     \
-      TRACE_ID_DONT_MANGLE(context), TRACE_EVENT_FLAG_NONE)
-#define TRACE_EVENT_LEAVE_CONTEXT(category_group, name, context) \
-  INTERNAL_TRACE_EVENT_ADD_WITH_ID(                              \
-      TRACE_EVENT_PHASE_LEAVE_CONTEXT, category_group, name,     \
-      TRACE_ID_DONT_MANGLE(context), TRACE_EVENT_FLAG_NONE)
-#define TRACE_EVENT_SCOPED_CONTEXT(category_group, name, context) \
-  INTERNAL_TRACE_EVENT_SCOPED_CONTEXT(category_group, name,       \
-                                      TRACE_ID_DONT_MANGLE(context))
+#define TRACE_EVENT_ENTER_CONTEXT(category_group, name, context)      \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID(                                   \
+      TRACE_EVENT_PHASE_ENTER_CONTEXT, category_group, name, context, \
+      TRACE_EVENT_FLAG_NONE)
+#define TRACE_EVENT_LEAVE_CONTEXT(category_group, name, context)      \
+  INTERNAL_TRACE_EVENT_ADD_WITH_ID(                                   \
+      TRACE_EVENT_PHASE_LEAVE_CONTEXT, category_group, name, context, \
+      TRACE_EVENT_FLAG_NONE)
+
+// Macro to specify that two trace IDs are identical. For example,
+// TRACE_LINK_IDS(
+//     "category", "name",
+//     TRACE_ID_WITH_SCOPE("net::URLRequest", 0x1000),
+//     TRACE_ID_WITH_SCOPE("blink::ResourceFetcher::FetchRequest", 0x2000))
+// tells the trace consumer that events with ID ("net::URLRequest", 0x1000) from
+// the current process have the same ID as events with ID
+// ("blink::ResourceFetcher::FetchRequest", 0x2000).
+#define TRACE_LINK_IDS(category_group, name, id, linked_id) \
+  INTERNAL_TRACE_EVENT_ADD_LINK_IDS(category_group, name, id, linked_id);
 
 // Macro to efficiently determine if a given category group is enabled.
 #define TRACE_EVENT_CATEGORY_GROUP_ENABLED(category_group, ret)             \
@@ -997,14 +1006,6 @@
       *ret = false;                                                         \
     }                                                                       \
   } while (0)
-
-// Macro to explicitly warm up a given category group. This could be useful in
-// cases where we want to initialize a category group before any trace events
-// for that category group is reported. For example, to have a category group
-// always show up in the "record categories" list for manually selecting
-// settings in about://tracing.
-#define TRACE_EVENT_WARMUP_CATEGORY(category_group) \
-  INTERNAL_TRACE_EVENT_GET_CATEGORY_INFO(category_group)
 
 // Macro to efficiently determine, through polling, if a new trace has begun.
 #define TRACE_EVENT_IS_NEW_TRACE(ret)                                      \
@@ -1020,6 +1021,14 @@
       *ret = false;                                                        \
     }                                                                      \
   } while (0)
+
+// Macro for getting the real base::TimeTicks::Now() which can be overridden in
+// headless when VirtualTime is enabled.
+#define TRACE_TIME_TICKS_NOW() INTERNAL_TRACE_TIME_TICKS_NOW()
+
+// Macro for getting the real base::Time::Now() which can be overridden in
+// headless when VirtualTime is enabled.
+#define TRACE_TIME_NOW() INTERNAL_TRACE_TIME_NOW()
 
 // Notes regarding the following definitions:
 // New values can be added and propagated to third party libraries, but existing
@@ -1052,11 +1061,13 @@
 #define TRACE_EVENT_PHASE_CLOCK_SYNC ('c')
 #define TRACE_EVENT_PHASE_ENTER_CONTEXT ('(')
 #define TRACE_EVENT_PHASE_LEAVE_CONTEXT (')')
+#define TRACE_EVENT_PHASE_LINK_IDS ('=')
 
 // Flags for changing the behavior of TRACE_EVENT_API_ADD_TRACE_EVENT.
 #define TRACE_EVENT_FLAG_NONE (static_cast<unsigned int>(0))
 #define TRACE_EVENT_FLAG_COPY (static_cast<unsigned int>(1 << 0))
 #define TRACE_EVENT_FLAG_HAS_ID (static_cast<unsigned int>(1 << 1))
+// TODO(crbug.com/639003): Free this bit after ID mangling is deprecated.
 #define TRACE_EVENT_FLAG_MANGLE_ID (static_cast<unsigned int>(1 << 2))
 #define TRACE_EVENT_FLAG_SCOPE_OFFSET (static_cast<unsigned int>(1 << 3))
 #define TRACE_EVENT_FLAG_SCOPE_EXTRA (static_cast<unsigned int>(1 << 4))
@@ -1067,6 +1078,8 @@
 #define TRACE_EVENT_FLAG_FLOW_OUT (static_cast<unsigned int>(1 << 9))
 #define TRACE_EVENT_FLAG_HAS_CONTEXT_ID (static_cast<unsigned int>(1 << 10))
 #define TRACE_EVENT_FLAG_HAS_PROCESS_ID (static_cast<unsigned int>(1 << 11))
+#define TRACE_EVENT_FLAG_HAS_LOCAL_ID (static_cast<unsigned int>(1 << 12))
+#define TRACE_EVENT_FLAG_HAS_GLOBAL_ID (static_cast<unsigned int>(1 << 13))
 
 #define TRACE_EVENT_FLAG_SCOPE_MASK                          \
   (static_cast<unsigned int>(TRACE_EVENT_FLAG_SCOPE_OFFSET | \
@@ -1091,3 +1104,5 @@
 #define TRACE_EVENT_SCOPE_NAME_GLOBAL ('g')
 #define TRACE_EVENT_SCOPE_NAME_PROCESS ('p')
 #define TRACE_EVENT_SCOPE_NAME_THREAD ('t')
+
+#endif  // BASE_TRACE_EVENT_COMMON_TRACE_EVENT_COMMON_H_

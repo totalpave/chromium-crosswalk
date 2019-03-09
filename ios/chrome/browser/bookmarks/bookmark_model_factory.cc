@@ -5,9 +5,8 @@
 #include "ios/chrome/browser/bookmarks/bookmark_model_factory.h"
 
 #include <utility>
-
-#include "base/memory/ptr_util.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
+#include "base/task/post_task.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/bookmarks/browser/startup_task_runner_service.h"
@@ -15,11 +14,13 @@
 #include "components/prefs/pref_service.h"
 #include "components/undo/bookmark_undo_service.h"
 #include "ios/chrome/browser/bookmarks/bookmark_client_impl.h"
+#include "ios/chrome/browser/bookmarks/bookmark_sync_service_factory.h"
 #include "ios/chrome/browser/bookmarks/startup_task_runner_service_factory.h"
 #include "ios/chrome/browser/browser_state/browser_state_otr_helper.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/history/history_service_factory.h"
 #include "ios/chrome/browser/undo/bookmark_undo_service_factory.h"
+#include "ios/web/public/web_task_traits.h"
 #include "ios/web/public/web_thread.h"
 
 namespace ios {
@@ -40,7 +41,8 @@ bookmarks::BookmarkModel* BookmarkModelFactory::GetForBrowserStateIfExists(
 
 // static
 BookmarkModelFactory* BookmarkModelFactory::GetInstance() {
-  return base::Singleton<BookmarkModelFactory>::get();
+  static base::NoDestructor<BookmarkModelFactory> instance;
+  return instance.get();
 }
 
 BookmarkModelFactory::BookmarkModelFactory()
@@ -63,17 +65,17 @@ std::unique_ptr<KeyedService> BookmarkModelFactory::BuildServiceInstanceFor(
   ios::ChromeBrowserState* browser_state =
       ios::ChromeBrowserState::FromBrowserState(context);
   std::unique_ptr<bookmarks::BookmarkModel> bookmark_model(
-      new bookmarks::BookmarkModel(
-          base::WrapUnique(new BookmarkClientImpl(browser_state))));
+      new bookmarks::BookmarkModel(std::make_unique<BookmarkClientImpl>(
+          browser_state,
+          ios::BookmarkSyncServiceFactory::GetForBrowserState(browser_state))));
   bookmark_model->Load(
-      browser_state->GetPrefs(),
-      browser_state->GetStatePath(),
+      browser_state->GetPrefs(), browser_state->GetStatePath(),
       ios::StartupTaskRunnerServiceFactory::GetForBrowserState(browser_state)
           ->GetBookmarkTaskRunner(),
-      web::WebThread::GetTaskRunnerForThread(web::WebThread::UI));
+      base::CreateSingleThreadTaskRunnerWithTraits({web::WebThread::UI}));
   ios::BookmarkUndoServiceFactory::GetForBrowserState(browser_state)
       ->Start(bookmark_model.get());
-  return std::move(bookmark_model);
+  return bookmark_model;
 }
 
 web::BrowserState* BookmarkModelFactory::GetBrowserStateToUse(

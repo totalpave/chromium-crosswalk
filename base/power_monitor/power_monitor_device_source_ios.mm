@@ -8,6 +8,20 @@
 
 namespace base {
 
+bool PowerMonitorDeviceSource::IsOnBatteryPowerImpl() {
+#if TARGET_IPHONE_SIMULATOR
+  return false;
+#else
+  UIDevice* currentDevice = [UIDevice currentDevice];
+  BOOL isCurrentAppMonitoringBattery = currentDevice.isBatteryMonitoringEnabled;
+  [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+  UIDeviceBatteryState batteryState = [UIDevice currentDevice].batteryState;
+  currentDevice.batteryMonitoringEnabled = isCurrentAppMonitoringBattery;
+  DCHECK(batteryState != UIDeviceBatteryStateUnknown);
+  return batteryState == UIDeviceBatteryStateUnplugged;
+#endif
+}
+
 void PowerMonitorDeviceSource::PlatformInit() {
   NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
   id foreground =

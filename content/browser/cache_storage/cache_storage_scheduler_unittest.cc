@@ -11,8 +11,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace content {
-
-namespace {
+namespace cache_storage_scheduler_unittest {
 
 class TestTask {
  public:
@@ -29,12 +28,11 @@ class TestTask {
   int callback_count_;
 };
 
-}  // namespace
-
 class CacheStorageSchedulerTest : public testing::Test {
  protected:
   CacheStorageSchedulerTest()
       : browser_thread_bundle_(TestBrowserThreadBundle::IO_MAINLOOP),
+        scheduler_(CacheStorageSchedulerClient::kStorage),
         task1_(TestTask(&scheduler_)),
         task2_(TestTask(&scheduler_)) {}
 
@@ -46,16 +44,19 @@ class CacheStorageSchedulerTest : public testing::Test {
 
 TEST_F(CacheStorageSchedulerTest, ScheduleOne) {
   scheduler_.ScheduleOperation(
-      base::Bind(&TestTask::Run, base::Unretained(&task1_)));
+      CacheStorageSchedulerOp::kTest,
+      base::BindOnce(&TestTask::Run, base::Unretained(&task1_)));
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1, task1_.callback_count());
 }
 
 TEST_F(CacheStorageSchedulerTest, ScheduleTwo) {
   scheduler_.ScheduleOperation(
-      base::Bind(&TestTask::Run, base::Unretained(&task1_)));
+      CacheStorageSchedulerOp::kTest,
+      base::BindOnce(&TestTask::Run, base::Unretained(&task1_)));
   scheduler_.ScheduleOperation(
-      base::Bind(&TestTask::Run, base::Unretained(&task2_)));
+      CacheStorageSchedulerOp::kTest,
+      base::BindOnce(&TestTask::Run, base::Unretained(&task2_)));
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1, task1_.callback_count());
   EXPECT_EQ(0, task2_.callback_count());
@@ -69,7 +70,8 @@ TEST_F(CacheStorageSchedulerTest, ScheduleTwo) {
 
 TEST_F(CacheStorageSchedulerTest, ScheduledOperations) {
   scheduler_.ScheduleOperation(
-      base::Bind(&TestTask::Run, base::Unretained(&task1_)));
+      CacheStorageSchedulerOp::kTest,
+      base::BindOnce(&TestTask::Run, base::Unretained(&task1_)));
   EXPECT_TRUE(scheduler_.ScheduledOperations());
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1, task1_.callback_count());
@@ -78,4 +80,5 @@ TEST_F(CacheStorageSchedulerTest, ScheduledOperations) {
   EXPECT_FALSE(scheduler_.ScheduledOperations());
 }
 
+}  // namespace cache_storage_scheduler_unittest
 }  // namespace content

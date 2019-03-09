@@ -7,8 +7,8 @@
 
 #include <string>
 
+#include "base/component_export.h"
 #include "base/logging.h"
-#include "chromeos/chromeos_export.h"
 #include "google_apis/gaia/gaia_auth_consumer.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/net_errors.h"
@@ -17,26 +17,30 @@ namespace chromeos {
 
 class UserContext;
 
-class CHROMEOS_EXPORT AuthFailure {
+class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) AuthFailure {
  public:
+  // Enum used for UMA. Do NOT reorder or remove entry. Don't forget to
+  // update LoginFailureReason enum in enums.xml when adding new entries.
   enum FailureReason {
-    NONE,
-    COULD_NOT_MOUNT_CRYPTOHOME,
-    COULD_NOT_MOUNT_TMPFS,
-    COULD_NOT_UNMOUNT_CRYPTOHOME,
-    DATA_REMOVAL_FAILED,  // Could not destroy your old data
-    LOGIN_TIMED_OUT,
-    UNLOCK_FAILED,
-    NETWORK_AUTH_FAILED,     // Could not authenticate against Google
-    OWNER_REQUIRED,          // Only the device owner can log-in.
-    WHITELIST_CHECK_FAILED,  // Login attempt blocked by whitelist. This
+    NONE = 0,
+    COULD_NOT_MOUNT_CRYPTOHOME = 1,
+    COULD_NOT_MOUNT_TMPFS = 2,
+    COULD_NOT_UNMOUNT_CRYPTOHOME = 3,
+    DATA_REMOVAL_FAILED = 4,  // Could not destroy your old data
+    LOGIN_TIMED_OUT = 5,
+    UNLOCK_FAILED = 6,
+    NETWORK_AUTH_FAILED = 7,     // Could not authenticate against Google
+    OWNER_REQUIRED = 8,          // Only the device owner can log-in.
+    WHITELIST_CHECK_FAILED = 9,  // Login attempt blocked by whitelist. This
     // value is synthesized by the ExistingUserController and passed to the
     // login_status_consumer_ in tests only. It is never generated or seen by
     // any of the other authenticator classes.
-    TPM_ERROR,                   // Critical TPM error encountered.
-    USERNAME_HASH_FAILED,        // Could not get username hash.
-    FAILED_TO_INITIALIZE_TOKEN,  // Could not get OAuth2 Token,
-    NUM_FAILURE_REASONS,         // This has to be the last item.
+    TPM_ERROR = 10,                   // Critical TPM error encountered.
+    USERNAME_HASH_FAILED = 11,        // Could not get username hash.
+    FAILED_TO_INITIALIZE_TOKEN = 12,  // Could not get OAuth2 Token,
+    MISSING_CRYPTOHOME = 13,          // cryptohome missing from disk.
+    AUTH_DISABLED = 14,               // Authentication disabled for user.
+    NUM_FAILURE_REASONS,              // This has to be the last item.
   };
 
   explicit AuthFailure(FailureReason reason)
@@ -86,6 +90,10 @@ class CHROMEOS_EXPORT AuthFailure {
         return "Login attempt blocked by whitelist.";
       case FAILED_TO_INITIALIZE_TOKEN:
         return "OAuth2 token fetch failed.";
+      case MISSING_CRYPTOHOME:
+        return "Cryptohome missing from disk.";
+      case AUTH_DISABLED:
+        return "Auth disabled for user.";
       default:
         NOTREACHED();
         return std::string();
@@ -103,10 +111,18 @@ class CHROMEOS_EXPORT AuthFailure {
   GoogleServiceAuthError error_;
 };
 
+// Enum used for UMA. Do NOT reorder or remove entry. Don't forget to
+// update histograms.xml when adding new entries.
+enum SuccessReason {
+  OFFLINE_AND_ONLINE = 0,
+  OFFLINE_ONLY = 1,
+  NUM_SUCCESS_REASONS,  // This has to be the last item.
+};
+
 // An interface that defines the callbacks for objects that the
 // Authenticator class will call to report the success/failure of
 // authentication for Chromium OS.
-class CHROMEOS_EXPORT AuthStatusConsumer {
+class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) AuthStatusConsumer {
  public:
   virtual ~AuthStatusConsumer() {}
   // The current login attempt has ended in failure, with error |error|.
@@ -118,6 +134,9 @@ class CHROMEOS_EXPORT AuthStatusConsumer {
   virtual void OnOffTheRecordAuthSuccess() {}
   // The same password didn't work both online and offline.
   virtual void OnPasswordChangeDetected();
+  // The cryptohome is encrypted in old format and needs migration.
+  virtual void OnOldEncryptionDetected(const UserContext& user_context,
+                                       bool has_incomplete_migration);
 };
 
 }  // namespace chromeos

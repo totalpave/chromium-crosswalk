@@ -17,8 +17,6 @@
 
 </head>
 
-<html>
-
 <body>
 <div id="main">
   <div hidden id="menus_title" class="i18n" msgid="menus_title"></div>
@@ -31,11 +29,19 @@
       <div id="speech"></div>
     </div>
     <div id="braille-container">
-      <div id="braille-text"></div>
-      <div id="braille-cells"></div>
+      <div id="braille-table-holder-outer">
+        <div id="braille-table-holder1" class="braille-table-holder">
+          <table id="braille-table">
+          </table>
+        </div>
+        <div id="braille-table-holder2" class="braille-table-holder">
+          <table id="braille-table2">
+          </table>
+        </div>
+      </div>
     </div>
     <div id="search-container">
-      <input class="i18n" msgid="search_widget_intro" id="search" type="search"></input>
+      <input class="i18n" msgid="search_widget_intro" id="search" type="search">
     </div>
   </div>
   <div id="options_close">
@@ -47,10 +53,10 @@
   </div>
 </div>
 <div id="menus_background">
-  <div id="menu-bar" aria-role="menubar">
+  <div id="menu-bar" role="menubar">
   </div>
 </div>
-<div id="tutorial" style="display: none;">
+<div id="tutorial" hidden>
   <div id="tutorial_logo"></div>
   <div hidden id="close_tutorial_title" class="i18n" msgid="close_tutorial"></div>
   <button id="close_tutorial" aria-labelledby="close_tutorial_title"></button>

@@ -7,6 +7,8 @@
 
 #include "base/macros.h"
 #include "content/public/renderer/render_frame_observer.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/size_f.h"
@@ -25,14 +27,21 @@ namespace android_webview {
 // WebKit directly to implement (and that aren't needed in the chrome app).
 class AwRenderFrameExt : public content::RenderFrameObserver {
  public:
-  AwRenderFrameExt(content::RenderFrame* render_frame);
+  explicit AwRenderFrameExt(content::RenderFrame* render_frame);
+
+  static AwRenderFrameExt* FromRenderFrame(content::RenderFrame* render_frame);
+
+  bool GetWillSuppressErrorPage();
 
  private:
   ~AwRenderFrameExt() override;
 
   // RenderFrameObserver:
-  void DidCommitProvisionalLoad(bool is_new_navigation,
-                                bool is_same_page_navigation) override;
+  bool OnAssociatedInterfaceRequestForFrame(
+      const std::string& interface_name,
+      mojo::ScopedInterfaceEndpointHandle* handle) override;
+  void DidCommitProvisionalLoad(bool is_same_document_navigation,
+                                ui::PageTransition transition) override;
 
   bool OnMessageReceived(const IPC::Message& message) override;
   void FocusedNodeChanged(const blink::WebNode& node) override;
@@ -52,16 +61,21 @@ class AwRenderFrameExt : public content::RenderFrameObserver {
 
   void OnSmoothScroll(int target_x, int target_y, int duration_ms);
 
+  void OnSetWillSuppressErrorPage(bool suppress);
+
   blink::WebView* GetWebView();
   blink::WebFrameWidget* GetWebFrameWidget();
 
   url::Origin last_origin_;
 
+  blink::AssociatedInterfaceRegistry registry_;
+
+  // Some WebView users might want to show their own error pages / logic
+  bool will_suppress_error_page_ = false;
+
   DISALLOW_COPY_AND_ASSIGN(AwRenderFrameExt);
 };
 
-}
+}  // namespace android_webview
 
 #endif  // ANDROID_WEBVIEW_RENDERER_AW_RENDER_FRAME_EXT_H_
-
-

@@ -22,10 +22,19 @@ class DecryptContext {
   // Get the key system to use for decryption.
   virtual CastKeySystem GetKeySystem() = 0;
 
-  // Decrypts the given buffer.  Returns true/false for success/failure,
-  // and places the decrypted data in output if successful.
+  // Decrypts the given buffer. Returns true/false for success/failure.
+  //
+  // |opaque_handle| is a handle to the secure memory, which is only accessible
+  // by TEE.
+  //
+  // The decrypted data will be of size |buffer.data_size()| and there must be
+  // enough space in |opaque_handle| to store that data.
+  //
+  // If non-zero, |data_offset| specifies an offset to be applied to
+  // |opaque_handle| before the decrypted data is written.
   virtual bool Decrypt(CastDecoderBuffer* buffer,
-                       std::vector<uint8_t>* output) = 0;
+                       uint8_t* opaque_handle,
+                       size_t data_offset) = 0;
 };
 
 }  // namespace media

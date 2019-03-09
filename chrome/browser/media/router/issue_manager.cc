@@ -6,111 +6,136 @@
 
 #include <algorithm>
 
+#include "base/bind.h"
+#include "base/task/post_task.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
+
 namespace media_router {
 
-IssueManager::IssueManager() {
+namespace {
+
+// The number of minutes a NOTIFICATION Issue stays in the IssueManager
+// before it is auto-dismissed.
+constexpr int kNotificationAutoDismissMins = 1;
+
+// The number of minutes a WARNING Issue stays in the IssueManager before it
+// is auto-dismissed.
+constexpr int kWarningAutoDismissMins = 5;
+
+}  // namespace
+
+// static
+base::TimeDelta IssueManager::GetAutoDismissTimeout(
+    const IssueInfo& issue_info) {
+  if (issue_info.is_blocking)
+    return base::TimeDelta();
+
+  switch (issue_info.severity) {
+    case IssueInfo::Severity::NOTIFICATION:
+      return base::TimeDelta::FromMinutes(kNotificationAutoDismissMins);
+    case IssueInfo::Severity::WARNING:
+      return base::TimeDelta::FromMinutes(kWarningAutoDismissMins);
+    case IssueInfo::Severity::FATAL:
+      NOTREACHED() << "FATAL issues should be blocking";
+      return base::TimeDelta();
+  }
+  NOTREACHED();
+  return base::TimeDelta();
 }
+
+IssueManager::IssueManager()
+    : top_issue_(nullptr),
+      task_runner_(base::CreateSingleThreadTaskRunnerWithTraits(
+          {content::BrowserThread::UI})) {}
 
 IssueManager::~IssueManager() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
-void IssueManager::AddIssue(const Issue& issue) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  for (const Issue& next_issue : issues_) {
-    if (next_issue.Equals(issue)) {
+void IssueManager::AddIssue(const IssueInfo& issue_info) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto& issues_map =
+      issue_info.is_blocking ? blocking_issues_ : non_blocking_issues_;
+  for (const auto& key_value_pair : issues_map) {
+    const auto& issue = key_value_pair.second->issue;
+    if (issue.info() == issue_info)
       return;
-    }
   }
-  issues_.push_back(issue);
+
+  Issue issue(issue_info);
+  std::unique_ptr<base::CancelableClosure> cancelable_dismiss_cb;
+  base::TimeDelta timeout = GetAutoDismissTimeout(issue_info);
+  if (!timeout.is_zero()) {
+    cancelable_dismiss_cb =
+        std::make_unique<base::CancelableClosure>(base::Bind(
+            &IssueManager::ClearIssue, base::Unretained(this), issue.id()));
+    task_runner_->PostDelayedTask(FROM_HERE, cancelable_dismiss_cb->callback(),
+                                  timeout);
+  }
+
+  issues_map.emplace(issue.id(), std::make_unique<IssueManager::Entry>(
+                                     issue, std::move(cancelable_dismiss_cb)));
   MaybeUpdateTopIssue();
 }
 
 void IssueManager::ClearIssue(const Issue::Id& issue_id) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  issues_.erase(std::remove_if(issues_.begin(), issues_.end(),
-                               [&issue_id](const Issue& issue) {
-                                 return issue_id == issue.id();
-                               }),
-                issues_.end());
-  MaybeUpdateTopIssue();
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (non_blocking_issues_.erase(issue_id) || blocking_issues_.erase(issue_id))
+    MaybeUpdateTopIssue();
 }
 
-size_t IssueManager::GetIssueCount() const {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  return issues_.size();
-}
+void IssueManager::ClearNonBlockingIssues() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (non_blocking_issues_.empty())
+    return;
 
-void IssueManager::ClearAllIssues() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  issues_.clear();
-  MaybeUpdateTopIssue();
-}
-
-void IssueManager::ClearGlobalIssues() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  issues_.erase(
-      std::remove_if(issues_.begin(), issues_.end(), [](const Issue& issue) {
-        return issue.is_global();
-      }), issues_.end());
-  MaybeUpdateTopIssue();
-}
-
-void IssueManager::ClearIssuesWithRouteId(const MediaRoute::Id& route_id) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  issues_.erase(std::remove_if(issues_.begin(), issues_.end(),
-                               [&route_id](const Issue& issue) {
-                                 return route_id == issue.route_id();
-                               }),
-                issues_.end());
+  non_blocking_issues_.clear();
   MaybeUpdateTopIssue();
 }
 
 void IssueManager::RegisterObserver(IssuesObserver* observer) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(observer);
   DCHECK(!issues_observers_.HasObserver(observer));
 
   issues_observers_.AddObserver(observer);
-  if (!top_issue_id_.empty()) {
-    // Find the current top issue and report it to the observer.
-    for (const auto& next_issue : issues_) {
-      if (next_issue.id() == top_issue_id_) {
-        observer->OnIssueUpdated(&next_issue);
-      }
-    }
-  }
+  if (top_issue_)
+    observer->OnIssue(*top_issue_);
 }
 
 void IssueManager::UnregisterObserver(IssuesObserver* observer) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   issues_observers_.RemoveObserver(observer);
 }
 
+IssueManager::Entry::Entry(
+    const Issue& issue,
+    std::unique_ptr<base::CancelableClosure> cancelable_dismiss_callback)
+    : issue(issue),
+      cancelable_dismiss_callback(std::move(cancelable_dismiss_callback)) {}
+
+IssueManager::Entry::~Entry() = default;
+
 void IssueManager::MaybeUpdateTopIssue() {
-  Issue* new_top_issue = nullptr;
-
-  if (issues_.empty()) {
-    FOR_EACH_OBSERVER(IssuesObserver, issues_observers_,
-                      OnIssueUpdated(new_top_issue));
-    return;
-  }
-
+  const Issue* new_top_issue = nullptr;
   // Select the first blocking issue in the list of issues.
   // If there are none, simply select the first issue in the list.
-  new_top_issue = &(issues_.front());
-  for (auto it = issues_.begin(); it != issues_.end(); ++it) {
-    // The first blocking issue is of higher priority than the first issue.
-    if (it->is_blocking()) {
-      new_top_issue = &(*it);
-      break;
-    }
+  if (!blocking_issues_.empty()) {
+    new_top_issue = &blocking_issues_.begin()->second->issue;
+  } else if (!non_blocking_issues_.empty()) {
+    new_top_issue = &non_blocking_issues_.begin()->second->issue;
   }
 
   // If we've found a new top issue, then report it via the observer.
-  if (new_top_issue->id() != top_issue_id_) {
-    top_issue_id_ = new_top_issue->id();
-    FOR_EACH_OBSERVER(IssuesObserver, issues_observers_,
-                      OnIssueUpdated(new_top_issue));
+  if (new_top_issue != top_issue_) {
+    top_issue_ = new_top_issue;
+    for (auto& observer : issues_observers_) {
+      if (top_issue_)
+        observer.OnIssue(*top_issue_);
+      else
+        observer.OnIssuesCleared();
+    }
   }
 }
 

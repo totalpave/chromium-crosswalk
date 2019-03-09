@@ -14,20 +14,22 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/file_util.h"
+#include "extensions/common/image_util.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handler_helpers.h"
-#include "grit/extensions_strings.h"
+#include "extensions/strings/grit/extensions_strings.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace extensions {
 
 namespace keys = manifest_keys;
 
-static base::LazyInstance<ExtensionIconSet> g_empty_icon_set =
+static base::LazyInstance<ExtensionIconSet>::DestructorAtExit g_empty_icon_set =
     LAZY_INSTANCE_INITIALIZER;
 
 // static
 const ExtensionIconSet& IconsInfo::GetIcons(const Extension* extension) {
+  DCHECK(extension);
   IconsInfo* info = static_cast<IconsInfo*>(
       extension->GetManifestData(keys::kIcons));
   return info ? info->icons : g_empty_icon_set.Get();
@@ -58,7 +60,7 @@ IconsHandler::~IconsHandler() {
 
 bool IconsHandler::Parse(Extension* extension, base::string16* error) {
   std::unique_ptr<IconsInfo> icons_info(new IconsInfo);
-  const base::DictionaryValue* icons_dict = NULL;
+  const base::Value* icons_dict = nullptr;
   if (!extension->manifest()->GetDictionary(keys::kIcons, &icons_dict)) {
     *error = base::ASCIIToUTF16(manifest_errors::kInvalidIcons);
     return false;
@@ -69,21 +71,23 @@ bool IconsHandler::Parse(Extension* extension, base::string16* error) {
     return false;
   }
 
-  extension->SetManifestData(keys::kIcons, icons_info.release());
+  extension->SetManifestData(keys::kIcons, std::move(icons_info));
   return true;
 }
 
 bool IconsHandler::Validate(const Extension* extension,
                             std::string* error,
                             std::vector<InstallWarning>* warnings) const {
-  return file_util::ValidateExtensionIconSet(IconsInfo::GetIcons(extension),
-                                             extension,
-                                             IDS_EXTENSION_LOAD_ICON_FAILED,
-                                             error);
+  // Analyze the icons for visibility using the default toolbar color, since
+  // the majority of Chrome users don't modify their theme.
+  return file_util::ValidateExtensionIconSet(
+      IconsInfo::GetIcons(extension), extension, IDS_EXTENSION_LOAD_ICON_FAILED,
+      image_util::kDefaultToolbarColor, error);
 }
 
-const std::vector<std::string> IconsHandler::Keys() const {
-  return SingleKey(keys::kIcons);
+base::span<const char* const> IconsHandler::Keys() const {
+  static constexpr const char* kKeys[] = {keys::kIcons};
+  return kKeys;
 }
 
 }  // namespace extensions

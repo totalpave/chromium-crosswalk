@@ -168,6 +168,21 @@ BPF_TEST_C(BaselinePolicy, Socketpair, BaselinePolicy) {
   TestPipeOrSocketPair(base::ScopedFD(sv[0]), base::ScopedFD(sv[1]));
 }
 
+#if !defined(GRND_NONBLOCK)
+#define GRND_NONBLOCK 1
+#endif
+
+BPF_TEST_C(BaselinePolicy, GetRandom, BaselinePolicy) {
+  char buf[1];
+
+  // Many systems do not yet support getrandom(2) so ENOSYS is a valid result
+  // here.
+  int ret = HANDLE_EINTR(syscall(__NR_getrandom, buf, sizeof(buf), 0));
+  BPF_ASSERT((ret == -1 && errno == ENOSYS) || ret == 1);
+  ret = HANDLE_EINTR(syscall(__NR_getrandom, buf, sizeof(buf), GRND_NONBLOCK));
+  BPF_ASSERT((ret == -1 && (errno == ENOSYS || errno == EAGAIN)) || ret == 1);
+}
+
 // Not all architectures can restrict the domain for socketpair().
 #if defined(__x86_64__) || defined(__arm__) || defined(__aarch64__)
 BPF_DEATH_TEST_C(BaselinePolicy,
@@ -224,28 +239,28 @@ BPF_DEATH_TEST_C(BaselinePolicy,
     _exit(1);                                                            \
   }
 
-TEST_BASELINE_SIGSYS(__NR_acct);
-TEST_BASELINE_SIGSYS(__NR_chroot);
-TEST_BASELINE_SIGSYS(__NR_fanotify_init);
-TEST_BASELINE_SIGSYS(__NR_fgetxattr);
-TEST_BASELINE_SIGSYS(__NR_getcpu);
-TEST_BASELINE_SIGSYS(__NR_getitimer);
-TEST_BASELINE_SIGSYS(__NR_init_module);
-TEST_BASELINE_SIGSYS(__NR_io_cancel);
-TEST_BASELINE_SIGSYS(__NR_keyctl);
-TEST_BASELINE_SIGSYS(__NR_mq_open);
-TEST_BASELINE_SIGSYS(__NR_ptrace);
-TEST_BASELINE_SIGSYS(__NR_sched_setaffinity);
-TEST_BASELINE_SIGSYS(__NR_setpgid);
-TEST_BASELINE_SIGSYS(__NR_swapon);
-TEST_BASELINE_SIGSYS(__NR_sysinfo);
-TEST_BASELINE_SIGSYS(__NR_syslog);
-TEST_BASELINE_SIGSYS(__NR_timer_create);
+TEST_BASELINE_SIGSYS(__NR_acct)
+TEST_BASELINE_SIGSYS(__NR_chroot)
+TEST_BASELINE_SIGSYS(__NR_fanotify_init)
+TEST_BASELINE_SIGSYS(__NR_fgetxattr)
+TEST_BASELINE_SIGSYS(__NR_getcpu)
+TEST_BASELINE_SIGSYS(__NR_getitimer)
+TEST_BASELINE_SIGSYS(__NR_init_module)
+TEST_BASELINE_SIGSYS(__NR_io_cancel)
+TEST_BASELINE_SIGSYS(__NR_keyctl)
+TEST_BASELINE_SIGSYS(__NR_mq_open)
+TEST_BASELINE_SIGSYS(__NR_ptrace)
+TEST_BASELINE_SIGSYS(__NR_sched_setaffinity)
+TEST_BASELINE_SIGSYS(__NR_setpgid)
+TEST_BASELINE_SIGSYS(__NR_swapon)
+TEST_BASELINE_SIGSYS(__NR_sysinfo)
+TEST_BASELINE_SIGSYS(__NR_syslog)
+TEST_BASELINE_SIGSYS(__NR_timer_create)
 
 #if !defined(__aarch64__)
-TEST_BASELINE_SIGSYS(__NR_eventfd);
-TEST_BASELINE_SIGSYS(__NR_inotify_init);
-TEST_BASELINE_SIGSYS(__NR_vserver);
+TEST_BASELINE_SIGSYS(__NR_eventfd)
+TEST_BASELINE_SIGSYS(__NR_inotify_init)
+TEST_BASELINE_SIGSYS(__NR_vserver)
 #endif
 
 #if defined(LIBC_GLIBC) && !defined(OS_CHROMEOS)
@@ -346,7 +361,18 @@ BPF_DEATH_TEST_C(BaselinePolicy,
                  DEATH_SEGV_MESSAGE(sandbox::GetErrorMessageContentForTests()),
                  BaselinePolicy) {
   struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+  syscall(SYS_clock_gettime, CLOCK_MONOTONIC_RAW, &ts);
+}
+
+#if !defined(GRND_RANDOM)
+#define GRND_RANDOM 2
+#endif
+
+BPF_DEATH_TEST_C(BaselinePolicy,
+                 GetRandomOfDevRandomCrashes,
+                 DEATH_SEGV_MESSAGE(sandbox::GetErrorMessageContentForTests()),
+                 BaselinePolicy) {
+  syscall(__NR_getrandom, NULL, 0, GRND_RANDOM);
 }
 
 #if !defined(__i386__)

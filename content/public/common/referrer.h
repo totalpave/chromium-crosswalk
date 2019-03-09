@@ -7,7 +7,8 @@
 
 #include "base/logging.h"
 #include "content/common/content_export.h"
-#include "third_party/WebKit/public/platform/WebReferrerPolicy.h"
+#include "net/url_request/url_request.h"
+#include "services/network/public/mojom/referrer_policy.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -15,16 +16,30 @@ namespace content {
 // This struct holds a referrer URL, as well as the referrer policy to be
 // applied to this URL. When passing around referrers that will eventually end
 // up being used for URL requests, always use this struct.
+//
+// TODO(leonhsl): Replace this struct everywhere with blink::mojom::Referrer.
+
 struct CONTENT_EXPORT Referrer {
-  Referrer(const GURL& url, blink::WebReferrerPolicy policy)
+  Referrer(const GURL& url, network::mojom::ReferrerPolicy policy)
       : url(url), policy(policy) {}
-  Referrer() : policy(blink::WebReferrerPolicyDefault) {}
+  Referrer() : policy(network::mojom::ReferrerPolicy::kDefault) {}
 
   GURL url;
-  blink::WebReferrerPolicy policy;
+  network::mojom::ReferrerPolicy policy;
 
   static Referrer SanitizeForRequest(const GURL& request,
                                      const Referrer& referrer);
+
+  static void SetReferrerForRequest(net::URLRequest* request,
+                                    const Referrer& referrer);
+
+  static net::URLRequest::ReferrerPolicy ReferrerPolicyForUrlRequest(
+      network::mojom::ReferrerPolicy referrer_policy);
+
+  static network::mojom::ReferrerPolicy NetReferrerPolicyToBlinkReferrerPolicy(
+      net::URLRequest::ReferrerPolicy net_policy);
+
+  static net::URLRequest::ReferrerPolicy GetDefaultReferrerPolicy();
 };
 
 }  // namespace content

@@ -4,10 +4,13 @@
 
 #include "components/prefs/pref_member.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
@@ -26,7 +29,7 @@ void RegisterTestPrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(kIntPref, 0);
   registry->RegisterDoublePref(kDoublePref, 0.0);
   registry->RegisterStringPref(kStringPref, "default");
-  registry->RegisterListPref(kStringListPref, new base::ListValue());
+  registry->RegisterListPref(kStringListPref);
 }
 
 class GetPrefValueHelper
@@ -50,7 +53,7 @@ class GetPrefValueHelper
                               base::WaitableEvent::InitialState::NOT_SIGNALED);
     ASSERT_TRUE(pref_thread_.task_runner()->PostTask(
         FROM_HERE,
-        base::Bind(&GetPrefValueHelper::GetPrefValue, this, &event)));
+        base::BindOnce(&GetPrefValueHelper::GetPrefValue, this, &event)));
     event.Wait();
   }
 
@@ -102,7 +105,7 @@ class PrefMemberTestClass {
 }  // anonymous namespace
 
 class PrefMemberTest : public testing::Test {
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
 };
 
 TEST_F(PrefMemberTest, BasicGetAndSet) {
@@ -223,7 +226,7 @@ TEST_F(PrefMemberTest, BasicGetAndSet) {
   EXPECT_EQ(expected_vector, *string_list);
 
   // Try removing through the pref.
-  expected_list.Remove(0, NULL);
+  expected_list.Remove(0, nullptr);
   expected_vector.erase(expected_vector.begin());
   prefs.Set(kStringListPref, expected_list);
 

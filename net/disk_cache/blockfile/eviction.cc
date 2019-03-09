@@ -36,6 +36,7 @@
 #include "base/compiler_specific.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -84,8 +85,7 @@ Eviction::Eviction()
       ptr_factory_(this) {
 }
 
-Eviction::~Eviction() {
-}
+Eviction::~Eviction() = default;
 
 void Eviction::Init(BackendImpl* backend) {
   // We grab a bunch of info from the backend to make the code a little cleaner
@@ -154,8 +154,8 @@ void Eviction::TrimCache(bool empty) {
     if (!empty && (deleted_entries > 20 ||
                    (TimeTicks::Now() - start).InMilliseconds() > 20)) {
       base::ThreadTaskRunnerHandle::Get()->PostTask(
-          FROM_HERE,
-          base::Bind(&Eviction::TrimCache, ptr_factory_.GetWeakPtr(), false));
+          FROM_HERE, base::BindOnce(&Eviction::TrimCache,
+                                    ptr_factory_.GetWeakPtr(), false));
       break;
     }
   }
@@ -222,7 +222,8 @@ void Eviction::PostDelayedTrim() {
   delay_trim_ = true;
   trim_delays_++;
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&Eviction::DelayedTrim, ptr_factory_.GetWeakPtr()),
+      FROM_HERE,
+      base::BindOnce(&Eviction::DelayedTrim, ptr_factory_.GetWeakPtr()),
       base::TimeDelta::FromMilliseconds(1000));
 }
 
@@ -240,7 +241,6 @@ bool Eviction::ShouldTrim() {
     return false;
   }
 
-  UMA_HISTOGRAM_COUNTS("DiskCache.TrimDelays", trim_delays_);
   trim_delays_ = 0;
   return true;
 }
@@ -274,12 +274,10 @@ void Eviction::ReportTrimTimes(EntryImpl* entry) {
       backend_->FirstEviction();
     } else {
       // This is an old file, but we may want more reports from this user so
-      // lets save some create_time.
-      Time::Exploded old = {0};
-      old.year = 2009;
-      old.month = 3;
-      old.day_of_month = 1;
-      header_->create_time = Time::FromLocalExploded(old).ToInternalValue();
+      // lets save some create_time. Conversion cannot fail here.
+      const base::Time time_2009_3_1 =
+          base::Time::FromInternalValue(12985574400000000);
+      header_->create_time = time_2009_3_1.ToInternalValue();
     }
   }
 }
@@ -290,14 +288,14 @@ Rankings::List Eviction::GetListForEntry(EntryImpl* entry) {
 
 bool Eviction::EvictEntry(CacheRankingsBlock* node, bool empty,
                           Rankings::List list) {
-  EntryImpl* entry = backend_->GetEnumeratedEntry(node, list);
+  scoped_refptr<EntryImpl> entry = backend_->GetEnumeratedEntry(node, list);
   if (!entry) {
     Trace("NewEntry failed on Trim 0x%x", node->address().value());
     return false;
   }
 
-  web_fonts_histogram::RecordEviction(entry);
-  ReportTrimTimes(entry);
+  web_fonts_histogram::RecordEviction(entry.get());
+  ReportTrimTimes(entry.get());
   if (empty || !new_eviction_) {
     entry->DoomImpl();
   } else {
@@ -305,15 +303,13 @@ bool Eviction::EvictEntry(CacheRankingsBlock* node, bool empty,
     EntryStore* info = entry->entry()->Data();
     DCHECK_EQ(ENTRY_NORMAL, info->state);
 
-    rankings_->Remove(entry->rankings(), GetListForEntryV2(entry), true);
+    rankings_->Remove(entry->rankings(), GetListForEntryV2(entry.get()), true);
     info->state = ENTRY_EVICTED;
     entry->entry()->Store();
     rankings_->Insert(entry->rankings(), true, Rankings::DELETED);
   }
   if (!empty)
     backend_->OnEvent(Stats::TRIM_ENTRY);
-
-  entry->Release();
 
   return true;
 }
@@ -330,8 +326,8 @@ void Eviction::TrimCacheV2(bool empty) {
   int list = Rankings::LAST_ELEMENT;
 
   // Get a node from each list.
+  bool done = false;
   for (int i = 0; i < kListsToSearch; i++) {
-    bool done = false;
     next[i].set_rankings(rankings_);
     if (done)
       continue;
@@ -375,8 +371,8 @@ void Eviction::TrimCacheV2(bool empty) {
       if (!empty && (deleted_entries > 20 ||
                      (TimeTicks::Now() - start).InMilliseconds() > 20)) {
         base::ThreadTaskRunnerHandle::Get()->PostTask(
-            FROM_HERE,
-            base::Bind(&Eviction::TrimCache, ptr_factory_.GetWeakPtr(), false));
+            FROM_HERE, base::BindOnce(&Eviction::TrimCache,
+                                      ptr_factory_.GetWeakPtr(), false));
         break;
       }
     }
@@ -388,8 +384,8 @@ void Eviction::TrimCacheV2(bool empty) {
     TrimDeleted(true);
   } else if (ShouldTrimDeleted()) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(&Eviction::TrimDeleted, ptr_factory_.GetWeakPtr(), empty));
+        FROM_HERE, base::BindOnce(&Eviction::TrimDeleted,
+                                  ptr_factory_.GetWeakPtr(), empty));
   }
 
   if (empty) {
@@ -521,8 +517,8 @@ void Eviction::TrimDeleted(bool empty) {
 
   if (deleted_entries && !empty && ShouldTrimDeleted()) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(&Eviction::TrimDeleted, ptr_factory_.GetWeakPtr(), false));
+        FROM_HERE, base::BindOnce(&Eviction::TrimDeleted,
+                                  ptr_factory_.GetWeakPtr(), false));
   }
 
   CACHE_UMA(AGE_MS, "TotalTrimDeletedTime", 0, start);
@@ -532,7 +528,8 @@ void Eviction::TrimDeleted(bool empty) {
 }
 
 bool Eviction::RemoveDeletedNode(CacheRankingsBlock* node) {
-  EntryImpl* entry = backend_->GetEnumeratedEntry(node, Rankings::DELETED);
+  scoped_refptr<EntryImpl> entry =
+      backend_->GetEnumeratedEntry(node, Rankings::DELETED);
   if (!entry) {
     Trace("NewEntry failed on Trim 0x%x", node->address().value());
     return false;
@@ -541,7 +538,6 @@ bool Eviction::RemoveDeletedNode(CacheRankingsBlock* node) {
   bool doomed = (entry->entry()->Data()->state == ENTRY_DOOMED);
   entry->entry()->Data()->state = ENTRY_DOOMED;
   entry->DoomImpl();
-  entry->Release();
   return !doomed;
 }
 

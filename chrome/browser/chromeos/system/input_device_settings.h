@@ -5,65 +5,13 @@
 #ifndef CHROME_BROWSER_CHROMEOS_SYSTEM_INPUT_DEVICE_SETTINGS_H_
 #define CHROME_BROWSER_CHROMEOS_SYSTEM_INPUT_DEVICE_SETTINGS_H_
 
-#include "base/callback.h"
-#include "base/logging.h"
-#include "chromeos/chromeos_export.h"
-
-class PrefRegistrySimple;
+#include "base/callback_forward.h"
+#include "base/optional.h"
 
 namespace chromeos {
 namespace system {
 
 class InputDeviceSettings;
-
-namespace internal {
-
-// Objects of this class are intended to store values of type T, but might have
-// "unset" state. Object will be in "unset" state until Set is called first
-// time.
-template <typename T>
-class Optional {
- public:
-  Optional() : value_(), is_set_(false) {}
-
-  Optional& operator=(const Optional& other) {
-    if (&other != this) {
-      value_ = other.value_;
-      is_set_ = other.is_set_;
-    }
-    return *this;
-  }
-
-  void Set(const T& value) {
-    is_set_ = true;
-    value_ = value;
-  }
-
-  bool is_set() const { return is_set_; }
-
-  T value() const {
-    DCHECK(is_set());
-    return value_;
-  }
-
-  // Tries to update |this| with |update|. If |update| is unset or has same
-  // value as |this| method returns false. Otherwise |this| takes value of
-  // |update| and returns true.
-  bool Update(const Optional& update) {
-    if (update.is_set_ && (!is_set_ || value_ != update.value_)) {
-      value_ = update.value_;
-      is_set_ = true;
-      return true;
-    }
-    return false;
-  }
-
- private:
-  T value_;
-  bool is_set_;
-};
-
-}  // namespace internal
 
 // Min/max possible pointer sensitivity values.
 const int kMinPointerSensitivity = 1;
@@ -110,11 +58,11 @@ class TouchpadSettings {
                     InputDeviceSettings* input_device_settings);
 
  private:
-  internal::Optional<int> sensitivity_;
-  internal::Optional<bool> tap_to_click_;
-  internal::Optional<bool> three_finger_click_;
-  internal::Optional<bool> tap_dragging_;
-  internal::Optional<bool> natural_scroll_;
+  base::Optional<int> sensitivity_;
+  base::Optional<bool> tap_to_click_;
+  base::Optional<bool> three_finger_click_;
+  base::Optional<bool> tap_dragging_;
+  base::Optional<bool> natural_scroll_;
 };
 
 // Auxiliary class used to update several mouse settings at a time. User
@@ -137,6 +85,10 @@ class MouseSettings {
   bool GetPrimaryButtonRight() const;
   bool IsPrimaryButtonRightSet() const;
 
+  void SetReverseScroll(bool enabled);
+  bool GetReverseScroll() const;
+  bool IsReverseScrollSet() const;
+
   // Updates |this| with |settings|. If at least one setting was updated returns
   // true.
   bool Update(const MouseSettings& settings);
@@ -146,42 +98,38 @@ class MouseSettings {
                     InputDeviceSettings* input_device_settings);
 
  private:
-  internal::Optional<int> sensitivity_;
-  internal::Optional<bool> primary_button_right_;
+  base::Optional<int> sensitivity_;
+  base::Optional<bool> primary_button_right_;
+  base::Optional<bool> reverse_scroll_;
 };
 
 // Interface for configuring input device settings.
-class CHROMEOS_EXPORT InputDeviceSettings {
+class InputDeviceSettings {
  public:
-  typedef base::Callback<void(bool)> DeviceExistsCallback;
+  using DeviceExistsCallback = base::OnceCallback<void(bool)>;
+
+  // Interface for faking touchpad and mouse. Accessed through
+  // GetFakeInterface(), implemented only in FakeInputDeviceSettings.
+  class FakeInterface {
+   public:
+    virtual void set_touchpad_exists(bool exists) = 0;
+    virtual void set_mouse_exists(bool exists) = 0;
+    virtual const TouchpadSettings& current_touchpad_settings() const = 0;
+    virtual const MouseSettings& current_mouse_settings() const = 0;
+  };
 
   virtual ~InputDeviceSettings() {}
 
   // Returns current instance of InputDeviceSettings.
   static InputDeviceSettings* Get();
 
-  // Replaces current instance with |test_settings|. Takes ownership of
-  // |test_settings|. Default implementation could be returned back by passing
-  // NULL to this method.
-  static void SetSettingsForTesting(InputDeviceSettings* test_settings);
-
   // Returns true if UI should implement enhanced keyboard support for cases
   // where other input devices like mouse are absent.
   static bool ForceKeyboardDrivenUINavigation();
 
-  // Registers local pref names for touchpad and touch screen statuses.
-  static void RegisterPrefs(PrefRegistrySimple* registry);
-
-  void InitTouchDevicesStatusFromLocalPrefs();
-
-  // Toggles the status of Touchscreen/Touchpad on or off and updates the local
-  // prefs.
-  void ToggleTouchscreen();
-  void ToggleTouchpad();
-
-  // Calls |callback| asynchronously after determining if a touchpad is
-  // connected.
-  virtual void TouchpadExists(const DeviceExistsCallback& callback) = 0;
+  // Calls |callback|, possibly asynchronously, after determining if a touchpad
+  // is connected.
+  virtual void TouchpadExists(DeviceExistsCallback callback) = 0;
 
   // Updates several touchpad settings at a time. Updates only settings that
   // are set in |settings| object. It is more efficient to use this method to
@@ -204,8 +152,9 @@ class CHROMEOS_EXPORT InputDeviceSettings {
   // Turns natural scrolling on/off for all devices except wheel mice
   virtual void SetNaturalScroll(bool enabled) = 0;
 
-  // Calls |callback| asynchronously after determining if a mouse is connected.
-  virtual void MouseExists(const DeviceExistsCallback& callback) = 0;
+  // Calls |callback|, possibly asynchronously, after determining if a mouse is
+  // connected.
+  virtual void MouseExists(DeviceExistsCallback callback) = 0;
 
   // Updates several mouse settings at a time. Updates only settings that
   // are set in |settings| object. It is more efficient to use this method to
@@ -219,11 +168,17 @@ class CHROMEOS_EXPORT InputDeviceSettings {
   // Sets the primary mouse button to the right button if |right| is true.
   virtual void SetPrimaryButtonRight(bool right) = 0;
 
+  // Turns mouse reverse scrolling on/off.
+  virtual void SetMouseReverseScroll(bool enabled) = 0;
+
   // Reapplies previously set touchpad settings.
   virtual void ReapplyTouchpadSettings() = 0;
 
   // Reapplies previously set mouse settings.
   virtual void ReapplyMouseSettings() = 0;
+
+  // Returns an interface for faking settings, or nullptr.
+  virtual FakeInterface* GetFakeInterface() = 0;
 
  private:
   virtual void SetInternalTouchpadEnabled(bool enabled) {}

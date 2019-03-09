@@ -4,11 +4,10 @@
 
 package org.chromium.chrome.browser.tab;
 
-import org.chromium.chrome.browser.banners.AppBannerManager;
 import org.chromium.chrome.browser.contextmenu.ChromeContextMenuPopulator;
 import org.chromium.chrome.browser.contextmenu.ContextMenuPopulator;
+import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid;
 import org.chromium.components.navigation_interception.InterceptNavigationDelegate;
-import org.chromium.components.web_contents_delegate_android.WebContentsDelegateAndroid;
 
 /**
  * A factory class to create {@link Tab} related delegates.
@@ -39,25 +38,24 @@ public class TabDelegateFactory {
      */
     public ContextMenuPopulator createContextMenuPopulator(Tab tab) {
         return new ChromeContextMenuPopulator(new TabContextMenuItemDelegate(tab),
-                ChromeContextMenuPopulator.NORMAL_MODE);
+                ChromeContextMenuPopulator.ContextMenuMode.NORMAL);
     }
 
     /**
-     * Creates the {@link AppBannerManager} the tab will be initialized with.
-     * @param tab The associated {@link Tab}.
-     * @return {@link AppBannerManager} to be used for the given tab. May be null.
+     * Return true if app banners are to be permitted in this tab. May need to be overridden.
+     * @return true if app banners are permitted, and false otherwise.
      */
-    public AppBannerManager createAppBannerManager(Tab tab) {
-        return new AppBannerManager(tab, tab.getApplicationContext());
+    public boolean canShowAppBanners() {
+        return true;
     }
 
     /**
-     * Creates the {@link TopControlsVisibilityDelegate} the tab will be initialized with.
+     * Creates the {@link BrowserControlsVisibilityDelegate} the tab will be initialized with.
      * @param tab The associated {@link Tab}.
-     * @return {@link TopControlsVisibilityDelegate} to be used for the given tab.
+     * @return {@link BrowserControlsVisibilityDelegate} to be used for the given tab.
      */
-    public TopControlsVisibilityDelegate createTopControlsVisibilityDelegate(Tab tab) {
-        return new TopControlsVisibilityDelegate(tab);
+    public BrowserControlsVisibilityDelegate createBrowserControlsVisibilityDelegate(Tab tab) {
+        return new TabStateBrowserControlsVisibilityDelegate(tab);
     }
 
     public TabDelegateFactory createNewTabDelegateFactory() {

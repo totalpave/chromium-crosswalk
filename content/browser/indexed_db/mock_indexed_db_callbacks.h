@@ -12,6 +12,11 @@
 #include "base/macros.h"
 #include "content/browser/indexed_db/indexed_db_callbacks.h"
 #include "content/browser/indexed_db/indexed_db_connection.h"
+#include "third_party/blink/public/common/indexeddb/indexeddb_key.h"
+
+namespace blink {
+struct IndexedDBDatabaseMetadata;
+}
 
 namespace content {
 
@@ -20,13 +25,23 @@ class MockIndexedDBCallbacks : public IndexedDBCallbacks {
   MockIndexedDBCallbacks();
   explicit MockIndexedDBCallbacks(bool expect_connection);
 
+  void OnError(const IndexedDBDatabaseError& error) override;
+
   void OnSuccess() override;
   void OnSuccess(int64_t result) override;
   void OnSuccess(const std::vector<base::string16>& result) override;
-  void OnSuccess(const IndexedDBKey& key) override;
+  void OnSuccess(const blink::IndexedDBKey& key) override;
   void OnSuccess(std::unique_ptr<IndexedDBConnection> connection,
-                 const IndexedDBDatabaseMetadata& metadata) override;
+                 const blink::IndexedDBDatabaseMetadata& metadata) override;
   IndexedDBConnection* connection() { return connection_.get(); }
+
+  void OnUpgradeNeeded(int64_t old_version,
+                       std::unique_ptr<IndexedDBConnection> connection,
+                       const blink::IndexedDBDatabaseMetadata& metadata,
+                       const IndexedDBDataLossInfo& data_loss_info) override;
+
+  bool error_called() { return error_called_; }
+  bool upgrade_called() { return upgrade_called_; }
 
  protected:
   ~MockIndexedDBCallbacks() override;
@@ -34,7 +49,9 @@ class MockIndexedDBCallbacks : public IndexedDBCallbacks {
   std::unique_ptr<IndexedDBConnection> connection_;
 
  private:
-  bool expect_connection_;
+  bool expect_connection_ = true;
+  bool error_called_ = false;
+  bool upgrade_called_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(MockIndexedDBCallbacks);
 };

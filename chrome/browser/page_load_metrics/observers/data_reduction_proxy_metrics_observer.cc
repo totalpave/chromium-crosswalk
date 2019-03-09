@@ -6,50 +6,47 @@
 
 #include <string>
 
+#include "base/metrics/histogram_macros.h"
 #include "base/time/time.h"
-#include "chrome/browser/net/spdyproxy/data_reduction_proxy_chrome_settings.h"
-#include "chrome/browser/net/spdyproxy/data_reduction_proxy_chrome_settings_factory.h"
-#include "chrome/browser/renderer_host/chrome_navigation_data.h"
-#include "components/data_reduction_proxy/core/browser/data_reduction_proxy_data.h"
-#include "components/data_reduction_proxy/core/browser/data_reduction_proxy_pingback_client.h"
-#include "components/data_reduction_proxy/core/browser/data_reduction_proxy_service.h"
-#include "components/data_reduction_proxy/core/common/data_reduction_proxy_page_load_timing.h"
-#include "components/data_reduction_proxy/core/common/data_reduction_proxy_params.h"
-#include "components/page_load_metrics/browser/page_load_metrics_observer.h"
-#include "components/page_load_metrics/browser/page_load_metrics_util.h"
-#include "components/page_load_metrics/common/page_load_timing.h"
-#include "content/public/browser/browser_context.h"
-#include "content/public/browser/navigation_data.h"
-#include "content/public/browser/navigation_handle.h"
-#include "content/public/browser/web_contents.h"
+#include "chrome/browser/page_load_metrics/observers/histogram_suffixes.h"
+#include "chrome/browser/page_load_metrics/page_load_metrics_observer.h"
+#include "chrome/browser/page_load_metrics/page_load_metrics_util.h"
+#include "chrome/common/page_load_metrics/page_load_timing.h"
+#include "url/gurl.h"
 
 namespace data_reduction_proxy {
 
 namespace {
 
-bool ShouldRecordHistogram(const DataReductionProxyData* data,
-                           const base::TimeDelta& event,
-                           const page_load_metrics::PageLoadExtraInfo& info) {
-  return data && data->used_data_reduction_proxy() &&
-         WasStartedInForegroundEventInForeground(event, info);
+// Appends |suffix| to |kHistogramDataReductionProxyPrefix| and returns it as a
+// string.
+std::string GetConstHistogramWithSuffix(const char* suffix) {
+  return std::string(internal::kHistogramDataReductionProxyPrefix)
+      .append(suffix);
 }
 
 // A macro is needed because PAGE_LOAD_HISTOGRAM creates a static instance of
 // the histogram. A distinct histogram is needed for each place that calls
-// RECORD_HISTOGRAMS_FOR_SUFFIX.
-#define RECORD_HISTOGRAMS_FOR_SUFFIX(data, event, info, histogram_suffix)   \
+// RECORD_HISTOGRAMS_FOR_SUFFIX. |event| is the timing event representing when
+// |value| became available.
+#define RECORD_HISTOGRAMS_FOR_SUFFIX(data, value, histogram_suffix)            \
+  do {                                                                         \
+    PAGE_LOAD_HISTOGRAM(GetConstHistogramWithSuffix(histogram_suffix), value); \
+    if (data->lite_page_received()) {                                          \
+      PAGE_LOAD_HISTOGRAM(                                                     \
+          std::string(internal::kHistogramDataReductionProxyLitePagePrefix)    \
+              .append(histogram_suffix),                                       \
+          value);                                                              \
+    }                                                                          \
+  } while (false)
+
+// Like RECORD_HISTOGRAMS_FOR_SUFFIX, but only records histograms if the event
+// occurred while the page was in the foreground.
+#define RECORD_FOREGROUND_HISTOGRAMS_FOR_SUFFIX(info, data, timing,         \
+                                                histogram_suffix)           \
   do {                                                                      \
-    if (ShouldRecordHistogram(data.get(), event, info)) {                   \
-      PAGE_LOAD_HISTOGRAM(                                                  \
-          std::string(internal::kHistogramDataReductionProxyPrefix)         \
-              .append(histogram_suffix),                                    \
-          event);                                                           \
-      if (data->lofi_requested()) {                                         \
-        PAGE_LOAD_HISTOGRAM(                                                \
-            std::string(internal::kHistogramDataReductionProxyLoFiOnPrefix) \
-                .append(histogram_suffix),                                  \
-            event);                                                         \
-      }                                                                     \
+    if (WasStartedInForegroundOptionalEventInForeground(timing, info)) {    \
+      RECORD_HISTOGRAMS_FOR_SUFFIX(data, timing.value(), histogram_suffix); \
     }                                                                       \
   } while (false)
 
@@ -59,156 +56,236 @@ namespace internal {
 
 const char kHistogramDataReductionProxyPrefix[] =
     "PageLoad.Clients.DataReductionProxy.";
-const char kHistogramDataReductionProxyLoFiOnPrefix[] =
-    "PageLoad.Clients.DataReductionProxy.LoFiOn.";
-const char kHistogramDOMContentLoadedEventFiredSuffix[] =
-    "DocumentTiming.NavigationToDOMContentLoadedEventFired";
-const char kHistogramFirstLayoutSuffix[] =
-    "DocumentTiming.NavigationToFirstLayout";
-const char kHistogramLoadEventFiredSuffix[] =
-    "DocumentTiming.NavigationToLoadEventFired";
-const char kHistogramFirstContentfulPaintSuffix[] =
-    "PaintTiming.NavigationToFirstContentfulPaint";
-const char kHistogramFirstImagePaintSuffix[] =
-    "PaintTiming.NavigationToFirstImagePaint";
-const char kHistogramFirstPaintSuffix[] = "PaintTiming.NavigationToFirstPaint";
-const char kHistogramFirstTextPaintSuffix[] =
-    "PaintTiming.NavigationToFirstTextPaint";
-const char kHistogramParseStartSuffix[] = "ParseTiming.NavigationToParseStart";
+const char kHistogramDataReductionProxyLitePagePrefix[] =
+    "PageLoad.Clients.Previews.LitePages.";
+
+const char kResourcesPercentProxied[] =
+    "Experimental.CompletedResources.Network2.PercentProxied";
+const char kBytesPercentProxied[] =
+    "Experimental.Bytes.Network.PercentProxied2";
+const char kBytesCompressionRatio[] =
+    "Experimental.Bytes.Network.CompressionRatio2";
+const char kBytesInflationPercent[] =
+    "Experimental.Bytes.Network.InflationPercent2";
+const char kNetworkResources[] = "Experimental.CompletedResources.Network2";
+const char kResourcesProxied[] =
+    "Experimental.CompletedResources.Network2.Proxied";
+const char kResourcesNotProxied[] =
+    "Experimental.CompletedResources.Network2.NonProxied";
+const char kNetworkBytes[] = "Experimental.Bytes.Network2";
+const char kBytesProxied[] = "Experimental.Bytes.Network.Proxied2";
+const char kBytesNotProxied[] = "Experimental.Bytes.Network.NonProxied2";
+const char kBytesOriginal[] = "Experimental.Bytes.Network.Original2";
+const char kBytesSavings[] = "Experimental.Bytes.Network.Savings2";
+const char kBytesInflation[] = "Experimental.Bytes.Network.Inflation2";
 
 }  // namespace internal
 
 DataReductionProxyMetricsObserver::DataReductionProxyMetricsObserver()
-    : browser_context_(nullptr) {}
+    : DataReductionProxyMetricsObserverBase() {}
 
 DataReductionProxyMetricsObserver::~DataReductionProxyMetricsObserver() {}
 
-// Check if the NavigationData indicates anything about the DataReductionProxy.
-void DataReductionProxyMetricsObserver::OnCommit(
-    content::NavigationHandle* navigation_handle) {
-  // This BrowserContext is valid for the lifetime of
-  // DataReductionProxyMetricsObserver. BrowserContext is always valid and
-  // non-nullptr in NavigationControllerImpl, which is a member of WebContents.
-  // A raw pointer to BrowserContext taken at this point will be valid until
-  // after WebContent's destructor. The latest that PageLoadTracker's destructor
-  // will be called is in MetricsWebContentsObserver's destrcutor, which is
-  // called in WebContents destructor.
-  browser_context_ = navigation_handle->GetWebContents()->GetBrowserContext();
-  // As documented in content/public/browser/navigation_handle.h, this
-  // NavigationData is a clone of the NavigationData instance returned from
-  // ResourceDispatcherHostDelegate::GetNavigationData during commit.
-  // Because ChromeResourceDispatcherHostDelegate always returns a
-  // ChromeNavigationData, it is safe to static_cast here.
-  ChromeNavigationData* chrome_navigation_data =
-      static_cast<ChromeNavigationData*>(
-          navigation_handle->GetNavigationData());
-  if (!chrome_navigation_data)
-    return;
-  data_reduction_proxy::DataReductionProxyData* data =
-      chrome_navigation_data->GetDataReductionProxyData();
-  if (!data)
-    return;
-  data_ = data->DeepCopy();
+page_load_metrics::PageLoadMetricsObserver::ObservePolicy
+DataReductionProxyMetricsObserver::FlushMetricsOnAppEnterBackground(
+    const page_load_metrics::mojom::PageLoadTiming& timing,
+    const page_load_metrics::PageLoadExtraInfo& info) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // FlushMetricsOnAppEnterBackground is invoked on Android in cases where the
+  // app is about to be backgrounded, as part of the Activity.onPause()
+  // flow. After this method is invoked, Chrome may be killed without further
+  // notification, so we send a pingback with data collected up to this point.
+  if (info.did_commit) {
+    RecordPageSizeUMA();
+  }
+  return DataReductionProxyMetricsObserverBase::
+      FlushMetricsOnAppEnterBackground(timing, info);
 }
 
 void DataReductionProxyMetricsObserver::OnComplete(
-    const page_load_metrics::PageLoadTiming& timing,
+    const page_load_metrics::mojom::PageLoadTiming& timing,
     const page_load_metrics::PageLoadExtraInfo& info) {
-  // TODO(ryansturm): Move to OnFirstBackgroundEvent to handle some fast
-  // shutdown cases. crbug.com/618072
-  if (!browser_context_)
+  DataReductionProxyMetricsObserverBase::OnComplete(timing, info);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RecordPageSizeUMA();
+}
+
+void DataReductionProxyMetricsObserver::RecordPageSizeUMA() const {
+  if (!data())
     return;
-  if (!data_ || !data_->used_data_reduction_proxy())
+
+  // If the first request didn't complete, don't record UMA.
+  if (num_network_resources() == 0)
     return;
-  if (data_reduction_proxy::params::IsIncludedInHoldbackFieldTrial() ||
-      data_reduction_proxy::params::IsIncludedInTamperDetectionExperiment()) {
-    return;
+
+  const int64_t network_bytes =
+      insecure_network_bytes() + secure_network_bytes();
+  const int64_t original_network_bytes =
+      insecure_original_network_bytes() + secure_original_network_bytes();
+
+  // TODO(ryansturm): Evaluate if any of the below histograms are unncessary
+  // once data is available. crbug.com/682782
+
+  // The percent of resources that went through the data reduction proxy.
+  UMA_HISTOGRAM_PERCENTAGE(
+      GetConstHistogramWithSuffix(internal::kResourcesPercentProxied),
+      (100 * num_data_reduction_proxy_resources()) / num_network_resources());
+
+  // The percent of bytes that went through the data reduction proxy.
+  if (network_bytes > 0) {
+    UMA_HISTOGRAM_PERCENTAGE(
+        GetConstHistogramWithSuffix(internal::kBytesPercentProxied),
+        static_cast<int>((100 * network_bytes_proxied()) / network_bytes));
   }
-  // Only consider timing events that happened before the first background
-  // event.
-  base::TimeDelta response_start;
-  base::TimeDelta load_event_start;
-  base::TimeDelta first_image_paint;
-  base::TimeDelta first_contentful_paint;
-  if (WasStartedInForegroundEventInForeground(timing.response_start, info))
-    response_start = timing.response_start;
-  if (WasStartedInForegroundEventInForeground(timing.load_event_start, info))
-    load_event_start = timing.load_event_start;
-  if (WasStartedInForegroundEventInForeground(timing.first_image_paint, info))
-    first_image_paint = timing.first_image_paint;
-  if (WasStartedInForegroundEventInForeground(timing.first_contentful_paint,
-                                              info)) {
-    first_contentful_paint = timing.first_contentful_paint;
+
+  // If the data reduction proxy caused savings, record the compression ratio;
+  // otherwise, record the inflation ratio.
+  if (original_network_bytes > 0 && original_network_bytes >= network_bytes) {
+    UMA_HISTOGRAM_PERCENTAGE(
+        GetConstHistogramWithSuffix(internal::kBytesCompressionRatio),
+        static_cast<int>((100 * network_bytes) / original_network_bytes));
+  } else if (original_network_bytes > 0) {
+    // Inflation should never be above one hundred percent.
+    UMA_HISTOGRAM_PERCENTAGE(
+        GetConstHistogramWithSuffix(internal::kBytesInflationPercent),
+        static_cast<int>((100 * network_bytes) / original_network_bytes - 100));
   }
-  DataReductionProxyPageLoadTiming data_reduction_proxy_timing(
-      timing.navigation_start, response_start, load_event_start,
-      first_image_paint, first_contentful_paint);
-  GetPingbackClient()->SendPingback(*data_, data_reduction_proxy_timing);
+
+  // Record the number of network resources seen.
+  PAGE_RESOURCE_COUNT_HISTOGRAM(
+      GetConstHistogramWithSuffix(internal::kNetworkResources),
+      num_network_resources());
+
+  // Record the number of resources that used data reduction proxy.
+  PAGE_RESOURCE_COUNT_HISTOGRAM(
+      GetConstHistogramWithSuffix(internal::kResourcesProxied),
+      num_data_reduction_proxy_resources());
+
+  // Record the number of resources that did not use data reduction proxy.
+  PAGE_RESOURCE_COUNT_HISTOGRAM(
+      GetConstHistogramWithSuffix(internal::kResourcesNotProxied),
+      num_network_resources() - num_data_reduction_proxy_resources());
+
+  // Record the total KB of network bytes.
+  PAGE_BYTES_HISTOGRAM(GetConstHistogramWithSuffix(internal::kNetworkBytes),
+                       network_bytes);
+
+  // Record the total amount of bytes that went through the data reduction
+  // proxy.
+  PAGE_BYTES_HISTOGRAM(GetConstHistogramWithSuffix(internal::kBytesProxied),
+                       network_bytes_proxied());
+
+  // Record the total amount of bytes that did not go through the data reduction
+  // proxy.
+  PAGE_BYTES_HISTOGRAM(GetConstHistogramWithSuffix(internal::kBytesNotProxied),
+                       network_bytes - network_bytes_proxied());
+
+  // Record the total KB of network bytes that the user would have seen without
+  // using data reduction proxy.
+  PAGE_BYTES_HISTOGRAM(GetConstHistogramWithSuffix(internal::kBytesOriginal),
+                       original_network_bytes);
+
+  // Record the savings the user saw by using data reduction proxy. If there was
+  // inflation instead, record that.
+  if (network_bytes <= original_network_bytes) {
+    PAGE_BYTES_HISTOGRAM(GetConstHistogramWithSuffix(internal::kBytesSavings),
+                         original_network_bytes - network_bytes);
+  } else {
+    PAGE_BYTES_HISTOGRAM(GetConstHistogramWithSuffix(internal::kBytesInflation),
+                         network_bytes_proxied() - original_network_bytes);
+  }
 }
 
 void DataReductionProxyMetricsObserver::OnDomContentLoadedEventStart(
-    const page_load_metrics::PageLoadTiming& timing,
+    const page_load_metrics::mojom::PageLoadTiming& timing,
     const page_load_metrics::PageLoadExtraInfo& info) {
-  RECORD_HISTOGRAMS_FOR_SUFFIX(
-      data_, timing.dom_content_loaded_event_start, info,
-      internal::kHistogramDOMContentLoadedEventFiredSuffix);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RECORD_FOREGROUND_HISTOGRAMS_FOR_SUFFIX(
+      info, data(), timing.document_timing->dom_content_loaded_event_start,
+      ::internal::kHistogramDOMContentLoadedEventFiredSuffix);
 }
 
 void DataReductionProxyMetricsObserver::OnLoadEventStart(
-    const page_load_metrics::PageLoadTiming& timing,
+    const page_load_metrics::mojom::PageLoadTiming& timing,
     const page_load_metrics::PageLoadExtraInfo& info) {
-  RECORD_HISTOGRAMS_FOR_SUFFIX(data_, timing.load_event_start, info,
-                               internal::kHistogramLoadEventFiredSuffix);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DataReductionProxyMetricsObserverBase::OnLoadEventStart(timing, info);
+  RECORD_FOREGROUND_HISTOGRAMS_FOR_SUFFIX(
+      info, data(), timing.document_timing->load_event_start,
+      ::internal::kHistogramLoadEventFiredSuffix);
 }
 
 void DataReductionProxyMetricsObserver::OnFirstLayout(
-    const page_load_metrics::PageLoadTiming& timing,
+    const page_load_metrics::mojom::PageLoadTiming& timing,
     const page_load_metrics::PageLoadExtraInfo& info) {
-  RECORD_HISTOGRAMS_FOR_SUFFIX(data_, timing.first_layout, info,
-                               internal::kHistogramFirstLayoutSuffix);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RECORD_FOREGROUND_HISTOGRAMS_FOR_SUFFIX(
+      info, data(), timing.document_timing->first_layout,
+      ::internal::kHistogramFirstLayoutSuffix);
 }
 
-void DataReductionProxyMetricsObserver::OnFirstPaint(
-    const page_load_metrics::PageLoadTiming& timing,
+void DataReductionProxyMetricsObserver::OnFirstPaintInPage(
+    const page_load_metrics::mojom::PageLoadTiming& timing,
     const page_load_metrics::PageLoadExtraInfo& info) {
-  RECORD_HISTOGRAMS_FOR_SUFFIX(data_, timing.first_paint, info,
-                               internal::kHistogramFirstPaintSuffix);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RECORD_FOREGROUND_HISTOGRAMS_FOR_SUFFIX(
+      info, data(), timing.paint_timing->first_paint,
+      ::internal::kHistogramFirstPaintSuffix);
 }
 
-void DataReductionProxyMetricsObserver::OnFirstTextPaint(
-    const page_load_metrics::PageLoadTiming& timing,
+void DataReductionProxyMetricsObserver::OnFirstImagePaintInPage(
+    const page_load_metrics::mojom::PageLoadTiming& timing,
     const page_load_metrics::PageLoadExtraInfo& info) {
-  RECORD_HISTOGRAMS_FOR_SUFFIX(data_, timing.first_text_paint, info,
-                               internal::kHistogramFirstTextPaintSuffix);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RECORD_FOREGROUND_HISTOGRAMS_FOR_SUFFIX(
+      info, data(), timing.paint_timing->first_image_paint,
+      ::internal::kHistogramFirstImagePaintSuffix);
 }
 
-void DataReductionProxyMetricsObserver::OnFirstImagePaint(
-    const page_load_metrics::PageLoadTiming& timing,
+void DataReductionProxyMetricsObserver::OnFirstContentfulPaintInPage(
+    const page_load_metrics::mojom::PageLoadTiming& timing,
     const page_load_metrics::PageLoadExtraInfo& info) {
-  RECORD_HISTOGRAMS_FOR_SUFFIX(data_, timing.first_image_paint, info,
-                               internal::kHistogramFirstImagePaintSuffix);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RECORD_FOREGROUND_HISTOGRAMS_FOR_SUFFIX(
+      info, data(), timing.paint_timing->first_contentful_paint,
+      ::internal::kHistogramFirstContentfulPaintSuffix);
 }
 
-void DataReductionProxyMetricsObserver::OnFirstContentfulPaint(
-    const page_load_metrics::PageLoadTiming& timing,
-    const page_load_metrics::PageLoadExtraInfo& info) {
-  RECORD_HISTOGRAMS_FOR_SUFFIX(data_, timing.first_contentful_paint, info,
-                               internal::kHistogramFirstContentfulPaintSuffix);
+void DataReductionProxyMetricsObserver::
+    OnFirstMeaningfulPaintInMainFrameDocument(
+        const page_load_metrics::mojom::PageLoadTiming& timing,
+        const page_load_metrics::PageLoadExtraInfo& info) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RECORD_FOREGROUND_HISTOGRAMS_FOR_SUFFIX(
+      info, data(), timing.paint_timing->first_meaningful_paint,
+      ::internal::kHistogramFirstMeaningfulPaintSuffix);
 }
 
 void DataReductionProxyMetricsObserver::OnParseStart(
-    const page_load_metrics::PageLoadTiming& timing,
+    const page_load_metrics::mojom::PageLoadTiming& timing,
     const page_load_metrics::PageLoadExtraInfo& info) {
-  RECORD_HISTOGRAMS_FOR_SUFFIX(data_, timing.parse_start, info,
-                               internal::kHistogramParseStartSuffix);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RECORD_FOREGROUND_HISTOGRAMS_FOR_SUFFIX(
+      info, data(), timing.parse_timing->parse_start,
+      ::internal::kHistogramParseStartSuffix);
 }
 
-DataReductionProxyPingbackClient*
-DataReductionProxyMetricsObserver::GetPingbackClient() const {
-  return DataReductionProxyChromeSettingsFactory::GetForBrowserContext(
-             browser_context_)
-      ->data_reduction_proxy_service()
-      ->pingback_client();
+void DataReductionProxyMetricsObserver::OnParseStop(
+    const page_load_metrics::mojom::PageLoadTiming& timing,
+    const page_load_metrics::PageLoadExtraInfo& info) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!WasStartedInForegroundOptionalEventInForeground(
+          timing.parse_timing->parse_stop, info))
+    return;
+
+  base::TimeDelta parse_duration = timing.parse_timing->parse_stop.value() -
+                                   timing.parse_timing->parse_start.value();
+  RECORD_HISTOGRAMS_FOR_SUFFIX(data(), parse_duration,
+                               ::internal::kHistogramParseDurationSuffix);
+  RECORD_HISTOGRAMS_FOR_SUFFIX(
+      data(),
+      timing.parse_timing->parse_blocked_on_script_load_duration.value(),
+      ::internal::kHistogramParseBlockedOnScriptLoadSuffix);
 }
 
 }  // namespace data_reduction_proxy

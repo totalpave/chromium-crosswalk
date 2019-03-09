@@ -6,23 +6,20 @@
 #define BASE_CALLBACK_FORWARD_H_
 
 namespace base {
-namespace internal {
 
-// CopyMode is used to control the copyablity of a Callback.
-// MoveOnly indicates the Callback is not copyable but movable, and Copyable
-// indicates it is copyable and movable.
-enum class CopyMode {
-  MoveOnly, Copyable,
-};
+template <typename Signature>
+class OnceCallback;
 
-}  // namespace internal
+template <typename Signature>
+class RepeatingCallback;
 
-template <typename Signature,
-          internal::CopyMode copy_mode = internal::CopyMode::Copyable>
-class Callback;
+template <typename Signature>
+using Callback = RepeatingCallback<Signature>;
 
 // Syntactic sugar to make Callback<void()> easier to declare since it
 // will be used in a lot of APIs with delayed execution.
+using OnceClosure = OnceCallback<void()>;
+using RepeatingClosure = RepeatingCallback<void()>;
 using Closure = Callback<void()>;
 
 }  // namespace base

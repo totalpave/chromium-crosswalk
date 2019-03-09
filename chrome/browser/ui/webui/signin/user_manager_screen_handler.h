@@ -17,15 +17,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_metrics.h"
 #include "chrome/browser/profiles/profile_statistics.h"
-#include "components/proximity_auth/screenlock_bridge.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/web_ui_message_handler.h"
 #include "google_apis/gaia/gaia_oauth_client.h"
 
-class AccountId;
 class Browser;
-class GaiaAuthFetcher;
 
 namespace base {
 class DictionaryValue;
@@ -33,9 +30,21 @@ class FilePath;
 class ListValue;
 }
 
+extern const char kAuthenticatedLaunchUserEventMetricsName[];
+
+// UI event when user click a locked profile. It must matches the
+// AuthenticatedLaunchUserEvent in enums.xml
+enum AuthenticatedLaunchUserEvent {
+  LOCAL_REAUTH_DIALOG,
+  GAIA_REAUTH_DIALOG,
+  SUPERVISED_PROFILE_BLOCKED_WARNING,
+  USED_PROFILE_BLOCKED_WARNING,
+  FORCED_PRIMARY_SIGNIN_DIALOG,
+  EVENT_COUNT,
+};
+
 class UserManagerScreenHandler
     : public content::WebUIMessageHandler,
-      public proximity_auth::ScreenlockBridge::LockHandler,
       public gaia::GaiaOAuthClient::Delegate,
       public content::NotificationObserver {
  public:
@@ -57,41 +66,22 @@ class UserManagerScreenHandler
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
 
-  // proximity_auth::ScreenlockBridge::LockHandler implementation.
-  void ShowBannerMessage(const base::string16& message) override;
-  void ShowUserPodCustomIcon(
-      const AccountId& account_id,
-      const proximity_auth::ScreenlockBridge::UserPodCustomIconOptions&
-          icon_options) override;
-  void HideUserPodCustomIcon(const AccountId& account_id) override;
-  void EnableInput() override;
-  void SetAuthType(
-      const AccountId& account_id,
-      proximity_auth::ScreenlockBridge::LockHandler::AuthType auth_type,
-      const base::string16& auth_value) override;
-  AuthType GetAuthType(const AccountId& account_id) const override;
-  ScreenType GetScreenType() const override;
-  void Unlock(const AccountId& account_id) override;
-  void AttemptEasySignin(const AccountId& account_id,
-                         const std::string& secret,
-                         const std::string& key_label) override;
-
   void HandleInitialize(const base::ListValue* args);
-  void HandleAddUser(const base::ListValue* args);
   void HandleAuthenticatedLaunchUser(const base::ListValue* args);
   void HandleLaunchGuest(const base::ListValue* args);
   void HandleLaunchUser(const base::ListValue* args);
   void HandleRemoveUser(const base::ListValue* args);
   void HandleAreAllProfilesLocked(const base::ListValue* args);
-  void HandleAttemptUnlock(const base::ListValue* args);
-  void HandleHardlockUserPod(const base::ListValue* args);
   void HandleRemoveUserWarningLoadStats(const base::ListValue* args);
   void HandleGetRemoveWarningDialogMessage(const base::ListValue* args);
 
+  // Function used to gather statistics from a profile.
+  void GatherStatistics(base::Time start_time, Profile* profile);
+
   // Callback function used by HandleRemoveUserWarningLoadStats
-  void RemoveUserDialogLoadStatsCallback(
-      base::FilePath profile_path,
-      profiles::ProfileCategoryStats result);
+  void RemoveUserDialogLoadStatsCallback(base::FilePath profile_path,
+                                         base::Time start_time,
+                                         profiles::ProfileCategoryStats result);
 
   // Handle GAIA auth results.
   void OnGetTokenInfoResponse(
@@ -99,8 +89,8 @@ class UserManagerScreenHandler
   void OnOAuthError() override;
   void OnNetworkError(int response_code) override;
 
-  // Handle when Notified of a NOTIFICATION_BROWSER_WINDOW_READY event.
-  void OnBrowserWindowReady(Browser* browser);
+  // Handle when Notified of a NOTIFICATION_BROWSER_OPENED event.
+  void OnBrowserOpened(Browser* browser);
 
   // Sends user list to account chooser.
   void SendUserList();
@@ -128,11 +118,6 @@ class UserManagerScreenHandler
 
   // URL hash, used to key post-profile actions if present.
   std::string url_hash_;
-
-  typedef std::map<std::string,
-                   proximity_auth::ScreenlockBridge::LockHandler::AuthType>
-      UserAuthTypeMap;
-  UserAuthTypeMap user_auth_type_map_;
 
   content::NotificationRegistrar registrar_;
 

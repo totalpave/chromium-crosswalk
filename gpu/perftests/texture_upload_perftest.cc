@@ -9,7 +9,7 @@
 #include <memory>
 #include <vector>
 
-#include "base/containers/small_map.h"
+#include "base/containers/flat_map.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/strings/stringprintf.h"
@@ -27,10 +27,6 @@
 #include "ui/gl/gpu_timing.h"
 #include "ui/gl/init/gl_factory.h"
 #include "ui/gl/scoped_make_current.h"
-
-#if defined(USE_OZONE)
-#include "base/message_loop/message_loop.h"
-#endif
 
 namespace gpu {
 namespace {
@@ -68,7 +64,9 @@ SHADER(
 // clang-format on
 
 void CheckNoGlError(const std::string& msg) {
-  CHECK_EQ(static_cast<GLenum>(GL_NO_ERROR), glGetError()) << " " << msg;
+  const GLenum error = glGetError();
+  CHECK_EQ(static_cast<GLenum>(GL_NO_ERROR), error)
+      << msg << " " << gl::GLEnums::GetStringError(error);
 }
 
 // Utility function to compile a shader from a string.
@@ -76,7 +74,7 @@ GLuint LoadShader(const GLenum type, const char* const src) {
   GLuint shader = 0;
   shader = glCreateShader(type);
   CHECK_NE(0u, shader);
-  glShaderSource(shader, 1, &src, NULL);
+  glShaderSource(shader, 1, &src, nullptr);
   glCompileShader(shader);
 
   GLint compiled = 0;
@@ -86,7 +84,7 @@ GLuint LoadShader(const GLenum type, const char* const src) {
     glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
     if (len > 1) {
       std::unique_ptr<char[]> error_log(new char[len]);
-      glGetShaderInfoLog(shader, len, NULL, error_log.get());
+      glGetShaderInfoLog(shader, len, nullptr, error_log.get());
       LOG(ERROR) << "Error compiling shader: " << error_log.get();
     }
   }
@@ -153,6 +151,7 @@ bool CompareBufferToRGBABuffer(GLenum format,
         case GL_LUMINANCE:  // (L_t, L_t, L_t, 1)
           expected[1] = pixels[pixels_index];
           expected[2] = pixels[pixels_index];
+          FALLTHROUGH;
         case GL_RED:  // (R_t, 0, 0, 1)
           expected[0] = pixels[pixels_index];
           expected[3] = 255;
@@ -179,18 +178,11 @@ class TextureUploadPerfTest : public testing::Test {
 
   // Overridden from testing::Test
   void SetUp() override {
-#if defined(USE_OZONE)
-    // On Ozone, the backend initializes the event system using a UI
-    // thread.
-    base::MessageLoopForUI main_loop;
-#endif
-    static bool gl_initialized = gl::init::InitializeGLOneOff();
-    DCHECK(gl_initialized);
     // Initialize an offscreen surface and a gl context.
     surface_ = gl::init::CreateOffscreenGLSurface(gfx::Size());
     gl_context_ =
         gl::init::CreateGLContext(nullptr,  // share_group
-                                  surface_.get(), gl::PreferIntegratedGpu);
+                                  surface_.get(), gl::GLContextAttribs());
     ui::ScopedMakeCurrent smc(gl_context_.get(), surface_.get());
     glGenTextures(1, &color_texture_);
     glBindTexture(GL_TEXTURE_2D, color_texture_);
@@ -222,7 +214,7 @@ class TextureUploadPerfTest : public testing::Test {
     // used to draw a quad on the offscreen surface.
     vertex_shader_ = LoadShader(GL_VERTEX_SHADER, kVertexShader);
 
-    bool is_gles = gl::GetGLImplementation() == gl::kGLImplementationEGLGLES2;
+    bool is_gles = gl_context_->GetVersionInfo()->is_es;
     fragment_shader_ = LoadShader(
         GL_FRAGMENT_SHADER,
         base::StringPrintf("%s%s", is_gles ? kShaderDefaultFloatPrecision : "",
@@ -401,14 +393,13 @@ class TextureUploadPerfTest : public testing::Test {
                                      const GLenum format,
                                      const bool subimage) {
     std::vector<uint8_t> pixels;
-    base::SmallMap<std::map<std::string, Measurement>>
-        aggregates;  // indexed by name
+    base::flat_map<std::string, Measurement> aggregates;  // indexed by name
     int successful_runs = 0;
     GLuint texture_id = CreateGLTexture(format, size, subimage);
     for (int i = 0; i < kUploadPerfWarmupRuns + kUploadPerfTestRuns; ++i) {
       GenerateTextureData(size, GLFormatBytePerPixel(format), i + 1, &pixels);
       auto run = UploadAndDraw(texture_id, size, pixels, format, subimage);
-      if (i < kUploadPerfWarmupRuns || !run.size()) {
+      if (i < kUploadPerfWarmupRuns || run.empty()) {
         continue;
       }
       successful_runs++;

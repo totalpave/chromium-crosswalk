@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "cc/output/compositor_frame_ack.h"
 #include "content/public/browser/android/synchronous_compositor.h"
 #include "content/public/browser/android/synchronous_compositor_client.h"
 
@@ -24,34 +23,32 @@ class CONTENT_EXPORT TestSynchronousCompositor : public SynchronousCompositor {
 
   void SetClient(SynchronousCompositorClient* client);
 
-  // SynchronousCompositor overrides.
-  SynchronousCompositor::Frame DemandDrawHw(
-      const gfx::Size& surface_size,
-      const gfx::Transform& transform,
-      const gfx::Rect& viewport,
-      const gfx::Rect& clip,
+  scoped_refptr<FrameFuture> DemandDrawHwAsync(
+      const gfx::Size& viewport_size,
       const gfx::Rect& viewport_rect_for_tile_priority,
       const gfx::Transform& transform_for_tile_priority) override;
-  void ReturnResources(uint32_t output_surface_id,
-                       const cc::CompositorFrameAck& frame_ack) override;
+  void ReturnResources(
+      uint32_t layer_tree_frame_sink_id,
+      const std::vector<viz::ReturnedResource>& resources) override;
   bool DemandDrawSw(SkCanvas* canvas) override;
   void SetMemoryPolicy(size_t bytes_limit) override {}
+  void DidBecomeActive() override {}
   void DidChangeRootLayerScrollOffset(
       const gfx::ScrollOffset& root_offset) override {}
   void SynchronouslyZoomBy(float zoom_delta,
                            const gfx::Point& anchor) override {}
   void OnComputeScroll(base::TimeTicks animate_time) override {}
 
-  void SetHardwareFrame(uint32_t output_surface_id,
-                        std::unique_ptr<cc::CompositorFrame> frame);
+  void SetHardwareFrame(uint32_t layer_tree_frame_sink_id,
+                        std::unique_ptr<viz::CompositorFrame> frame);
 
   struct ReturnedResources {
     ReturnedResources();
     ReturnedResources(const ReturnedResources& other);
     ~ReturnedResources();
 
-    uint32_t output_surface_id;
-    cc::ReturnedResourceArray resources;
+    uint32_t layer_tree_frame_sink_id;
+    std::vector<viz::ReturnedResource> resources;
   };
   using FrameAckArray = std::vector<ReturnedResources>;
   void SwapReturnedResources(FrameAckArray* array);
@@ -60,7 +57,7 @@ class CONTENT_EXPORT TestSynchronousCompositor : public SynchronousCompositor {
   SynchronousCompositorClient* client_;
   const int process_id_;
   const int routing_id_;
-  SynchronousCompositor::Frame hardware_frame_;
+  std::unique_ptr<Frame> hardware_frame_;
   FrameAckArray frame_ack_array_;
 
   DISALLOW_COPY_AND_ASSIGN(TestSynchronousCompositor);

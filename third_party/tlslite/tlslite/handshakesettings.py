@@ -125,9 +125,23 @@ class HandshakeSettings(object):
     corresponding to the TokenBindingKeyParameters enum in the Token Binding
     Negotiation spec (draft-ietf-tokbind-negotiation-00). Values are in server's
     preference order, with most preferred params first.
-    
+
+    @type simulateTLS13Downgrade: bool
+    @ivar simulateTLS13Downgrade: If true, the server will simulate a TLS 1.3
+    to TLS 1.2 downgrade in the ServerHello random.
+
+    @type simulateTLS12Downgrade: bool
+    @ivar simulateTLS12Downgrade: If true, the server will simulate a TLS 1.2
+    to TLS 1.1 downgrade in the ServerHello random.
+
     Note that TACK support is not standardized by IETF and uses a temporary
     TLS Extension number, so should NOT be used in production software.
+
+    @type alpnProtos: list of strings.
+    @param alpnProtos: A list of supported upper layer protocols to use in the
+    Application-Layer Protocol Negotiation Extension (RFC 7301).  For the
+    client, the order does not matter.  For the server, the list is in
+    decreasing order of preference.
     """
     def __init__(self):
         self.minKeySize = 1023
@@ -146,6 +160,9 @@ class HandshakeSettings(object):
         self.enableChannelID = True
         self.enableExtendedMasterSecret = True
         self.supportedTokenBindingParams = []
+        self.alpnProtos = None
+        self.simulateTLS13Downgrade = False
+        self.simulateTLS12Downgrade = False
 
     # Validates the min/max fields, and certificateTypes
     # Filters out unsupported cipherNames and cipherImplementations
@@ -166,6 +183,9 @@ class HandshakeSettings(object):
         other.enableChannelID = self.enableChannelID
         other.enableExtendedMasterSecret = self.enableExtendedMasterSecret
         other.supportedTokenBindingParams = self.supportedTokenBindingParams
+        other.alpnProtos = self.alpnProtos;
+        other.simulateTLS13Downgrade = self.simulateTLS13Downgrade
+        other.simulateTLS12Downgrade = self.simulateTLS12Downgrade
 
         if not cipherfactory.tripleDESPresent:
             other.cipherNames = [e for e in self.cipherNames if e != "3des"]

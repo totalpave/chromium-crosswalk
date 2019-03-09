@@ -6,20 +6,11 @@
 
 namespace base {
 
-MessagePump::MessagePump() {
-}
+MessagePump::MessagePump() = default;
 
-MessagePump::~MessagePump() {
-}
+MessagePump::~MessagePump() = default;
 
 void MessagePump::SetTimerSlack(TimerSlack) {
 }
-
-#if defined(OS_WIN)
-bool MessagePump::WasSignaled() {
-  NOTREACHED();
-  return false;
-}
-#endif
 
 }  // namespace base

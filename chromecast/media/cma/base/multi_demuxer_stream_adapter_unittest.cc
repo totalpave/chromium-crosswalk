@@ -3,12 +3,14 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <vector>
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_vector.h"
+#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
@@ -55,9 +57,9 @@ class MultiDemuxerStreamAdaptersTest : public testing::Test {
   // List of expected frame indices with decoder config changes.
   std::list<int> config_idx_;
 
-  ScopedVector<DemuxerStreamForTest> demuxer_streams_;
+  std::vector<std::unique_ptr<DemuxerStreamForTest>> demuxer_streams_;
 
-  ScopedVector<CodedFrameProvider> coded_frame_providers_;
+  std::vector<std::unique_ptr<CodedFrameProvider>> coded_frame_providers_;
 
  private:
   // exit if all of the streams end
@@ -79,8 +81,8 @@ MultiDemuxerStreamAdaptersTest::~MultiDemuxerStreamAdaptersTest() {
 void MultiDemuxerStreamAdaptersTest::Start() {
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&MultiDemuxerStreamAdaptersTest::OnTestTimeout,
-                 base::Unretained(this)),
+      base::BindOnce(&MultiDemuxerStreamAdaptersTest::OnTestTimeout,
+                     base::Unretained(this)),
       base::TimeDelta::FromSeconds(5));
 
   media_task_runner_factory_ = new BalancedMediaTaskRunnerFactory(
@@ -89,22 +91,22 @@ void MultiDemuxerStreamAdaptersTest::Start() {
   coded_frame_providers_.clear();
   frame_received_count_ = 0;
 
-  for (auto& stream : demuxer_streams_) {
-    coded_frame_providers_.push_back(base::WrapUnique(
-        new DemuxerStreamAdapter(base::ThreadTaskRunnerHandle::Get(),
-                                 media_task_runner_factory_, stream)));
+  for (const auto& stream : demuxer_streams_) {
+    coded_frame_providers_.push_back(std::make_unique<DemuxerStreamAdapter>(
+        base::ThreadTaskRunnerHandle::Get(), media_task_runner_factory_,
+        stream.get()));
   }
   running_stream_count_ = coded_frame_providers_.size();
 
   // read each stream
-  for (auto& code_frame_provider : coded_frame_providers_) {
-    auto read_cb = base::Bind(&MultiDemuxerStreamAdaptersTest::OnNewFrame,
-                              base::Unretained(this),
-                              code_frame_provider);
+  for (const auto& code_frame_provider : coded_frame_providers_) {
+    auto read_cb =
+        base::Bind(&MultiDemuxerStreamAdaptersTest::OnNewFrame,
+                   base::Unretained(this), code_frame_provider.get());
 
-    base::Closure task = base::Bind(&CodedFrameProvider::Read,
-                                    base::Unretained(code_frame_provider),
-                                    read_cb);
+    base::Closure task =
+        base::Bind(&CodedFrameProvider::Read,
+                   base::Unretained(code_frame_provider.get()), read_cb);
 
     base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, task);
   }
@@ -138,7 +140,7 @@ void MultiDemuxerStreamAdaptersTest::OnEos() {
   ASSERT_GE(running_stream_count_, 0);
   if (running_stream_count_ == 0) {
     ASSERT_EQ(frame_received_count_, total_expected_frames_);
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 }
 
@@ -151,18 +153,18 @@ TEST_F(MultiDemuxerStreamAdaptersTest, EarlyEos) {
       frame_count_short +
       kMaxPtsDiffMs / DemuxerStreamForTest::kDemuxerStreamForTestFrameDuration +
       100;
-  demuxer_streams_.push_back(std::unique_ptr<DemuxerStreamForTest>(
-      new DemuxerStreamForTest(frame_count_short, 2, 0, config_idx_)));
-  demuxer_streams_.push_back(std::unique_ptr<DemuxerStreamForTest>(
-      new DemuxerStreamForTest(frame_count_long, 10, 0, config_idx_)));
+  demuxer_streams_.push_back(std::make_unique<DemuxerStreamForTest>(
+      frame_count_short, 2, 0, config_idx_));
+  demuxer_streams_.push_back(std::make_unique<DemuxerStreamForTest>(
+      frame_count_long, 10, 0, config_idx_));
 
   total_expected_frames_ = frame_count_short + frame_count_long;
 
   std::unique_ptr<base::MessageLoop> message_loop(new base::MessageLoop());
-  message_loop->PostTask(FROM_HERE,
-                         base::Bind(&MultiDemuxerStreamAdaptersTest::Start,
-                                    base::Unretained(this)));
-  message_loop->Run();
+  message_loop->task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&MultiDemuxerStreamAdaptersTest::Start,
+                                base::Unretained(this)));
+  base::RunLoop().Run();
 }
 }  // namespace media
 }  // namespace chromecast

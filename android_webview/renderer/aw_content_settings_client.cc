@@ -5,8 +5,8 @@
 #include "android_webview/renderer/aw_content_settings_client.h"
 
 #include "content/public/renderer/render_frame.h"
-#include "third_party/WebKit/public/platform/WebURL.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
+#include "third_party/blink/public/platform/web_url.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 #include "url/gurl.h"
 
 namespace android_webview {
@@ -22,27 +22,21 @@ bool AllowMixedContent(const blink::WebURL& url) {
   return !gurl.IsStandard();
 }
 
-}
+}  // namespace
 
 AwContentSettingsClient::AwContentSettingsClient(
     content::RenderFrame* render_frame)
     : content::RenderFrameObserver(render_frame) {
-  render_frame->GetWebFrame()->setContentSettingsClient(this);
+  render_frame->GetWebFrame()->SetContentSettingsClient(this);
 }
 
 AwContentSettingsClient::~AwContentSettingsClient() {
 }
 
-bool AwContentSettingsClient::allowDisplayingInsecureContent(
-      bool enabled_per_settings,
-      const blink::WebURL& url) {
-  return enabled_per_settings ? true : AllowMixedContent(url);
-}
-
-bool AwContentSettingsClient::allowRunningInsecureContent(
-      bool enabled_per_settings,
-      const blink::WebSecurityOrigin& origin,
-      const blink::WebURL& url) {
+bool AwContentSettingsClient::AllowRunningInsecureContent(
+    bool enabled_per_settings,
+    const blink::WebSecurityOrigin& origin,
+    const blink::WebURL& url) {
   return enabled_per_settings ? true : AllowMixedContent(url);
 }
 

@@ -15,13 +15,14 @@
 #include "base/pickle.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
-#include "ipc/attachment_broker.h"
-#include "ipc/brokerable_attachment.h"
-#include "ipc/ipc_export.h"
+#include "ipc/ipc_buildflags.h"
+#include "ipc/ipc_message_support_export.h"
 
-#if !defined(NDEBUG)
-#define IPC_MESSAGE_LOG_ENABLED
-#endif
+namespace mojo {
+namespace internal {
+struct UnmappedNativeStructSerializerImpl;
+}
+}  // namespace mojo
 
 namespace IPC {
 
@@ -32,10 +33,9 @@ class ChannelReader;
 //------------------------------------------------------------------------------
 
 struct LogData;
-class MessageAttachment;
 class MessageAttachmentSet;
 
-class IPC_EXPORT Message : public base::Pickle {
+class IPC_MESSAGE_SUPPORT_EXPORT Message : public base::Pickle {
  public:
   enum PriorityValue {
     PRIORITY_LOW = 1,
@@ -71,6 +71,8 @@ class IPC_EXPORT Message : public base::Pickle {
 
   Message(const Message& other);
   Message& operator=(const Message& other);
+
+  bool IsValid() const { return header_size() == sizeof(Header) && header(); }
 
   PriorityValue priority() const {
     return static_cast<PriorityValue>(header()->flags & PRIORITY_MASK);
@@ -172,7 +174,7 @@ class IPC_EXPORT Message : public base::Pickle {
 
   // The static method FindNext() returns several pieces of information, which
   // are aggregated into an instance of this struct.
-  struct IPC_EXPORT NextMessageInfo {
+  struct IPC_MESSAGE_SUPPORT_EXPORT NextMessageInfo {
     NextMessageInfo();
     ~NextMessageInfo();
 
@@ -191,33 +193,12 @@ class IPC_EXPORT Message : public base::Pickle {
     // The end address of the message should be used to determine the start
     // address of the next message.
     const char* message_end;
-    // If the message has brokerable attachments, this vector will contain the
-    // ids of the brokerable attachments. The caller of FindNext() is
-    // responsible for adding the attachments to the message.
-    std::vector<BrokerableAttachment::AttachmentId> attachment_ids;
   };
-
-  struct SerializedAttachmentIds {
-    void* buffer;
-    size_t size;
-  };
-  // Creates a buffer that contains a serialization of the ids of the brokerable
-  // attachments of the message. This buffer is intended to be sent over the IPC
-  // channel immediately after the pickled message. The caller takes ownership
-  // of the buffer.
-  // This method should only be called if the message has brokerable
-  // attachments.
-  SerializedAttachmentIds SerializedIdsOfBrokerableAttachments();
 
   // |info| is an output parameter and must not be nullptr.
   static void FindNext(const char* range_start,
                        const char* range_end,
                        NextMessageInfo* info);
-
-  // Adds a placeholder brokerable attachment that must be replaced before the
-  // message can be dispatched.
-  bool AddPlaceholderBrokerableAttachmentWithId(
-      BrokerableAttachment::AttachmentId id);
 
   // WriteAttachment appends |attachment| to the end of the set. It returns
   // false iff the set is full.
@@ -230,15 +211,8 @@ class IPC_EXPORT Message : public base::Pickle {
       scoped_refptr<base::Pickle::Attachment>* attachment) const override;
   // Returns true if there are any attachment in this message.
   bool HasAttachments() const override;
-  // Returns true if there are any MojoHandleAttachments in this message.
-  bool HasMojoHandles() const;
-  // Whether the message has any brokerable attachments.
-  bool HasBrokerableAttachments() const;
 
-  void set_sender_pid(base::ProcessId id) { sender_pid_ = id; }
-  base::ProcessId get_sender_pid() const { return sender_pid_; }
-
-#ifdef IPC_MESSAGE_LOG_ENABLED
+#if BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
   // Adds the outgoing time from Time::Now() at the end of the message and sets
   // a bit to indicate that it's been added.
   void set_sent_time(int64_t time);
@@ -268,18 +242,14 @@ class IPC_EXPORT Message : public base::Pickle {
   friend class MessageReplyDeserializer;
   friend class SyncMessage;
 
+  friend struct mojo::internal::UnmappedNativeStructSerializerImpl;
+
 #pragma pack(push, 4)
   struct Header : base::Pickle::Header {
     int32_t routing;  // ID of the view that this message is destined for
     uint32_t type;    // specifies the user-defined message type
     uint32_t flags;   // specifies control flags for the message
-#if USE_ATTACHMENT_BROKER
-    // The number of brokered attachments included with this message. The
-    // ids of the brokered attachment ids are sent immediately after the pickled
-    // message, before the next pickled message is sent.
-    uint32_t num_brokered_attachments;
-#endif
-#if defined(OS_POSIX)
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
     uint16_t num_fds; // the number of descriptors included with this message
     uint16_t pad;     // explicitly initialize this to appease valgrind
 #endif
@@ -312,11 +282,7 @@ class IPC_EXPORT Message : public base::Pickle {
     return attachment_set_.get();
   }
 
-  // The process id of the sender of the message. This member is populated with
-  // a valid value for every message dispatched to listeners.
-  base::ProcessId sender_pid_;
-
-#ifdef IPC_MESSAGE_LOG_ENABLED
+#if BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
   // Used for logging.
   mutable int64_t received_time_;
   mutable std::string output_params_;

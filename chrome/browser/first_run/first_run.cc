@@ -5,20 +5,20 @@
 #include "chrome/browser/first_run/first_run.h"
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/command_line.h"
-#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/lazy_instance.h"
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/metrics/user_metrics.h"
+#include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -35,43 +35,30 @@
 #include "chrome/browser/prefs/chrome_pref_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profiles_state.h"
-#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/shell_integration.h"
-#include "chrome/browser/signin/signin_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/global_error/global_error_service.h"
 #include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/webui/ntp/new_tab_ui.h"
-#include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
-#include "chrome/grit/locale_settings.h"
 #include "chrome/installer/util/master_preferences.h"
 #include "chrome/installer/util/master_preferences_constants.h"
-#include "chrome/installer/util/util_constants.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
-#include "components/search_engines/template_url_service.h"
-#include "components/signin/core/browser/signin_manager.h"
-#include "components/signin/core/browser/signin_tracker.h"
-#include "components/version_info/version_info.h"
-#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_types.h"
-#include "content/public/browser/user_metrics.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/one_shot_event.h"
 #include "google_apis/gaia/gaia_auth_util.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -90,6 +77,15 @@ uint16_t g_auto_import_state = first_run::AUTO_IMPORT_NONE;
 // Flags for functions of similar name.
 bool g_should_show_welcome_page = false;
 bool g_should_do_autofill_personal_data_manager_first_run = false;
+
+// Indicates whether this is first run. Populated when IsChromeFirstRun
+// is invoked, then used as a cache on subsequent calls.
+first_run::internal::FirstRunState g_first_run =
+    first_run::internal::FIRST_RUN_UNKNOWN;
+
+// Cached first run sentinel creation time.
+// Used to avoid excess file operations.
+base::Time g_cached_sentinel_creation_time;
 
 // This class acts as an observer for the ImporterProgressObserver::ImportEnded
 // callback. When the import process is started, certain errors may cause
@@ -165,7 +161,7 @@ class FirstRunDelayedTasks : public content::NotificationObserver {
 
   void OnExtensionSystemReady(content::BrowserContext* context) {
     // Process the notification and delete this.
-    ExtensionService* service =
+    extensions::ExtensionService* service =
         extensions::ExtensionSystem::Get(context)->extension_service();
     if (service) {
       // Trigger an extension update check. If the extension specified in the
@@ -193,56 +189,6 @@ void DoDelayedInstallExtensionsIfNeeded(
     DVLOG(1) << "Extensions block found in master preferences";
     DoDelayedInstallExtensions();
   }
-}
-
-// Sets the |items| bitfield according to whether the import data specified by
-// |import_type| should be be auto imported or not.
-void SetImportItem(PrefService* user_prefs,
-                   const char* pref_path,
-                   int import_items,
-                   int dont_import_items,
-                   importer::ImportItem import_type,
-                   int* items) {
-  // Work out whether an item is to be imported according to what is specified
-  // in master preferences.
-  bool should_import = false;
-  bool master_pref_set =
-      ((import_items | dont_import_items) & import_type) != 0;
-  bool master_pref = ((import_items & ~dont_import_items) & import_type) != 0;
-
-  if (import_type == importer::HISTORY ||
-      (import_type != importer::FAVORITES &&
-       first_run::internal::IsOrganicFirstRun())) {
-    // History is always imported unless turned off in master_preferences.
-    // Search engines and home page are imported in organic builds only
-    // unless turned off in master_preferences.
-    should_import = !master_pref_set || master_pref;
-  } else {
-    // Bookmarks are never imported, unless turned on in master_preferences.
-    // Search engine and home page import behaviour is similar in non organic
-    // builds.
-    should_import = master_pref_set && master_pref;
-  }
-
-  // If an import policy is set, import items according to policy. If no master
-  // preference is set, but a corresponding recommended policy is set, import
-  // item according to recommended policy. If both a master preference and a
-  // recommended policy is set, the master preference wins. If neither
-  // recommended nor managed policies are set, import item according to what we
-  // worked out above.
-  if (master_pref_set)
-    user_prefs->SetBoolean(pref_path, should_import);
-
-  if (!user_prefs->FindPreference(pref_path)->IsDefaultValue()) {
-    if (user_prefs->GetBoolean(pref_path))
-      *items |= import_type;
-  } else {
-    // no policy (recommended or managed) is set
-    if (should_import)
-      *items |= import_type;
-  }
-
-  user_prefs->ClearPref(pref_path);
 }
 
 // Launches the import, via |importer_host|, from |source_profile| into
@@ -295,19 +241,16 @@ void ImportFromFile(Profile* profile,
 // Imports settings from the first profile in |importer_list|.
 void ImportSettings(Profile* profile,
                     std::unique_ptr<ImporterList> importer_list,
-                    int items_to_import) {
+                    uint16_t items_to_import) {
+  DCHECK(items_to_import);
   const importer::SourceProfile& source_profile =
       importer_list->GetSourceProfileAt(0);
-  // If no items to import then skip entirely.
-  if (!items_to_import)
-    return;
 
   // Ensure that importers aren't requested to import items that they do not
   // support. If there is no overlap, skip.
   items_to_import &= source_profile.services_supported;
-  if (items_to_import) {
+  if (items_to_import)
     ImportFromSourceProfile(source_profile, profile, items_to_import);
-  }
 
   g_auto_import_state |= first_run::AUTO_IMPORT_PROFILE_IMPORTED;
 }
@@ -323,153 +266,9 @@ void ConvertStringVectorToGURLVector(
   std::transform(src.begin(), src.end(), ret->begin(), &UrlFromString);
 }
 
-bool IsOnWelcomePage(content::WebContents* contents) {
-  // We have to check both the GetURL() similar to the other checks below, but
-  // also the original request url because the welcome page we use is a
-  // redirect.
-  GURL welcome_page(l10n_util::GetStringUTF8(IDS_WELCOME_PAGE_URL));
-  return contents->GetURL() == welcome_page ||
-         (contents->GetController().GetVisibleEntry() &&
-          contents->GetController()
-                  .GetVisibleEntry()
-                  ->GetOriginalRequestURL() == welcome_page);
-}
-
-// Show the first run search engine bubble at the first appropriate opportunity.
-// This bubble may be delayed by other UI, like global errors and sync promos.
-class FirstRunBubbleLauncher : public content::NotificationObserver {
- public:
-  // Show the bubble at the first appropriate opportunity. This function
-  // instantiates a FirstRunBubbleLauncher, which manages its own lifetime.
-  static void ShowFirstRunBubbleSoon();
-
- private:
-  FirstRunBubbleLauncher();
-  ~FirstRunBubbleLauncher() override;
-
-  // content::NotificationObserver:
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
-
-  content::NotificationRegistrar registrar_;
-
-  DISALLOW_COPY_AND_ASSIGN(FirstRunBubbleLauncher);
-};
-
-// static
-void FirstRunBubbleLauncher::ShowFirstRunBubbleSoon() {
-  SetShowFirstRunBubblePref(first_run::FIRST_RUN_BUBBLE_SHOW);
-  // This FirstRunBubbleLauncher instance will manage its own lifetime.
-  new FirstRunBubbleLauncher();
-}
-
-FirstRunBubbleLauncher::FirstRunBubbleLauncher() {
-  registrar_.Add(this, content::NOTIFICATION_LOAD_COMPLETED_MAIN_FRAME,
-                 content::NotificationService::AllSources());
-
-  // This notification is required to observe the switch between the sync setup
-  // page and the general settings page.
-  registrar_.Add(this, chrome::NOTIFICATION_WEB_CONTENT_SETTINGS_CHANGED,
-                 content::NotificationService::AllSources());
-}
-
-FirstRunBubbleLauncher::~FirstRunBubbleLauncher() {}
-
-void FirstRunBubbleLauncher::Observe(
-    int type,
-    const content::NotificationSource& source,
-    const content::NotificationDetails& details) {
-  DCHECK(type == content::NOTIFICATION_LOAD_COMPLETED_MAIN_FRAME ||
-         type == chrome::NOTIFICATION_WEB_CONTENT_SETTINGS_CHANGED);
-
-  Browser* browser = chrome::FindBrowserWithWebContents(
-      content::Source<content::WebContents>(source).ptr());
-  if (!browser || !browser->is_type_tabbed())
-    return;
-
-  // Check the preference to determine if the bubble should be shown.
-  PrefService* prefs = g_browser_process->local_state();
-  if (!prefs || prefs->GetInteger(prefs::kShowFirstRunBubbleOption) !=
-      first_run::FIRST_RUN_BUBBLE_SHOW) {
-    delete this;
-    return;
-  }
-
-  content::WebContents* contents =
-      browser->tab_strip_model()->GetActiveWebContents();
-
-  // Suppress the first run bubble if a Gaia sign in page or the sync setup
-  // page is showing.
-  if (contents && (contents->GetURL().GetOrigin().spec() ==
-                       chrome::kChromeUIChromeSigninURL ||
-                   gaia::IsGaiaSignonRealm(contents->GetURL().GetOrigin()) ||
-                   contents->GetURL() ==
-                       chrome::GetSettingsUrl(chrome::kSyncSetupSubPage) ||
-                   IsOnWelcomePage(contents))) {
-    return;
-  }
-
-  if (contents && contents->GetURL().SchemeIs(content::kChromeUIScheme)) {
-#if defined(OS_WIN)
-    // Suppress the first run bubble if 'make chrome metro' flow is showing.
-    if (contents->GetURL().host_piece() == chrome::kChromeUIMetroFlowHost)
-      return;
-#endif
-
-    // Suppress the first run bubble if the NTP sync promo bubble is showing
-    // or if sign in is in progress.
-    if (contents->GetURL().host_piece() == chrome::kChromeUINewTabHost) {
-      Profile* profile =
-          Profile::FromBrowserContext(contents->GetBrowserContext());
-      SigninManagerBase* manager =
-          SigninManagerFactory::GetForProfile(profile);
-      bool signin_in_progress = manager && manager->AuthInProgress();
-      bool is_promo_bubble_visible =
-          profile->GetPrefs()->GetBoolean(prefs::kSignInPromoShowNTPBubble);
-
-      if (is_promo_bubble_visible || signin_in_progress)
-        return;
-    }
-  }
-
-  // Suppress the first run bubble if a global error bubble is pending.
-  GlobalErrorService* global_error_service =
-      GlobalErrorServiceFactory::GetForProfile(browser->profile());
-  if (global_error_service->GetFirstGlobalErrorWithBubbleView() != NULL)
-    return;
-
-  // Reset the preference and notifications to avoid showing the bubble again.
-  prefs->SetInteger(prefs::kShowFirstRunBubbleOption,
-                    first_run::FIRST_RUN_BUBBLE_DONT_SHOW);
-
-  // Show the bubble now and destroy this bubble launcher.
-  browser->ShowFirstRunBubble();
-  delete this;
-}
-
-static base::LazyInstance<base::FilePath> master_prefs_path_for_testing
-    = LAZY_INSTANCE_INITIALIZER;
-
-// Loads master preferences from the master preference file into the installer
-// master preferences. Returns the pointer to installer::MasterPreferences
-// object if successful; otherwise, returns NULL.
-installer::MasterPreferences* LoadMasterPrefs() {
-  base::FilePath master_prefs_path;
-  if (!master_prefs_path_for_testing.Get().empty())
-    master_prefs_path = master_prefs_path_for_testing.Get();
-  else
-    master_prefs_path = base::FilePath(first_run::internal::MasterPrefsPath());
-  if (master_prefs_path.empty())
-    return NULL;
-  installer::MasterPreferences* install_prefs =
-      new installer::MasterPreferences(master_prefs_path);
-  if (!install_prefs->read_from_file()) {
-    delete install_prefs;
-    return NULL;
-  }
-
-  return install_prefs;
+base::FilePath& GetMasterPrefsPathForTesting() {
+  static base::NoDestructor<base::FilePath> s;
+  return *s;
 }
 
 // Makes chrome the user's default browser according to policy or
@@ -492,12 +291,23 @@ void ProcessDefaultBrowserPolicy(bool make_chrome_default_for_user) {
   }
 }
 
+// Reads the creation time of the first run sentinel file. If the first run
+// sentinel file does not exist, it will return base::Time().
+base::Time ReadFirstRunSentinelCreationTime() {
+  base::Time first_run_sentinel_creation_time = base::Time();
+  base::FilePath first_run_sentinel;
+  if (first_run::internal::GetFirstRunSentinelFilePath(&first_run_sentinel)) {
+    base::File::Info info;
+    if (base::GetFileInfo(first_run_sentinel, &info))
+      first_run_sentinel_creation_time = info.creation_time;
+  }
+  return first_run_sentinel_creation_time;
+}
+
 }  // namespace
 
 namespace first_run {
 namespace internal {
-
-FirstRunState g_first_run = FIRST_RUN_UNKNOWN;
 
 void SetupMasterPrefsFromInstallPrefs(
     const installer::MasterPreferences& install_prefs,
@@ -505,62 +315,7 @@ void SetupMasterPrefsFromInstallPrefs(
   ConvertStringVectorToGURLVector(
       install_prefs.GetFirstRunTabs(), &out_prefs->new_tabs);
 
-  install_prefs.GetInt(installer::master_preferences::kDistroPingDelay,
-                       &out_prefs->ping_delay);
-
   bool value = false;
-  if (install_prefs.GetBool(
-          installer::master_preferences::kDistroImportSearchPref, &value)) {
-    if (value) {
-      out_prefs->do_import_items |= importer::SEARCH_ENGINES;
-    } else {
-      out_prefs->dont_import_items |= importer::SEARCH_ENGINES;
-    }
-  }
-
-  // If we're suppressing the first-run bubble, set that preference now.
-  // Otherwise, wait until the user has completed first run to set it, so the
-  // user is guaranteed to see the bubble iff they have completed the first run
-  // process.
-  if (install_prefs.GetBool(
-          installer::master_preferences::kDistroSuppressFirstRunBubble,
-          &value) && value)
-    SetShowFirstRunBubblePref(FIRST_RUN_BUBBLE_SUPPRESS);
-
-  if (install_prefs.GetBool(
-          installer::master_preferences::kDistroImportHistoryPref,
-          &value)) {
-    if (value) {
-      out_prefs->do_import_items |= importer::HISTORY;
-    } else {
-      out_prefs->dont_import_items |= importer::HISTORY;
-    }
-  }
-
-  std::string not_used;
-  out_prefs->homepage_defined = install_prefs.GetString(
-      prefs::kHomePage, &not_used);
-
-  if (install_prefs.GetBool(
-          installer::master_preferences::kDistroImportHomePagePref,
-          &value)) {
-    if (value) {
-      out_prefs->do_import_items |= importer::HOME_PAGE;
-    } else {
-      out_prefs->dont_import_items |= importer::HOME_PAGE;
-    }
-  }
-
-  // Bookmarks are never imported unless specifically turned on.
-  if (install_prefs.GetBool(
-          installer::master_preferences::kDistroImportBookmarksPref,
-          &value)) {
-    if (value)
-      out_prefs->do_import_items |= importer::FAVORITES;
-    else
-      out_prefs->dont_import_items |= importer::FAVORITES;
-  }
-
   if (install_prefs.GetBool(
           installer::master_preferences::kMakeChromeDefaultForUser,
           &value) && value) {
@@ -577,12 +332,6 @@ void SetupMasterPrefsFromInstallPrefs(
       installer::master_preferences::kDistroImportBookmarksFromFilePref,
       &out_prefs->import_bookmarks_path);
 
-  out_prefs->compressed_variations_seed =
-      install_prefs.GetCompressedVariationsSeed();
-  out_prefs->variations_seed = install_prefs.GetVariationsSeed();
-  out_prefs->variations_seed_signature =
-      install_prefs.GetVariationsSeedSignature();
-
   install_prefs.GetString(
       installer::master_preferences::kDistroSuppressDefaultBrowserPromptPref,
       &out_prefs->suppress_default_browser_prompt_for_version);
@@ -597,7 +346,7 @@ void SetupMasterPrefsFromInstallPrefs(
 
 bool GetFirstRunSentinelFilePath(base::FilePath* path) {
   base::FilePath user_data_dir;
-  if (!PathService::Get(chrome::DIR_USER_DATA, &user_data_dir))
+  if (!base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir))
     return false;
   *path = user_data_dir.Append(chrome::kFirstRunSentinel);
   return true;
@@ -619,32 +368,40 @@ bool IsOrganicFirstRun() {
 }
 #endif
 
-}  // namespace internal
-
-MasterPrefs::MasterPrefs()
-    : ping_delay(0),
-      homepage_defined(false),
-      do_import_items(0),
-      dont_import_items(0),
-      make_chrome_default_for_user(false),
-      suppress_first_run_default_browser_prompt(false),
-      welcome_page_on_os_upgrade_enabled(true) {
+FirstRunState DetermineFirstRunState(bool has_sentinel,
+                                     bool force_first_run,
+                                     bool no_first_run) {
+  return (force_first_run || (!has_sentinel && !no_first_run))
+             ? FIRST_RUN_TRUE
+             : FIRST_RUN_FALSE;
 }
 
-MasterPrefs::~MasterPrefs() {}
+}  // namespace internal
+
+MasterPrefs::MasterPrefs() = default;
+
+MasterPrefs::~MasterPrefs() = default;
+
+void RegisterProfilePrefs(
+    user_prefs::PrefRegistrySyncable* registry) {
+  registry->RegisterBooleanPref(prefs::kImportAutofillFormData, false);
+  registry->RegisterBooleanPref(prefs::kImportBookmarks, false);
+  registry->RegisterBooleanPref(prefs::kImportHistory, false);
+  registry->RegisterBooleanPref(prefs::kImportHomepage, false);
+  registry->RegisterBooleanPref(prefs::kImportSavedPasswords, false);
+  registry->RegisterBooleanPref(prefs::kImportSearchEngine, false);
+}
 
 bool IsChromeFirstRun() {
-  if (internal::g_first_run == internal::FIRST_RUN_UNKNOWN) {
-    internal::g_first_run = internal::FIRST_RUN_FALSE;
+  if (g_first_run == internal::FIRST_RUN_UNKNOWN) {
     const base::CommandLine* command_line =
         base::CommandLine::ForCurrentProcess();
-    if (command_line->HasSwitch(switches::kForceFirstRun) ||
-        (!command_line->HasSwitch(switches::kNoFirstRun) &&
-         !internal::IsFirstRunSentinelPresent())) {
-      internal::g_first_run = internal::FIRST_RUN_TRUE;
-    }
+    g_first_run = internal::DetermineFirstRunState(
+        internal::IsFirstRunSentinelPresent(),
+        command_line->HasSwitch(switches::kForceFirstRun),
+        command_line->HasSwitch(switches::kNoFirstRun));
   }
-  return internal::g_first_run == internal::FIRST_RUN_TRUE;
+  return g_first_run == internal::FIRST_RUN_TRUE;
 }
 
 #if defined(OS_MACOSX)
@@ -654,54 +411,30 @@ bool IsFirstRunSuppressed(const base::CommandLine& command_line) {
 #endif
 
 bool IsMetricsReportingOptIn() {
-#if defined(OS_CHROMEOS)
+  // Metrics reporting is opt-out by default for all platforms and channels.
+  // However, user will have chance to modify metrics reporting state during
+  // first run.
   return false;
-#elif defined(OS_ANDROID)
-#error This file shouldn not be compiled on Android.
-#elif defined(OS_MACOSX)
-  return chrome::GetChannel() != version_info::Channel::CANARY;
-#elif defined(OS_LINUX) || defined(OS_BSD) || defined(OS_SOLARIS)
-  // Treat BSD and SOLARIS like Linux to not break those builds, although these
-  // platforms are not officially supported by Chrome.
-  return true;
-#elif defined(OS_WIN)
-  // TODO(jwd): Get this data directly from the download page.
-  // Metrics reporting for Windows is initially enabled on the download page. If
-  // it's opt-in or out can change without changes to Chrome. We should get this
-  // information directly from the download page for it to be accurate.
-  return chrome::GetChannel() == version_info::Channel::STABLE;
-#else
-#error Unsupported platform.
-#endif
 }
 
 void CreateSentinelIfNeeded() {
   if (IsChromeFirstRun())
     internal::CreateSentinel();
+
+  // Causes the first run sentinel creation time to be read and cached, while
+  // I/O is still allowed.
+  ignore_result(GetFirstRunSentinelCreationTime());
 }
 
-std::string GetPingDelayPrefName() {
-  return base::StringPrintf("%s.%s",
-                            installer::master_preferences::kDistroDict,
-                            installer::master_preferences::kDistroPingDelay);
+base::Time GetFirstRunSentinelCreationTime() {
+  if (g_cached_sentinel_creation_time.is_null())
+    g_cached_sentinel_creation_time = ReadFirstRunSentinelCreationTime();
+  return g_cached_sentinel_creation_time;
 }
 
-void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterIntegerPref(GetPingDelayPrefName().c_str(), 0);
-}
-
-bool SetShowFirstRunBubblePref(FirstRunBubbleOptions show_bubble_option) {
-  PrefService* local_state = g_browser_process->local_state();
-  if (!local_state)
-    return false;
-  if (local_state->GetInteger(
-          prefs::kShowFirstRunBubbleOption) != FIRST_RUN_BUBBLE_SUPPRESS) {
-    // Set the new state as long as the bubble wasn't explicitly suppressed
-    // already.
-    local_state->SetInteger(prefs::kShowFirstRunBubbleOption,
-                            show_bubble_option);
-  }
-  return true;
+void ResetCachedSentinelDataForTesting() {
+  g_cached_sentinel_creation_time = base::Time();
+  g_first_run = first_run::internal::FIRST_RUN_UNKNOWN;
 }
 
 void SetShouldShowWelcomePage() {
@@ -714,6 +447,13 @@ bool ShouldShowWelcomePage() {
   return retval;
 }
 
+bool IsOnWelcomePage(content::WebContents* contents) {
+  const GURL welcome_page(chrome::kChromeUIWelcomeURL);
+  const GURL welcome_page_win10(chrome::kChromeUIWelcomeWin10URL);
+  const GURL current = contents->GetURL().GetWithEmptyPath();
+  return current == welcome_page || current == welcome_page_win10;
+}
+
 void SetShouldDoPersonalDataManagerFirstRun() {
   g_should_do_autofill_personal_data_manager_first_run = true;
 }
@@ -724,33 +464,47 @@ bool ShouldDoPersonalDataManagerFirstRun() {
   return retval;
 }
 
-void LogFirstRunMetric(FirstRunBubbleMetric metric) {
-  UMA_HISTOGRAM_ENUMERATION("FirstRun.SearchEngineBubble", metric,
-                            NUM_FIRST_RUN_BUBBLE_METRICS);
+void SetMasterPrefsPathForTesting(const base::FilePath& master_prefs) {
+  GetMasterPrefsPathForTesting() = master_prefs;
 }
 
-void SetMasterPrefsPathForTesting(const base::FilePath& master_prefs) {
-  master_prefs_path_for_testing.Get() = master_prefs;
+std::unique_ptr<installer::MasterPreferences> LoadMasterPrefs() {
+  base::FilePath master_prefs_path;
+  if (!GetMasterPrefsPathForTesting().empty())
+    master_prefs_path = GetMasterPrefsPathForTesting();
+  else
+    master_prefs_path = base::FilePath(first_run::internal::MasterPrefsPath());
+
+  if (master_prefs_path.empty())
+    return nullptr;
+  auto install_prefs =
+      std::make_unique<installer::MasterPreferences>(master_prefs_path);
+  if (!install_prefs->read_from_file())
+    return nullptr;
+  return install_prefs;
 }
 
 ProcessMasterPreferencesResult ProcessMasterPreferences(
     const base::FilePath& user_data_dir,
+    std::unique_ptr<installer::MasterPreferences> install_prefs,
     MasterPrefs* out_prefs) {
   DCHECK(!user_data_dir.empty());
 
-  std::unique_ptr<installer::MasterPreferences> install_prefs(
-      LoadMasterPrefs());
-
-  // Default value in case master preferences is missing or corrupt, or
-  // ping_delay is missing.
-  out_prefs->ping_delay = 90;
   if (install_prefs.get()) {
     if (!internal::ShowPostInstallEULAIfNeeded(install_prefs.get()))
       return EULA_EXIT_NOW;
 
+    std::unique_ptr<base::DictionaryValue> master_dictionary =
+        install_prefs->master_dictionary().CreateDeepCopy();
+    // The distribution dictionary (and any prefs below it) are never registered
+    // for use in Chrome's PrefService. Strip them from the master dictionary
+    // before mapping it to prefs.
+    master_dictionary->RemoveWithoutPathExpansion(
+        installer::master_preferences::kDistroDict, nullptr);
+
     if (!chrome_prefs::InitializePrefsFromMasterPrefs(
             profiles::GetDefaultProfileDir(user_data_dir),
-            install_prefs->master_dictionary())) {
+            std::move(master_dictionary))) {
       DLOG(ERROR) << "Failed to initialize from master_preferences.";
     }
 
@@ -764,84 +518,56 @@ ProcessMasterPreferencesResult ProcessMasterPreferences(
 
 void AutoImport(
     Profile* profile,
-    bool homepage_defined,
-    int import_items,
-    int dont_import_items,
     const std::string& import_bookmarks_path) {
-  base::FilePath local_state_path;
-  PathService::Get(chrome::FILE_LOCAL_STATE, &local_state_path);
-  bool local_state_file_exists = base::PathExists(local_state_path);
-
-  // It may be possible to do the if block below asynchronously. In which case,
-  // get rid of this RunLoop. http://crbug.com/366116.
-  base::RunLoop run_loop;
-  std::unique_ptr<ImporterList> importer_list(new ImporterList());
-  importer_list->DetectSourceProfiles(
-      g_browser_process->GetApplicationLocale(),
-      false,  // include_interactive_profiles?
-      run_loop.QuitClosure());
-  run_loop.Run();
-
-  // Do import if there is an available profile for us to import.
-  if (importer_list->count() > 0) {
-    if (internal::IsOrganicFirstRun()) {
-      // Home page is imported in organic builds only unless turned off or
-      // defined in master_preferences.
-      if (homepage_defined) {
-        dont_import_items |= importer::HOME_PAGE;
-        if (import_items & importer::HOME_PAGE)
-          import_items &= ~importer::HOME_PAGE;
-      }
-      // Search engines are not imported automatically in organic builds if the
-      // user already has a user preferences directory.
-      if (local_state_file_exists) {
-        dont_import_items |= importer::SEARCH_ENGINES;
-        if (import_items & importer::SEARCH_ENGINES)
-          import_items &= ~importer::SEARCH_ENGINES;
-      }
-    }
-
-    PrefService* user_prefs = profile->GetPrefs();
-    int items = 0;
-
-    SetImportItem(user_prefs,
-                  prefs::kImportHistory,
-                  import_items,
-                  dont_import_items,
-                  importer::HISTORY,
-                  &items);
-    SetImportItem(user_prefs,
-                  prefs::kImportHomepage,
-                  import_items,
-                  dont_import_items,
-                  importer::HOME_PAGE,
-                  &items);
-    SetImportItem(user_prefs,
-                  prefs::kImportSearchEngine,
-                  import_items,
-                  dont_import_items,
-                  importer::SEARCH_ENGINES,
-                  &items);
-    SetImportItem(user_prefs,
-                  prefs::kImportBookmarks,
-                  import_items,
-                  dont_import_items,
-                  importer::FAVORITES,
-                  &items);
-
-    importer::LogImporterUseToMetrics(
-        "AutoImport", importer_list->GetSourceProfileAt(0).importer_type);
-
-    ImportSettings(profile, std::move(importer_list), items);
-  }
-
-  if (!import_bookmarks_path.empty()) {
-    ImportFromFile(profile, import_bookmarks_path);
-  }
-
-  content::RecordAction(UserMetricsAction("FirstRunDef_Accept"));
-
   g_auto_import_state |= AUTO_IMPORT_CALLED;
+
+  // Use |profile|'s PrefService to determine what to import. It will reflect in
+  // order:
+  //  1) Policies.
+  //  2) Master preferences (used to initialize user prefs in
+  //     ProcessMasterPreferences()).
+  //  3) Recommended policies.
+  //  4) Registered default.
+  PrefService* prefs = profile->GetPrefs();
+  uint16_t items_to_import = 0;
+  static constexpr struct {
+    const char* pref_path;
+    importer::ImportItem bit;
+  } kImportItems[] = {
+      {prefs::kImportAutofillFormData, importer::AUTOFILL_FORM_DATA},
+      {prefs::kImportBookmarks, importer::FAVORITES},
+      {prefs::kImportHistory, importer::HISTORY},
+      {prefs::kImportHomepage, importer::HOME_PAGE},
+      {prefs::kImportSavedPasswords, importer::PASSWORDS},
+      {prefs::kImportSearchEngine, importer::SEARCH_ENGINES},
+  };
+
+  for (const auto& import_item : kImportItems) {
+    if (prefs->GetBoolean(import_item.pref_path))
+      items_to_import |= import_item.bit;
+  }
+
+  if (items_to_import) {
+    // It may be possible to do the if block below asynchronously. In which
+    // case, get rid of this RunLoop. http://crbug.com/366116.
+    base::RunLoop run_loop;
+    auto importer_list = std::make_unique<ImporterList>();
+    importer_list->DetectSourceProfiles(
+        g_browser_process->GetApplicationLocale(),
+        false,  // include_interactive_profiles?
+        run_loop.QuitClosure());
+    run_loop.Run();
+
+    if (importer_list->count() > 0) {
+      importer::LogImporterUseToMetrics(
+          "AutoImport", importer_list->GetSourceProfileAt(0).importer_type);
+
+      ImportSettings(profile, std::move(importer_list), items_to_import);
+    }
+  }
+
+  if (!import_bookmarks_path.empty())
+    ImportFromFile(profile, import_bookmarks_path);
 }
 
 void DoPostImportTasks(Profile* profile, bool make_chrome_default_for_user) {
@@ -849,11 +575,6 @@ void DoPostImportTasks(Profile* profile, bool make_chrome_default_for_user) {
   // default browser to know what to import from.
   ProcessDefaultBrowserPolicy(make_chrome_default_for_user);
 
-  // Display the first run bubble if there is a default search provider.
-  TemplateURLService* template_url =
-      TemplateURLServiceFactory::GetForProfile(profile);
-  if (template_url && template_url->GetDefaultSearchProvider())
-    FirstRunBubbleLauncher::ShowFirstRunBubbleSoon();
   SetShouldShowWelcomePage();
   SetShouldDoPersonalDataManagerFirstRun();
 

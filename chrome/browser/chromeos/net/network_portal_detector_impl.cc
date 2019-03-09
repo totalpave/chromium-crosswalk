@@ -10,24 +10,25 @@
 #include "base/command_line.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
-#include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_notification_types.h"
-#include "chrome/browser/chromeos/net/network_portal_notification_controller.h"
+#include "chrome/browser/net/system_network_context_manager.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/shill_profile_client.h"
-#include "chromeos/login/login_state.h"
+#include "chromeos/login/login_state/login_state.h"
 #include "chromeos/network/network_state.h"
 #include "chromeos/network/network_state_handler.h"
 #include "components/device_event_log/device_event_log.h"
 #include "content/public/browser/notification_service.h"
-#include "content/public/common/content_switches.h"
 #include "net/http/http_status_code.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
-using base::StringPrintf;
 using captive_portal::CaptivePortalDetector;
 
 namespace chromeos {
@@ -35,27 +36,56 @@ namespace chromeos {
 namespace {
 
 // Delay before portal detection caused by changes in proxy settings.
-const int kProxyChangeDelaySec = 1;
+constexpr int kProxyChangeDelaySec = 1;
 
 // Maximum number of reports from captive portal detector about
 // offline state in a row before notification is sent to observers.
-const int kMaxOfflineResultsBeforeReport = 3;
+constexpr int kMaxOfflineResultsBeforeReport = 3;
 
 // Delay before portal detection attempt after !ONLINE -> !ONLINE
 // transition.
-const int kShortInitialDelayBetweenAttemptsMs = 600;
+constexpr int kShortInitialDelayBetweenAttemptsMs = 600;
 
 // Maximum timeout before portal detection attempts after !ONLINE ->
 // !ONLINE transition.
-const int kShortMaximumDelayBetweenAttemptsMs = 2 * 60 * 1000;
+constexpr int kShortMaximumDelayBetweenAttemptsMs = 2 * 60 * 1000;
 
 // Delay before portal detection attempt after !ONLINE -> ONLINE
 // transition.
-const int kLongInitialDelayBetweenAttemptsMs = 30 * 1000;
+constexpr int kLongInitialDelayBetweenAttemptsMs = 30 * 1000;
 
 // Maximum timeout before portal detection attempts after !ONLINE ->
 // ONLINE transition.
-const int kLongMaximumDelayBetweenAttemptsMs = 5 * 60 * 1000;
+constexpr int kLongMaximumDelayBetweenAttemptsMs = 5 * 60 * 1000;
+
+constexpr char kOobeDetectionResultHistogram[] =
+    "CaptivePortal.OOBE.DetectionResult";
+constexpr char kOobeDetectionDurationHistogram[] =
+    "CaptivePortal.OOBE.DetectionDuration";
+constexpr char kOobeShillOnlineHistogram[] =
+    "CaptivePortal.OOBE.DiscrepancyWithShill_Online";
+constexpr char kOobeShillPortalHistogram[] =
+    "CaptivePortal.OOBE.DiscrepancyWithShill_RestrictedPool";
+constexpr char kOobeShillOfflineHistogram[] =
+    "CaptivePortal.OOBE.DiscrepancyWithShill_Offline";
+constexpr char kOobePortalToOnlineHistogram[] =
+    "CaptivePortal.OOBE.PortalToOnlineTransition";
+
+constexpr char kSessionDetectionResultHistogram[] =
+    "CaptivePortal.Session.DetectionResult";
+constexpr char kSessionDetectionDurationHistogram[] =
+    "CaptivePortal.Session.DetectionDuration";
+constexpr char kSessionShillOnlineHistogram[] =
+    "CaptivePortal.Session.DiscrepancyWithShill_Online";
+constexpr char kSessionShillPortalHistogram[] =
+    "CaptivePortal.Session.DiscrepancyWithShill_RestrictedPool";
+constexpr char kSessionShillOfflineHistogram[] =
+    "CaptivePortal.Session.DiscrepancyWithShill_Offline";
+constexpr char kSessionPortalToOnlineHistogram[] =
+    "CaptivePortal.Session.PortalToOnlineTransition";
+
+constexpr char kDetectionResultSinceShillPortalHistogram[] =
+    "CaptivePortal.DetectionResultSincePortal";
 
 const NetworkState* DefaultNetwork() {
   return NetworkHandler::Get()->network_state_handler()->DefaultNetwork();
@@ -68,25 +98,20 @@ bool InSession() {
 void RecordDetectionResult(NetworkPortalDetector::CaptivePortalStatus status) {
   if (InSession()) {
     UMA_HISTOGRAM_ENUMERATION(
-        NetworkPortalDetectorImpl::kSessionDetectionResultHistogram,
-        status,
+        kSessionDetectionResultHistogram, status,
         NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_COUNT);
   } else {
     UMA_HISTOGRAM_ENUMERATION(
-        NetworkPortalDetectorImpl::kOobeDetectionResultHistogram,
-        status,
+        kOobeDetectionResultHistogram, status,
         NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_COUNT);
   }
 }
 
 void RecordDetectionDuration(const base::TimeDelta& duration) {
   if (InSession()) {
-    UMA_HISTOGRAM_MEDIUM_TIMES(
-        NetworkPortalDetectorImpl::kSessionDetectionDurationHistogram,
-        duration);
+    UMA_HISTOGRAM_MEDIUM_TIMES(kSessionDetectionDurationHistogram, duration);
   } else {
-    UMA_HISTOGRAM_MEDIUM_TIMES(
-        NetworkPortalDetectorImpl::kOobeDetectionDurationHistogram, duration);
+    UMA_HISTOGRAM_MEDIUM_TIMES(kOobeDetectionDurationHistogram, duration);
   }
 }
 
@@ -96,35 +121,29 @@ void RecordDiscrepancyWithShill(
   if (InSession()) {
     if (network->connection_state() == shill::kStateOnline) {
       UMA_HISTOGRAM_ENUMERATION(
-          NetworkPortalDetectorImpl::kSessionShillOnlineHistogram,
-          status,
+          kSessionShillOnlineHistogram, status,
           NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_COUNT);
     } else if (network->is_captive_portal()) {
       UMA_HISTOGRAM_ENUMERATION(
-          NetworkPortalDetectorImpl::kSessionShillPortalHistogram,
-          status,
+          kSessionShillPortalHistogram, status,
           NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_COUNT);
     } else if (network->connection_state() == shill::kStateOffline) {
       UMA_HISTOGRAM_ENUMERATION(
-          NetworkPortalDetectorImpl::kSessionShillOfflineHistogram,
-          status,
+          kSessionShillOfflineHistogram, status,
           NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_COUNT);
     }
   } else {
     if (network->connection_state() == shill::kStateOnline) {
       UMA_HISTOGRAM_ENUMERATION(
-          NetworkPortalDetectorImpl::kOobeShillOnlineHistogram,
-          status,
+          kOobeShillOnlineHistogram, status,
           NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_COUNT);
     } else if (network->is_captive_portal()) {
       UMA_HISTOGRAM_ENUMERATION(
-          NetworkPortalDetectorImpl::kOobeShillPortalHistogram,
-          status,
+          kOobeShillPortalHistogram, status,
           NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_COUNT);
     } else if (network->connection_state() == shill::kStateOffline) {
       UMA_HISTOGRAM_ENUMERATION(
-          NetworkPortalDetectorImpl::kOobeShillOfflineHistogram,
-          status,
+          kOobeShillOfflineHistogram, status,
           NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_COUNT);
     }
   }
@@ -132,14 +151,17 @@ void RecordDiscrepancyWithShill(
 
 void RecordPortalToOnlineTransition(const base::TimeDelta& duration) {
   if (InSession()) {
-    UMA_HISTOGRAM_LONG_TIMES(
-        NetworkPortalDetectorImpl::kSessionPortalToOnlineHistogram,
-        duration);
+    UMA_HISTOGRAM_LONG_TIMES(kSessionPortalToOnlineHistogram, duration);
   } else {
-    UMA_HISTOGRAM_LONG_TIMES(
-        NetworkPortalDetectorImpl::kOobePortalToOnlineHistogram,
-        duration);
+    UMA_HISTOGRAM_LONG_TIMES(kOobePortalToOnlineHistogram, duration);
   }
+}
+
+void SetNetworkPortalDetected(const NetworkState* network,
+                              bool portal_detected) {
+  NetworkHandler::Get()
+      ->network_state_handler()
+      ->SetNetworkChromePortalDetected(network->path(), portal_detected);
 }
 
 }  // namespace
@@ -148,9 +170,7 @@ void RecordPortalToOnlineTransition(const base::TimeDelta& duration) {
 // NetworkPortalDetectorImpl::DetectionAttemptCompletedLogState
 
 NetworkPortalDetectorImpl::DetectionAttemptCompletedReport::
-    DetectionAttemptCompletedReport()
-    : result(captive_portal::RESULT_COUNT), response_code(-1) {
-}
+    DetectionAttemptCompletedReport() = default;
 
 NetworkPortalDetectorImpl::DetectionAttemptCompletedReport::
     DetectionAttemptCompletedReport(const std::string network_name,
@@ -160,8 +180,7 @@ NetworkPortalDetectorImpl::DetectionAttemptCompletedReport::
     : network_name(network_name),
       network_id(network_id),
       result(result),
-      response_code(response_code) {
-}
+      response_code(response_code) {}
 
 void NetworkPortalDetectorImpl::DetectionAttemptCompletedReport::Report()
     const {
@@ -183,68 +202,41 @@ bool NetworkPortalDetectorImpl::DetectionAttemptCompletedReport::Equals(
 ////////////////////////////////////////////////////////////////////////////////
 // NetworkPortalDetectorImpl, public:
 
-const char NetworkPortalDetectorImpl::kOobeDetectionResultHistogram[] =
-    "CaptivePortal.OOBE.DetectionResult";
-const char NetworkPortalDetectorImpl::kOobeDetectionDurationHistogram[] =
-    "CaptivePortal.OOBE.DetectionDuration";
-const char NetworkPortalDetectorImpl::kOobeShillOnlineHistogram[] =
-    "CaptivePortal.OOBE.DiscrepancyWithShill_Online";
-const char NetworkPortalDetectorImpl::kOobeShillPortalHistogram[] =
-    "CaptivePortal.OOBE.DiscrepancyWithShill_RestrictedPool";
-const char NetworkPortalDetectorImpl::kOobeShillOfflineHistogram[] =
-    "CaptivePortal.OOBE.DiscrepancyWithShill_Offline";
-const char NetworkPortalDetectorImpl::kOobePortalToOnlineHistogram[] =
-    "CaptivePortal.OOBE.PortalToOnlineTransition";
-
-const char NetworkPortalDetectorImpl::kSessionDetectionResultHistogram[] =
-    "CaptivePortal.Session.DetectionResult";
-const char NetworkPortalDetectorImpl::kSessionDetectionDurationHistogram[] =
-    "CaptivePortal.Session.DetectionDuration";
-const char NetworkPortalDetectorImpl::kSessionShillOnlineHistogram[] =
-    "CaptivePortal.Session.DiscrepancyWithShill_Online";
-const char NetworkPortalDetectorImpl::kSessionShillPortalHistogram[] =
-    "CaptivePortal.Session.DiscrepancyWithShill_RestrictedPool";
-const char NetworkPortalDetectorImpl::kSessionShillOfflineHistogram[] =
-    "CaptivePortal.Session.DiscrepancyWithShill_Offline";
-const char NetworkPortalDetectorImpl::kSessionPortalToOnlineHistogram[] =
-    "CaptivePortal.Session.PortalToOnlineTransition";
+constexpr base::TimeDelta
+    NetworkPortalDetectorImpl::kDelaySinceShillPortalForUMA;
 
 NetworkPortalDetectorImpl::NetworkPortalDetectorImpl(
-    const scoped_refptr<net::URLRequestContextGetter>& request_context,
-    bool create_notification_controller)
-    : portal_test_url_(CaptivePortalDetector::kDefaultURL),
-      strategy_(PortalDetectorStrategy::CreateById(
+    network::mojom::URLLoaderFactory* loader_factory_for_testing)
+    : strategy_(PortalDetectorStrategy::CreateById(
           PortalDetectorStrategy::STRATEGY_ID_LOGIN_SCREEN,
           this)),
       weak_factory_(this) {
   NET_LOG(EVENT) << "NetworkPortalDetectorImpl::NetworkPortalDetectorImpl()";
-  captive_portal_detector_.reset(new CaptivePortalDetector(request_context));
-
-  if (create_notification_controller) {
-    notification_controller_.reset(
-        new NetworkPortalNotificationController(this));
-    notification_controller_->set_retry_detection_callback(
-        base::Bind(&NetworkPortalDetectorImpl::RetryDetection,
-                   weak_factory_.GetWeakPtr()));
+  network::mojom::URLLoaderFactory* loader_factory;
+  if (loader_factory_for_testing) {
+    loader_factory = loader_factory_for_testing;
+  } else {
+    shared_url_loader_factory_ =
+        g_browser_process->system_network_context_manager()
+            ->GetSharedURLLoaderFactory();
+    loader_factory = shared_url_loader_factory_.get();
   }
+  captive_portal_detector_.reset(new CaptivePortalDetector(loader_factory));
 
-  registrar_.Add(this,
-                 chrome::NOTIFICATION_LOGIN_PROXY_CHANGED,
+  portal_test_url_ = GURL(CaptivePortalDetector::kDefaultURL);
+
+  registrar_.Add(this, chrome::NOTIFICATION_AUTH_SUPPLIED,
                  content::NotificationService::AllSources());
-  registrar_.Add(this,
-                 chrome::NOTIFICATION_AUTH_SUPPLIED,
-                 content::NotificationService::AllSources());
-  registrar_.Add(this,
-                 chrome::NOTIFICATION_AUTH_CANCELLED,
+  registrar_.Add(this, chrome::NOTIFICATION_AUTH_CANCELLED,
                  content::NotificationService::AllSources());
 
   NetworkHandler::Get()->network_state_handler()->AddObserver(this, FROM_HERE);
-  StartDetectionIfIdle();
+  StartPortalDetection(false /* force */);
 }
 
 NetworkPortalDetectorImpl::~NetworkPortalDetectorImpl() {
   NET_LOG(EVENT) << "NetworkPortalDetectorImpl::~NetworkPortalDetectorImpl()";
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   attempt_task_.Cancel();
   attempt_timeout_.Cancel();
@@ -256,16 +248,18 @@ NetworkPortalDetectorImpl::~NetworkPortalDetectorImpl() {
     NetworkHandler::Get()->network_state_handler()->RemoveObserver(this,
                                                                    FROM_HERE);
   }
+  for (auto& observer : observers_)
+    observer.OnShutdown();
 }
 
 void NetworkPortalDetectorImpl::AddObserver(Observer* observer) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (observer && !observers_.HasObserver(observer))
     observers_.AddObserver(observer);
 }
 
 void NetworkPortalDetectorImpl::AddAndFireObserver(Observer* observer) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!observer)
     return;
   AddObserver(observer);
@@ -277,15 +271,17 @@ void NetworkPortalDetectorImpl::AddAndFireObserver(Observer* observer) {
 }
 
 void NetworkPortalDetectorImpl::RemoveObserver(Observer* observer) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (observer)
     observers_.RemoveObserver(observer);
 }
 
-bool NetworkPortalDetectorImpl::IsEnabled() { return enabled_; }
+bool NetworkPortalDetectorImpl::IsEnabled() {
+  return enabled_;
+}
 
 void NetworkPortalDetectorImpl::Enable(bool start_detection) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (enabled_)
     return;
 
@@ -297,22 +293,26 @@ void NetworkPortalDetectorImpl::Enable(bool start_detection) {
     return;
   NET_LOG(EVENT) << "Starting detection attempt:"
                  << " name=" << network->name() << " id=" << network->guid();
+  SetNetworkPortalDetected(network, false /* portal_detected */);
   portal_state_map_.erase(network->guid());
   StartDetection();
 }
 
 NetworkPortalDetectorImpl::CaptivePortalState
 NetworkPortalDetectorImpl::GetCaptivePortalState(const std::string& guid) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CaptivePortalStateMap::const_iterator it = portal_state_map_.find(guid);
   if (it == portal_state_map_.end())
     return CaptivePortalState();
   return it->second;
 }
 
-bool NetworkPortalDetectorImpl::StartDetectionIfIdle() {
-  if (!is_idle())
-    return false;
+bool NetworkPortalDetectorImpl::StartPortalDetection(bool force) {
+  if (!is_idle()) {
+    if (!force)
+      return false;
+    StopDetection();
+  }
   StartDetection();
   return true;
 }
@@ -322,40 +322,54 @@ void NetworkPortalDetectorImpl::SetStrategy(
   if (id == strategy_->Id())
     return;
   strategy_ = PortalDetectorStrategy::CreateById(id, this);
-  StopDetection();
-  StartDetectionIfIdle();
-}
-
-void NetworkPortalDetectorImpl::OnLockScreenRequest() {
-  if (notification_controller_)
-    notification_controller_->CloseDialog();
+  StartPortalDetection(true /* force */);
 }
 
 void NetworkPortalDetectorImpl::DefaultNetworkChanged(
     const NetworkState* default_network) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!default_network) {
     NET_LOG(EVENT) << "Default network changed: None";
 
     default_network_name_.clear();
+    default_proxy_config_.reset();
 
     StopDetection();
 
     CaptivePortalState state;
     state.status = CAPTIVE_PORTAL_STATUS_OFFLINE;
-    OnDetectionCompleted(nullptr, state);
+    DetectionCompleted(nullptr, state);
     return;
   }
 
   default_network_name_ = default_network->name();
 
   bool network_changed = (default_network_id_ != default_network->guid());
-  default_network_id_ = default_network->guid();
+  if (network_changed)
+    default_network_id_ = default_network->guid();
 
   bool connection_state_changed =
       (default_connection_state_ != default_network->connection_state());
   default_connection_state_ = default_network->connection_state();
+
+  bool proxy_config_changed = false;
+  if (!default_network->proxy_config()) {
+    if (default_proxy_config_) {
+      proxy_config_changed = true;
+      default_proxy_config_.reset();
+    }
+  } else {
+    if (!default_proxy_config_ || network_changed ||
+        (*default_proxy_config_ != *default_network->proxy_config())) {
+      proxy_config_changed = true;
+      default_proxy_config_ = std::make_unique<base::Value>(
+          default_network->proxy_config()->Clone());
+    }
+  }
+
+  if (default_network->is_captive_portal())
+    last_shill_reports_portal_time_ = NowTicks();
 
   NET_LOG(EVENT) << "Default network changed:"
                  << " name=" << default_network_name_
@@ -364,10 +378,18 @@ void NetworkPortalDetectorImpl::DefaultNetworkChanged(
                  << " changed=" << network_changed
                  << " state_changed=" << connection_state_changed;
 
-  if (network_changed || connection_state_changed)
+  if (network_changed || connection_state_changed || proxy_config_changed)
     StopDetection();
 
-  if (is_idle() && NetworkState::StateIsConnected(default_connection_state_)) {
+  if (!NetworkState::StateIsConnected(default_connection_state_))
+    return;
+
+  if (proxy_config_changed) {
+    ScheduleAttempt(base::TimeDelta::FromSeconds(kProxyChangeDelaySec));
+    return;
+  }
+
+  if (is_idle()) {
     // Initiate Captive Portal detection if network's captive
     // portal state is unknown (e.g. for freshly created networks),
     // offline or if network connection state was changed.
@@ -388,12 +410,11 @@ base::TimeTicks NetworkPortalDetectorImpl::AttemptStartTime() {
   return attempt_start_time_;
 }
 
-base::TimeTicks NetworkPortalDetectorImpl::NowTicks() {
+base::TimeTicks NetworkPortalDetectorImpl::NowTicks() const {
   if (time_ticks_for_testing_.is_null())
     return base::TimeTicks::Now();
   return time_ticks_for_testing_;
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // NetworkPortalDetectorImpl, private:
@@ -412,11 +433,6 @@ void NetworkPortalDetectorImpl::StopDetection() {
   captive_portal_detector_->Cancel();
   state_ = STATE_IDLE;
   ResetStrategyAndCounters();
-}
-
-void NetworkPortalDetectorImpl::RetryDetection() {
-  StopDetection();
-  StartDetection();
 }
 
 void NetworkPortalDetectorImpl::ScheduleAttempt(const base::TimeDelta& delay) {
@@ -438,15 +454,18 @@ void NetworkPortalDetectorImpl::ScheduleAttempt(const base::TimeDelta& delay) {
 
 void NetworkPortalDetectorImpl::StartAttempt() {
   DCHECK(is_portal_check_pending());
-  DCHECK(portal_test_url_.is_valid());
 
   state_ = STATE_CHECKING_FOR_PORTAL;
   attempt_start_time_ = NowTicks();
 
+  DCHECK(portal_test_url_.is_valid());
+  NET_LOG(EVENT) << "Starting captive portal detection with URL: "
+                 << portal_test_url_;
   captive_portal_detector_->DetectCaptivePortal(
       portal_test_url_,
       base::Bind(&NetworkPortalDetectorImpl::OnAttemptCompleted,
-                 weak_factory_.GetWeakPtr()));
+                 weak_factory_.GetWeakPtr()),
+      NO_TRAFFIC_ANNOTATION_YET);
   attempt_timeout_.Reset(
       base::Bind(&NetworkPortalDetectorImpl::OnAttemptTimeout,
                  weak_factory_.GetWeakPtr()));
@@ -457,7 +476,7 @@ void NetworkPortalDetectorImpl::StartAttempt() {
 }
 
 void NetworkPortalDetectorImpl::OnAttemptTimeout() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(is_checking_for_portal());
 
   NET_LOG(ERROR) << "Portal detection timeout: "
@@ -472,7 +491,7 @@ void NetworkPortalDetectorImpl::OnAttemptTimeout() {
 
 void NetworkPortalDetectorImpl::OnAttemptCompleted(
     const CaptivePortalDetector::Results& results) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(is_checking_for_portal());
 
   captive_portal::CaptivePortalResult result = results.result;
@@ -502,6 +521,7 @@ void NetworkPortalDetectorImpl::OnAttemptCompleted(
   CaptivePortalState state;
   state.response_code = response_code;
   state.time = NowTicks();
+  bool no_response_since_portal = false;
   switch (result) {
     case captive_portal::RESULT_NO_RESPONSE:
       if (state.response_code == net::HTTP_PROXY_AUTHENTICATION_REQUIRED) {
@@ -509,6 +529,7 @@ void NetworkPortalDetectorImpl::OnAttemptCompleted(
       } else if (network && network->is_captive_portal()) {
         // Take into account shill's detection results.
         state.status = CAPTIVE_PORTAL_STATUS_PORTAL;
+        no_response_since_portal = true;
       } else {
         state.status = CAPTIVE_PORTAL_STATUS_OFFLINE;
       }
@@ -521,6 +542,16 @@ void NetworkPortalDetectorImpl::OnAttemptCompleted(
       break;
     default:
       break;
+  }
+
+  // Within one minute of the default network reporting a portal network, if we
+  // see an offline detection result, it is likely the client got blacklisted.
+  // Record the boolean rate that Chrome observes offline vs non-offline
+  // detection results.
+  if (NowTicks() - last_shill_reports_portal_time_ <=
+      kDelaySinceShillPortalForUMA) {
+    UMA_HISTOGRAM_BOOLEAN(kDetectionResultSinceShillPortalHistogram,
+                          no_response_since_portal);
   }
 
   if (last_detection_result_ != state.status) {
@@ -547,26 +578,28 @@ void NetworkPortalDetectorImpl::OnAttemptCompleted(
 
   if (state.status != CAPTIVE_PORTAL_STATUS_OFFLINE ||
       same_detection_result_count_ >= kMaxOfflineResultsBeforeReport) {
-    OnDetectionCompleted(network, state);
+    DetectionCompleted(network, state);
   }
-  ScheduleAttempt(results.retry_after_delta);
+
+  // Observers (via DetectionCompleted) may already schedule new attempt.
+  if (is_idle())
+    ScheduleAttempt(results.retry_after_delta);
 }
 
 void NetworkPortalDetectorImpl::Observe(
     int type,
     const content::NotificationSource& source,
     const content::NotificationDetails& details) {
-  if (type == chrome::NOTIFICATION_LOGIN_PROXY_CHANGED ||
-      type == chrome::NOTIFICATION_AUTH_SUPPLIED ||
+  if (type == chrome::NOTIFICATION_AUTH_SUPPLIED ||
       type == chrome::NOTIFICATION_AUTH_CANCELLED) {
-    NET_LOG(EVENT) << "Restarting portal detection due to proxy change"
+    NET_LOG(EVENT) << "Restarting portal detection due to auth change"
                    << " name=" << default_network_name_;
     StopDetection();
     ScheduleAttempt(base::TimeDelta::FromSeconds(kProxyChangeDelaySec));
   }
 }
 
-void NetworkPortalDetectorImpl::OnDetectionCompleted(
+void NetworkPortalDetectorImpl::DetectionCompleted(
     const NetworkState* network,
     const CaptivePortalState& state) {
   if (!network) {
@@ -588,6 +621,9 @@ void NetworkPortalDetectorImpl::OnDetectionCompleted(
       RecordPortalToOnlineTransition(state.time - it->second.time);
     }
 
+    SetNetworkPortalDetected(
+        network,
+        state.status == NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL);
     portal_state_map_[network->guid()] = state;
   }
   NotifyDetectionCompleted(network, state);
@@ -596,8 +632,8 @@ void NetworkPortalDetectorImpl::OnDetectionCompleted(
 void NetworkPortalDetectorImpl::NotifyDetectionCompleted(
     const NetworkState* network,
     const CaptivePortalState& state) {
-  FOR_EACH_OBSERVER(
-      Observer, observers_, OnPortalDetectionCompleted(network, state));
+  for (auto& observer : observers_)
+    observer.OnPortalDetectionCompleted(network, state);
 }
 
 bool NetworkPortalDetectorImpl::AttemptTimeoutIsCancelledForTesting() const {

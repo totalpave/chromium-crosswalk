@@ -13,11 +13,15 @@ namespace net {
 
 namespace ct {
 
-MerkleTreeLeaf::MerkleTreeLeaf() {}
+MerkleTreeLeaf::MerkleTreeLeaf() = default;
 
-MerkleTreeLeaf::~MerkleTreeLeaf() {}
+MerkleTreeLeaf::MerkleTreeLeaf(const MerkleTreeLeaf& other) = default;
 
-bool Hash(const MerkleTreeLeaf& tree_leaf, std::string* out) {
+MerkleTreeLeaf::MerkleTreeLeaf(MerkleTreeLeaf&&) = default;
+
+MerkleTreeLeaf::~MerkleTreeLeaf() = default;
+
+bool HashMerkleTreeLeaf(const MerkleTreeLeaf& tree_leaf, std::string* out) {
   // Prepend 0 byte as per RFC 6962, section-2.1
   std::string leaf_in_tls_format("\x00", 1);
   if (!EncodeTreeLeaf(tree_leaf, &leaf_in_tls_format))
@@ -31,20 +35,19 @@ bool GetMerkleTreeLeaf(const X509Certificate* cert,
                        const SignedCertificateTimestamp* sct,
                        MerkleTreeLeaf* merkle_tree_leaf) {
   if (sct->origin == SignedCertificateTimestamp::SCT_EMBEDDED) {
-    if (cert->GetIntermediateCertificates().empty() ||
-        !GetPrecertLogEntry(cert->os_cert_handle(),
-                            cert->GetIntermediateCertificates().front(),
-                            &merkle_tree_leaf->log_entry)) {
+    if (cert->intermediate_buffers().empty() ||
+        !GetPrecertSignedEntry(cert->cert_buffer(),
+                               cert->intermediate_buffers().front().get(),
+                               &merkle_tree_leaf->signed_entry)) {
       return false;
     }
   } else {
-    if (!GetX509LogEntry(cert->os_cert_handle(),
-                         &merkle_tree_leaf->log_entry)) {
+    if (!GetX509SignedEntry(cert->cert_buffer(),
+                            &merkle_tree_leaf->signed_entry)) {
       return false;
     }
   }
 
-  merkle_tree_leaf->log_id = sct->log_id;
   merkle_tree_leaf->timestamp = sct->timestamp;
   merkle_tree_leaf->extensions = sct->extensions;
   return true;

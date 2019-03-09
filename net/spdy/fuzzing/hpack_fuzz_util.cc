@@ -9,9 +9,10 @@
 
 #include "base/rand_util.h"
 #include "base/sys_byteorder.h"
-#include "net/spdy/hpack/hpack_constants.h"
+#include "net/third_party/quiche/src/spdy/core/hpack/hpack_constants.h"
+#include "net/third_party/quiche/src/spdy/platform/api/spdy_ptr_util.h"
 
-namespace net {
+namespace spdy {
 
 namespace {
 
@@ -31,19 +32,17 @@ const size_t kValueLengthMax = 75;
 
 }  //  namespace
 
-using base::StringPiece;
 using base::RandBytesAsString;
 using std::map;
-using std::string;
 
-HpackFuzzUtil::GeneratorContext::GeneratorContext() {}
-HpackFuzzUtil::GeneratorContext::~GeneratorContext() {}
+HpackFuzzUtil::GeneratorContext::GeneratorContext() = default;
+HpackFuzzUtil::GeneratorContext::~GeneratorContext() = default;
 
 HpackFuzzUtil::Input::Input() : offset(0) {}
-HpackFuzzUtil::Input::~Input() {}
+HpackFuzzUtil::Input::~Input() = default;
 
-HpackFuzzUtil::FuzzerContext::FuzzerContext() {}
-HpackFuzzUtil::FuzzerContext::~FuzzerContext() {}
+HpackFuzzUtil::FuzzerContext::FuzzerContext() = default;
+HpackFuzzUtil::FuzzerContext::~FuzzerContext() = default;
 
 // static
 void HpackFuzzUtil::InitializeGeneratorContext(GeneratorContext* context) {
@@ -76,26 +75,22 @@ SpdyHeaderBlock HpackFuzzUtil::NextGeneratedHeaderSet(
     GeneratorContext* context) {
   SpdyHeaderBlock headers;
 
-  size_t header_count = 1 + SampleExponential(kHeaderCountMean,
-                                              kHeaderCountMax);
+  size_t header_count =
+      1 + SampleExponential(kHeaderCountMean, kHeaderCountMax);
   for (size_t j = 0; j != header_count; ++j) {
-    size_t name_index = SampleExponential(kHeaderIndexMean,
-                                          kHeaderIndexMax);
-    size_t value_index = SampleExponential(kHeaderIndexMean,
-                                           kHeaderIndexMax);
-    string name, value;
+    size_t name_index = SampleExponential(kHeaderIndexMean, kHeaderIndexMax);
+    size_t value_index = SampleExponential(kHeaderIndexMean, kHeaderIndexMax);
+    SpdyString name, value;
     if (name_index >= context->names.size()) {
-      context->names.push_back(
-          RandBytesAsString(1 + SampleExponential(kNameLengthMean,
-                                                  kNameLengthMax)));
+      context->names.push_back(RandBytesAsString(
+          1 + SampleExponential(kNameLengthMean, kNameLengthMax)));
       name = context->names.back();
     } else {
       name = context->names[name_index];
     }
     if (value_index >= context->values.size()) {
-      context->values.push_back(
-          RandBytesAsString(1 + SampleExponential(kValueLengthMean,
-                                                  kValueLengthMax)));
+      context->values.push_back(RandBytesAsString(
+          1 + SampleExponential(kValueLengthMean, kValueLengthMax)));
       value = context->values.back();
     } else {
       value = context->values[value_index];
@@ -112,8 +107,7 @@ size_t HpackFuzzUtil::SampleExponential(size_t mean, size_t sanity_bound) {
 }
 
 // static
-bool HpackFuzzUtil::NextHeaderBlock(Input* input,
-                                    StringPiece* out) {
+bool HpackFuzzUtil::NextHeaderBlock(Input* input, SpdyStringPiece* out) {
   // ClusterFuzz may truncate input files if the fuzzer ran out of allocated
   // disk space. Be tolerant of these.
   CHECK_LE(input->offset, input->input.size());
@@ -128,27 +122,29 @@ bool HpackFuzzUtil::NextHeaderBlock(Input* input,
   if (input->remaining() < length) {
     return false;
   }
-  *out = StringPiece(input->ptr(), length);
+  *out = SpdyStringPiece(input->ptr(), length);
   input->offset += length;
   return true;
 }
 
 // static
-string HpackFuzzUtil::HeaderBlockPrefix(size_t block_size) {
+SpdyString HpackFuzzUtil::HeaderBlockPrefix(size_t block_size) {
   uint32_t length = base::HostToNet32(static_cast<uint32_t>(block_size));
-  return string(reinterpret_cast<char*>(&length), sizeof(uint32_t));
+  return SpdyString(reinterpret_cast<char*>(&length), sizeof(uint32_t));
 }
 
 // static
 void HpackFuzzUtil::InitializeFuzzerContext(FuzzerContext* context) {
-  context->first_stage.reset(new HpackDecoder());
-  context->second_stage.reset(new HpackEncoder(ObtainHpackHuffmanTable()));
-  context->third_stage.reset(new HpackDecoder());
+  context->first_stage = SpdyMakeUnique<HpackDecoderAdapter>();
+  context->second_stage =
+      SpdyMakeUnique<HpackEncoder>(ObtainHpackHuffmanTable());
+  context->third_stage = SpdyMakeUnique<HpackDecoderAdapter>();
 }
 
 // static
-bool HpackFuzzUtil::RunHeaderBlockThroughFuzzerStages(FuzzerContext* context,
-                                                      StringPiece input_block) {
+bool HpackFuzzUtil::RunHeaderBlockThroughFuzzerStages(
+    FuzzerContext* context,
+    SpdyStringPiece input_block) {
   // First stage: Decode the input header block. This may fail on invalid input.
   if (!context->first_stage->HandleControlFrameHeadersData(
           input_block.data(), input_block.size())) {
@@ -158,7 +154,7 @@ bool HpackFuzzUtil::RunHeaderBlockThroughFuzzerStages(FuzzerContext* context,
     return false;
   }
   // Second stage: Re-encode the decoded header block. This must succeed.
-  string second_stage_out;
+  SpdyString second_stage_out;
   CHECK(context->second_stage->EncodeHeaderSet(
       context->first_stage->decoded_block(), &second_stage_out));
 
@@ -189,4 +185,4 @@ void HpackFuzzUtil::FlipBits(uint8_t* buffer,
   }
 }
 
-}  // namespace net
+}  // namespace spdy

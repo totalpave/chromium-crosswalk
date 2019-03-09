@@ -14,21 +14,22 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/process/process.h"
+#include "base/time/time.h"
 #include "ipc/ipc_channel.h"
-#include "ipc/ipc_channel_proxy.h"
-#include "ipc/ipc_platform_file.h"
+#include "ipc/ipc_channel_handle.h"
 #include "remoting/host/config_watcher.h"
+#include "remoting/host/current_process_stats_agent.h"
 #include "remoting/host/host_status_monitor.h"
 #include "remoting/host/worker_process_ipc_delegate.h"
+#include "remoting/protocol/process_stats_stub.h"
 
 struct SerializedTransportRoute;
 
-namespace tracked_objects {
+namespace base {
 class Location;
-}  // namespace tracked_objects
+}  // namespace base
 
 namespace remoting {
 
@@ -36,6 +37,7 @@ class AutoThreadTaskRunner;
 class DesktopSession;
 class HostEventLogger;
 class HostStatusObserver;
+class ProcessStatsSender;
 class ScreenResolution;
 
 // This class implements core of the daemon process. It manages the networking
@@ -43,8 +45,8 @@ class ScreenResolution;
 // sessions.
 class DaemonProcess
     : public ConfigWatcher::Delegate,
-      public HostStatusMonitor,
-      public WorkerProcessIpcDelegate {
+      public WorkerProcessIpcDelegate,
+      public protocol::ProcessStatsStub {
  public:
   typedef std::list<DesktopSession*> DesktopSessionList;
 
@@ -63,27 +65,26 @@ class DaemonProcess
   void OnConfigUpdated(const std::string& serialized_config) override;
   void OnConfigWatcherError() override;
 
-  // HostStatusMonitor interface.
-  void AddStatusObserver(HostStatusObserver* observer) override;
-  void RemoveStatusObserver(HostStatusObserver* observer) override;
+  scoped_refptr<HostStatusMonitor> status_monitor() { return status_monitor_; }
 
   // WorkerProcessIpcDelegate implementation.
   void OnChannelConnected(int32_t peer_pid) override;
   bool OnMessageReceived(const IPC::Message& message) override;
   void OnPermanentError(int exit_code) override;
+  void OnWorkerProcessStopped() override;
 
   // Sends an IPC message to the network process. The message will be dropped
   // unless the network process is connected over the IPC channel.
   virtual void SendToNetwork(IPC::Message* message) = 0;
 
   // Called when a desktop integration process attaches to |terminal_id|.
-  // |desktop_process| is a handle of the desktop integration process.
+  // |session_id| is the id of the desktop session being attached.
   // |desktop_pipe| specifies the client end of the desktop pipe. Returns true
   // on success, false otherwise.
   virtual bool OnDesktopSessionAgentAttached(
       int terminal_id,
-      base::ProcessHandle desktop_process,
-      IPC::PlatformFileForTransit desktop_pipe) = 0;
+      int session_id,
+      const IPC::ChannelHandle& desktop_pipe) = 0;
 
   // Closes the desktop session identified by |terminal_id|.
   void CloseDesktopSession(int terminal_id);
@@ -103,7 +104,7 @@ class DaemonProcess
   void SetScreenResolution(int terminal_id, const ScreenResolution& resolution);
 
   // Requests the network process to crash.
-  void CrashNetworkProcess(const tracked_objects::Location& location);
+  void CrashNetworkProcess(const base::Location& location);
 
   // Reads the host configuration and launches the network process.
   void Initialize();
@@ -135,8 +136,7 @@ class DaemonProcess
       bool virtual_terminal) = 0;
 
   // Requests the network process to crash.
-  virtual void DoCrashNetworkProcess(
-      const tracked_objects::Location& location) = 0;
+  virtual void DoCrashNetworkProcess(const base::Location& location) = 0;
 
   // Launches the network process and establishes an IPC channel with it.
   virtual void LaunchNetworkProcess() = 0;
@@ -159,6 +159,17 @@ class DaemonProcess
   // Deletes all desktop sessions.
   void DeleteAllDesktopSessions();
 
+  // Starts to report process statistic data to network process. If |interval|
+  // is less then or equal to 0, a default non-zero value will be used.
+  void StartProcessStatsReport(base::TimeDelta interval);
+
+  // Stops sending process statistic data to network process.
+  void StopProcessStatsReport();
+
+  // ProcessStatsStub implementation.
+  void OnProcessStats(
+      const protocol::AggregatedProcessResourceUsage& usage) override;
+
   // Task runner on which public methods of this class must be called.
   scoped_refptr<AutoThreadTaskRunner> caller_task_runner_;
 
@@ -177,7 +188,7 @@ class DaemonProcess
   int next_terminal_id_;
 
   // Keeps track of observers receiving host status notifications.
-  base::ObserverList<HostStatusObserver> status_observers_;
+  base::ObserverList<HostStatusObserver>::Unchecked status_observers_;
 
   // Invoked to ask the owner to delete |this|.
   base::Closure stopped_callback_;
@@ -185,7 +196,21 @@ class DaemonProcess
   // Writes host status updates to the system event log.
   std::unique_ptr<HostEventLogger> host_event_logger_;
 
-  base::WeakPtrFactory<DaemonProcess> weak_factory_;
+  scoped_refptr<HostStatusMonitor> status_monitor_;
+
+  // Reports process statistic data to network process.
+  std::unique_ptr<ProcessStatsSender> stats_sender_;
+
+  // The number of StartProcessStatsReport requests received.
+  // Daemon and Network processes manages multiple desktop sessions. Some of
+  // them may request for process statistic reports. So the resource usage of
+  // daemon process and network process will be merged to each desktop session.
+  //
+  // As long as at least process statistic reports is enabled for one desktop
+  // session, daemon process should continually send the reports.
+  int process_stats_request_count_ = 0;
+
+  CurrentProcessStatsAgent current_process_stats_;
 
   DISALLOW_COPY_AND_ASSIGN(DaemonProcess);
 };

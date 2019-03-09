@@ -10,86 +10,92 @@
 #include "base/compiler_specific.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
-#include "cc/blink/web_compositor_support_impl.h"
 #include "content/child/blink_platform_impl.h"
-#include "content/child/simple_webmimeregistry_impl.h"
-#include "content/child/webfileutilities_impl.h"
 #include "content/test/mock_webblob_registry_impl.h"
-#include "content/test/mock_webclipboard_impl.h"
-#include "third_party/WebKit/public/platform/WebURLLoaderMockFactory.h"
-
-namespace base {
-class StatsTable;
-}
+#include "third_party/blink/public/platform/web_url_loader_mock_factory.h"
 
 namespace blink {
-class WebLayerTreeView;
-}
-
 namespace scheduler {
-class RendererScheduler;
+class WebThreadScheduler;
+}
 }
 
 namespace content {
 
+class BlinkInterfaceProviderImpl;
+class MockClipboardHost;
+
 // An implementation of BlinkPlatformImpl for tests.
 class TestBlinkWebUnitTestSupport : public BlinkPlatformImpl {
  public:
-  TestBlinkWebUnitTestSupport();
+  enum class SchedulerType {
+    // Create a mock version of scheduling infrastructure, which just forwards
+    // all calls to the default task runner.
+    // All non-blink users (content_unittests etc) should call this method.
+    // Each test has to create base::test::ScopedTaskEnvironment manually.
+    kMockScheduler,
+    // Initialize blink platform with the real scheduler.
+    // Should be used only by webkit_unit_tests.
+    // Tests don't have to create base::test::ScopedTaskEnvironment, but should
+    // be careful not to leak any tasks to the other tests.
+    kRealScheduler,
+  };
+
+  explicit TestBlinkWebUnitTestSupport(
+      SchedulerType scheduler_type = SchedulerType::kMockScheduler);
   ~TestBlinkWebUnitTestSupport() override;
 
-  blink::WebBlobRegistry* blobRegistry() override;
-  blink::WebClipboard* clipboard() override;
-  blink::WebFileUtilities* fileUtilities() override;
-  blink::WebIDBFactory* idbFactory() override;
-  blink::WebMimeRegistry* mimeRegistry() override;
+  blink::WebBlobRegistry* GetBlobRegistry() override;
 
-  blink::WebURLLoader* createURLLoader() override;
-  blink::WebString userAgent() override;
-  blink::WebString queryLocalizedString(
+  std::unique_ptr<blink::WebURLLoaderFactory> CreateDefaultURLLoaderFactory()
+      override;
+  std::unique_ptr<blink::WebDataConsumerHandle> CreateDataConsumerHandle(
+      mojo::ScopedDataPipeConsumerHandle handle) override;
+  blink::WebString UserAgent() override;
+  blink::WebString QueryLocalizedString(
       blink::WebLocalizedString::Name name) override;
-  blink::WebString queryLocalizedString(blink::WebLocalizedString::Name name,
+  blink::WebString QueryLocalizedString(blink::WebLocalizedString::Name name,
                                         const blink::WebString& value) override;
-  blink::WebString queryLocalizedString(
+  blink::WebString QueryLocalizedString(
       blink::WebLocalizedString::Name name,
       const blink::WebString& value1,
       const blink::WebString& value2) override;
-  blink::WebString defaultLocale() override;
+  blink::WebString DefaultLocale() override;
+  scoped_refptr<base::SingleThreadTaskRunner> GetIOTaskRunner() const override;
 
-#if defined(OS_WIN) || defined(OS_MACOSX)
-  void SetThemeEngine(blink::WebThemeEngine* engine);
-  blink::WebThemeEngine* themeEngine() override;
-#endif
+  blink::WebURLLoaderMockFactory* GetURLLoaderMockFactory() override;
 
-  blink::WebCompositorSupport* compositorSupport() override;
+  bool IsThreadedAnimationEnabled() override;
 
-  blink::WebGestureCurve* createFlingAnimationCurve(
-      blink::WebGestureDevice device_source,
-      const blink::WebFloatPoint& velocity,
-      const blink::WebSize& cumulative_scroll) override;
+  std::unique_ptr<blink::WebRTCCertificateGenerator>
+  CreateRTCCertificateGenerator() override;
 
-  blink::WebURLLoaderMockFactory* getURLLoaderMockFactory() override;
+  service_manager::Connector* GetConnector() override;
+  blink::InterfaceProvider* GetInterfaceProvider() override;
 
-  blink::WebThread* currentThread() override;
-
-  void getPluginList(bool refresh,
-                     blink::WebPluginListBuilder* builder) override;
+  // May be called when |this| is registered as the active blink Platform
+  // implementation. Overrides the result of IsThreadedAnimationEnabled() to
+  // the provided value, and returns the value it was set to before the call.
+  // The original value should be restored before ending a test to avoid
+  // cross-test side effects.
+  static bool SetThreadedAnimationEnabled(bool enabled);
 
  private:
+  void BindClipboardHost(mojo::ScopedMessagePipeHandle handle);
+
+  std::unique_ptr<service_manager::Connector> connector_;
+  std::unique_ptr<BlinkInterfaceProviderImpl> blink_interface_provider_;
   MockWebBlobRegistryImpl blob_registry_;
-  SimpleWebMimeRegistryImpl mime_registry_;
-  std::unique_ptr<MockWebClipboardImpl> mock_clipboard_;
-  WebFileUtilitiesImpl file_utilities_;
+  std::unique_ptr<MockClipboardHost> mock_clipboard_host_;
   base::ScopedTempDir file_system_root_;
   std::unique_ptr<blink::WebURLLoaderMockFactory> url_loader_factory_;
-  cc_blink::WebCompositorSupportImpl compositor_support_;
-  std::unique_ptr<scheduler::RendererScheduler> renderer_scheduler_;
-  std::unique_ptr<blink::WebThread> web_thread_;
+  std::unique_ptr<blink::scheduler::WebThreadScheduler> main_thread_scheduler_;
+  bool threaded_animation_ = true;
 
-#if defined(OS_WIN) || defined(OS_MACOSX)
-  blink::WebThemeEngine* active_theme_engine_ = nullptr;
-#endif
+  base::WeakPtrFactory<TestBlinkWebUnitTestSupport> weak_factory_;
+
   DISALLOW_COPY_AND_ASSIGN(TestBlinkWebUnitTestSupport);
 };
 

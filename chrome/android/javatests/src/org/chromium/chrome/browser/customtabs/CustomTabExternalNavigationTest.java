@@ -6,21 +6,37 @@ package org.chromium.chrome.browser.customtabs;
 
 import android.app.Activity;
 import android.os.Bundle;
-import android.os.Environment;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.SmallTest;
 
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.RetryOnFailure;
+import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.customtabs.CustomTabDelegateFactory.CustomTabNavigationDelegate;
 import org.chromium.chrome.browser.externalnav.ExternalNavigationHandler;
 import org.chromium.chrome.browser.externalnav.ExternalNavigationHandler.OverrideUrlLoadingResult;
 import org.chromium.chrome.browser.externalnav.ExternalNavigationParams;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.net.test.EmbeddedTestServer;
 
 /**
  * Instrumentation test for external navigation handling of a Custom Tab.
  */
-public class CustomTabExternalNavigationTest extends CustomTabActivityTestBase {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@RetryOnFailure
+public class CustomTabExternalNavigationTest {
+    @Rule
+    public CustomTabActivityTestRule mCustomTabActivityTestRule = new CustomTabActivityTestRule();
 
     /**
      * A dummy activity that claims to handle "customtab://customtabtest".
@@ -49,30 +65,27 @@ public class CustomTabExternalNavigationTest extends CustomTabActivityTestBase {
     private EmbeddedTestServer mTestServer;
     private ExternalNavigationHandler mUrlHandler;
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        mTestServer = EmbeddedTestServer.createAndStartFileServer(
-                getInstrumentation().getContext(), Environment.getExternalStorageDirectory());
-        super.setUp();
+        mTestServer = EmbeddedTestServer.createAndStartServer(InstrumentationRegistry.getContext());
+        mCustomTabActivityTestRule.startCustomTabActivityWithIntent(
+                CustomTabsTestUtils.createMinimalCustomTabIntent(
+                        InstrumentationRegistry.getTargetContext(), mTestServer.getURL(TEST_PATH)));
+        Tab tab = mCustomTabActivityTestRule.getActivity().getActivityTab();
+        TabDelegateFactory delegateFactory = tab.getDelegateFactory();
+        Assert.assertTrue(delegateFactory instanceof CustomTabDelegateFactory);
+        CustomTabDelegateFactory customTabDelegateFactory =
+                ((CustomTabDelegateFactory) delegateFactory);
+        mUrlHandler = customTabDelegateFactory.getExternalNavigationHandler();
+        Assert.assertTrue(customTabDelegateFactory.getExternalNavigationDelegate()
+                                  instanceof CustomTabNavigationDelegate);
+        mNavigationDelegate = (CustomTabNavigationDelegate)
+                                      customTabDelegateFactory.getExternalNavigationDelegate();
     }
 
-    @Override
+    @After
     public void tearDown() throws Exception {
         mTestServer.stopAndDestroyServer();
-        super.tearDown();
-    }
-
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        super.startMainActivity();
-        startCustomTabActivityWithIntent(CustomTabsTestUtils.createMinimalCustomTabIntent(
-                getInstrumentation().getTargetContext(), mTestServer.getURL(TEST_PATH)));
-        Tab tab = getActivity().getActivityTab();
-        TabDelegateFactory delegateFactory = tab.getDelegateFactory();
-        assert delegateFactory instanceof CustomTabDelegateFactory;
-        mUrlHandler = ((CustomTabDelegateFactory) delegateFactory).getExternalNavigationHandler();
-        mNavigationDelegate = ((CustomTabDelegateFactory) delegateFactory)
-                .getExternalNavigationDelegate();
     }
 
     /**
@@ -80,14 +93,16 @@ public class CustomTabExternalNavigationTest extends CustomTabActivityTestBase {
      * intent filter, the framework will make that activity the default handler of the special url.
      * This test tests whether chrome is able to start the default external handler.
      */
+    @Test
     @SmallTest
     public void testExternalActivityStartedForDefaultUrl() {
         final String testUrl = "customtab://customtabtest/intent";
         ExternalNavigationParams params = new ExternalNavigationParams.Builder(testUrl, false)
                 .build();
-        OverrideUrlLoadingResult result = mUrlHandler.shouldOverrideUrlLoading(params);
-        assertEquals(OverrideUrlLoadingResult.OVERRIDE_WITH_EXTERNAL_INTENT, result);
-        assertTrue("A dummy activity should have been started to handle the special url.",
+        @OverrideUrlLoadingResult
+        int result = mUrlHandler.shouldOverrideUrlLoading(params);
+        Assert.assertEquals(OverrideUrlLoadingResult.OVERRIDE_WITH_EXTERNAL_INTENT, result);
+        Assert.assertTrue("A dummy activity should have been started to handle the special url.",
                 mNavigationDelegate.hasExternalActivityStarted());
     }
 
@@ -95,14 +110,16 @@ public class CustomTabExternalNavigationTest extends CustomTabActivityTestBase {
      * When loading a normal http url that chrome is able to handle, an intent picker should never
      * be shown, even if other activities such as {@link DummyActivityForHttp} claim to handle it.
      */
+    @Test
     @SmallTest
     public void testIntentPickerNotShownForNormalUrl() {
         final String testUrl = "http://customtabtest.com";
         ExternalNavigationParams params = new ExternalNavigationParams.Builder(testUrl, false)
                 .build();
-        OverrideUrlLoadingResult result = mUrlHandler.shouldOverrideUrlLoading(params);
-        assertEquals(OverrideUrlLoadingResult.NO_OVERRIDE, result);
-        assertFalse("External activities should not be started to handle the url",
+        @OverrideUrlLoadingResult
+        int result = mUrlHandler.shouldOverrideUrlLoading(params);
+        Assert.assertEquals(OverrideUrlLoadingResult.NO_OVERRIDE, result);
+        Assert.assertFalse("External activities should not be started to handle the url",
                 mNavigationDelegate.hasExternalActivityStarted());
     }
 }

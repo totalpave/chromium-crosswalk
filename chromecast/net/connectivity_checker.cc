@@ -4,6 +4,7 @@
 
 #include "chromecast/net/connectivity_checker.h"
 
+#include "base/single_thread_task_runner.h"
 #include "chromecast/net/connectivity_checker_impl.h"
 
 namespace chromecast {
@@ -34,8 +35,10 @@ void ConnectivityChecker::Notify(bool connected) {
 
 // static
 scoped_refptr<ConnectivityChecker> ConnectivityChecker::Create(
-    const scoped_refptr<base::SingleThreadTaskRunner>& task_runner) {
-  return make_scoped_refptr(new ConnectivityCheckerImpl(task_runner));
+    const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
+    net::URLRequestContextGetter* url_request_context_getter) {
+  return ConnectivityCheckerImpl::Create(task_runner,
+                                         url_request_context_getter);
 }
 
 }  // namespace chromecast

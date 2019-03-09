@@ -8,6 +8,7 @@
 #include <cmath>
 
 #include "base/logging.h"
+#include "cc/base/math_util.h"
 #include "media/base/audio_bus.h"
 #include "media/base/limits.h"
 #include "media/filters/wsola_internals.h"
@@ -44,12 +45,6 @@ namespace media {
 //    |search_block_index_| = |search_block_center_offset_| -
 //        |search_block_center_offset_|.
 
-// Max/min supported playback rates for fast/slow audio. Audio outside of these
-// ranges are muted.
-// Audio at these speeds would sound better under a frequency domain algorithm.
-static const double kMinPlaybackRate = 0.5;
-static const double kMaxPlaybackRate = 4.0;
-
 // Overlap-and-add window size in milliseconds.
 static const int kOlaWindowSizeMs = 20;
 
@@ -64,10 +59,17 @@ static const int kMaxCapacityInSeconds = 3;
 // The minimum size in ms for the |audio_buffer_|. Arbitrarily determined.
 static const int kStartingCapacityInMs = 200;
 
+// The minimum size in ms for the |audio_buffer_| for encrypted streams.
+// Set this to be larger than |kStartingCapacityInMs| because the performance of
+// encrypted playback is always worse than clear playback, due to decryption and
+// potentially IPC overhead. For the context, see https://crbug.com/403462,
+// https://crbug.com/718161 and https://crbug.com/879970.
+static const int kStartingCapacityForEncryptedInMs = 500;
+
 AudioRendererAlgorithm::AudioRendererAlgorithm()
     : channels_(0),
       samples_per_second_(0),
-      muted_partial_frame_(0),
+      is_bitstream_format_(false),
       capacity_(0),
       output_time_(0.0),
       search_block_center_offset_(0),
@@ -80,16 +82,20 @@ AudioRendererAlgorithm::AudioRendererAlgorithm()
       initial_capacity_(0),
       max_capacity_(0) {}
 
-AudioRendererAlgorithm::~AudioRendererAlgorithm() {}
+AudioRendererAlgorithm::~AudioRendererAlgorithm() = default;
 
-void AudioRendererAlgorithm::Initialize(const AudioParameters& params) {
+void AudioRendererAlgorithm::Initialize(const AudioParameters& params,
+                                        bool is_encrypted) {
   CHECK(params.IsValid());
 
   channels_ = params.channels();
   samples_per_second_ = params.sample_rate();
-  initial_capacity_ = capacity_ =
-      std::max(params.frames_per_buffer() * 2,
-               ConvertMillisecondsToFrames(kStartingCapacityInMs));
+  is_bitstream_format_ = params.IsBitstreamFormat();
+  initial_capacity_ = capacity_ = std::max(
+      params.frames_per_buffer() * 2,
+      ConvertMillisecondsToFrames(is_encrypted
+                                      ? kStartingCapacityForEncryptedInMs
+                                      : kStartingCapacityInMs));
   max_capacity_ =
       std::max(initial_capacity_, kMaxCapacityInSeconds * samples_per_second_);
   num_candidate_blocks_ = ConvertMillisecondsToFrames(kWsolaSearchIntervalMs);
@@ -119,24 +125,19 @@ void AudioRendererAlgorithm::Initialize(const AudioParameters& params) {
   //              <---------->                     <---------->
   //                Candidate      ...               Candidate
   //                   1,          ...         |num_candidate_blocks_|
-  search_block_center_offset_ = num_candidate_blocks_ / 2 +
-      (ola_window_size_ / 2 - 1);
+  search_block_center_offset_ =
+      num_candidate_blocks_ / 2 + (ola_window_size_ / 2 - 1);
 
-  ola_window_.reset(new float[ola_window_size_]);
-  internal::GetSymmetricHanningWindow(ola_window_size_, ola_window_.get());
+  // If no mask is provided, assume all channels are valid.
+  if (channel_mask_.empty())
+    SetChannelMask(std::vector<bool>(channels_, true));
+}
 
-  transition_window_.reset(new float[ola_window_size_ * 2]);
-  internal::GetSymmetricHanningWindow(2 * ola_window_size_,
-                                      transition_window_.get());
-
-  wsola_output_ = AudioBus::Create(channels_, ola_window_size_ + ola_hop_size_);
-  wsola_output_->Zero();  // Initialize for overlap-and-add of the first block.
-
-  // Auxiliary containers.
-  optimal_block_ = AudioBus::Create(channels_, ola_window_size_);
-  search_block_ = AudioBus::Create(
-      channels_, num_candidate_blocks_ + (ola_window_size_ - 1));
-  target_block_ = AudioBus::Create(channels_, ola_window_size_);
+void AudioRendererAlgorithm::SetChannelMask(std::vector<bool> channel_mask) {
+  DCHECK_EQ(channel_mask.size(), static_cast<size_t>(channels_));
+  channel_mask_ = std::move(channel_mask);
+  if (ola_window_)
+    CreateSearchWrappers();
 }
 
 int AudioRendererAlgorithm::FillBuffer(AudioBus* dest,
@@ -146,32 +147,12 @@ int AudioRendererAlgorithm::FillBuffer(AudioBus* dest,
   if (playback_rate == 0)
     return 0;
 
+  DCHECK_GT(playback_rate, 0);
   DCHECK_EQ(channels_, dest->channels());
 
-  // Optimize the muted case to issue a single clear instead of performing
-  // the full crossfade and clearing each crossfaded frame.
-  if (playback_rate < kMinPlaybackRate || playback_rate > kMaxPlaybackRate) {
-    int frames_to_render =
-        std::min(static_cast<int>(audio_buffer_.frames() / playback_rate),
-                 requested_frames);
-
-    // Compute accurate number of frames to actually skip in the source data.
-    // Includes the leftover partial frame from last request. However, we can
-    // only skip over complete frames, so a partial frame may remain for next
-    // time.
-    muted_partial_frame_ += frames_to_render * playback_rate;
-    int seek_frames = static_cast<int>(muted_partial_frame_);
-    dest->ZeroFramesPartial(dest_offset, frames_to_render);
-    audio_buffer_.SeekFrames(seek_frames);
-
-    // Determine the partial frame that remains to be skipped for next call. If
-    // the user switches back to playing, it may be off time by this partial
-    // frame, which would be undetectable. If they subsequently switch to
-    // another playback rate that mutes, the code will attempt to line up the
-    // frames again.
-    muted_partial_frame_ -= seek_frames;
-    return frames_to_render;
-  }
+  // In case of compressed bitstream formats, no post processing is allowed.
+  if (is_bitstream_format_)
+    return audio_buffer_.ReadFrames(requested_frames, dest_offset, dest);
 
   int slower_step = ceil(ola_window_size_ * playback_rate);
   int faster_step = ceil(ola_window_size_ / playback_rate);
@@ -186,6 +167,36 @@ int AudioRendererAlgorithm::FillBuffer(AudioBus* dest,
     DCHECK_EQ(frames_read, frames_to_copy);
     return frames_read;
   }
+
+  // Allocate structures on first non-1.0 playback rate; these can eat a fair
+  // chunk of memory. ~56kB for stereo 48kHz, up to ~765kB for 7.1 192kHz.
+  if (!ola_window_) {
+    ola_window_.reset(new float[ola_window_size_]);
+    internal::GetSymmetricHanningWindow(ola_window_size_, ola_window_.get());
+
+    transition_window_.reset(new float[ola_window_size_ * 2]);
+    internal::GetSymmetricHanningWindow(2 * ola_window_size_,
+                                        transition_window_.get());
+
+    // Initialize for overlap-and-add of the first block.
+    wsola_output_ =
+        AudioBus::Create(channels_, ola_window_size_ + ola_hop_size_);
+    wsola_output_->Zero();
+
+    // Auxiliary containers.
+    optimal_block_ = AudioBus::Create(channels_, ola_window_size_);
+    search_block_ = AudioBus::Create(
+        channels_, num_candidate_blocks_ + (ola_window_size_ - 1));
+    target_block_ = AudioBus::Create(channels_, ola_window_size_);
+
+    // Create potentially smaller wrappers for playback rate adaptation.
+    CreateSearchWrappers();
+  }
+
+  // Silent audio can contain non-zero samples small enough to result in
+  // subnormals internalls. Disabling subnormals can be significantly faster in
+  // these cases.
+  cc::ScopedSubnormalFloatDisabler disable_subnormals;
 
   int rendered_frames = 0;
   do {
@@ -203,7 +214,8 @@ void AudioRendererAlgorithm::FlushBuffers() {
   output_time_ = 0.0;
   search_block_index_ = 0;
   target_block_index_ = 0;
-  wsola_output_->Zero();
+  if (wsola_output_)
+    wsola_output_->Zero();
   num_complete_frames_ = 0;
 
   // Reset |capacity_| so growth triggered by underflows doesn't penalize seek
@@ -250,11 +262,14 @@ bool AudioRendererAlgorithm::RunOneWsolaIteration(double playback_rate) {
 
   // Overlap-and-add.
   for (int k = 0; k < channels_; ++k) {
+    if (!channel_mask_[k])
+      continue;
+
     const float* const ch_opt_frame = optimal_block_->channel(k);
     float* ch_output = wsola_output_->channel(k) + num_complete_frames_;
     for (int n = 0; n < ola_hop_size_; ++n) {
       ch_output[n] = ch_output[n] * ola_window_[ola_hop_size_ + n] +
-          ch_opt_frame[n] * ola_window_[n];
+                     ch_opt_frame[n] * ola_window_[n];
     }
 
     // Copy the second half to the output.
@@ -306,6 +321,8 @@ int AudioRendererAlgorithm::WriteCompletedFramesTo(
   // Remove the frames which are read.
   int frames_to_move = wsola_output_->frames() - rendered_frames;
   for (int k = 0; k < channels_; ++k) {
+    if (!channel_mask_[k])
+      continue;
     float* ch = wsola_output_->channel(k);
     memmove(ch, &ch[rendered_frames], sizeof(*ch) * frames_to_move);
   }
@@ -334,16 +351,17 @@ void AudioRendererAlgorithm::GetOptimalBlock() {
   } else {
     PeekAudioWithZeroPrepend(target_block_index_, target_block_.get());
     PeekAudioWithZeroPrepend(search_block_index_, search_block_.get());
-    int last_optimal = target_block_index_ - ola_hop_size_ -
-        search_block_index_;
-    internal::Interval exclude_iterval = std::make_pair(
-        last_optimal - kExcludeIntervalLengthFrames / 2,
-        last_optimal + kExcludeIntervalLengthFrames / 2);
+    int last_optimal =
+        target_block_index_ - ola_hop_size_ - search_block_index_;
+    internal::Interval exclude_interval =
+        std::make_pair(last_optimal - kExcludeIntervalLengthFrames / 2,
+                       last_optimal + kExcludeIntervalLengthFrames / 2);
 
     // |optimal_index| is in frames and it is relative to the beginning of the
     // |search_block_|.
-    optimal_index = internal::OptimalIndex(
-        search_block_.get(), target_block_.get(), exclude_iterval);
+    optimal_index =
+        internal::OptimalIndex(search_block_wrapper_.get(),
+                               target_block_wrapper_.get(), exclude_interval);
 
     // Translate |index| w.r.t. the beginning of |audio_buffer_| and extract the
     // optimal block.
@@ -359,11 +377,13 @@ void AudioRendererAlgorithm::GetOptimalBlock() {
     // where target-block has higher weight close to zero (weight of 1 at index
     // 0) and lower weight close the end.
     for (int k = 0; k < channels_; ++k) {
+      if (!channel_mask_[k])
+        continue;
       float* ch_opt = optimal_block_->channel(k);
       const float* const ch_target = target_block_->channel(k);
       for (int n = 0; n < ola_window_size_; ++n) {
-        ch_opt[n] = ch_opt[n] * transition_window_[n] + ch_target[n] *
-            transition_window_[ola_window_size_ + n];
+        ch_opt[n] = ch_opt[n] * transition_window_[n] +
+                    ch_target[n] * transition_window_[ola_window_size_ + n];
       }
     }
   }
@@ -388,6 +408,24 @@ void AudioRendererAlgorithm::PeekAudioWithZeroPrepend(
   }
   audio_buffer_.PeekFrames(num_frames_to_read, read_offset_frames,
                            write_offset, dest);
+}
+
+void AudioRendererAlgorithm::CreateSearchWrappers() {
+  // WSOLA is quite expensive to run, so if a channel mask exists, use it to
+  // reduce the size of our search space.
+  std::vector<float*> active_target_channels;
+  std::vector<float*> active_search_channels;
+  for (int ch = 0; ch < channels_; ++ch) {
+    if (channel_mask_[ch]) {
+      active_target_channels.push_back(target_block_->channel(ch));
+      active_search_channels.push_back(search_block_->channel(ch));
+    }
+  }
+
+  target_block_wrapper_ =
+      AudioBus::WrapVector(target_block_->frames(), active_target_channels);
+  search_block_wrapper_ =
+      AudioBus::WrapVector(search_block_->frames(), active_search_channels);
 }
 
 }  // namespace media

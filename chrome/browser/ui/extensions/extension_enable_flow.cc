@@ -4,19 +4,24 @@
 
 #include "chrome/browser/ui/extensions/extension_enable_flow.h"
 
-#include "base/memory/ptr_util.h"
+#include <memory>
+
+#include "base/bind.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/ui/extensions/extension_enable_flow_delegate.h"
-#include "chrome/browser/ui/user_manager.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_source.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
+
+#if !defined(OS_CHROMEOS)
+#include "chrome/browser/ui/user_manager.h"
+#endif  // !defined(OS_CHROMEOS)
 
 using extensions::Extension;
 
@@ -48,14 +53,12 @@ void ExtensionEnableFlow::StartForNativeWindow(
   Run();
 }
 
-void ExtensionEnableFlow::StartForCurrentlyNonexistentWindow(
-    base::Callback<gfx::NativeWindow(void)> window_getter) {
-  window_getter_ = window_getter;
+void ExtensionEnableFlow::Start() {
   Run();
 }
 
 void ExtensionEnableFlow::Run() {
-  ExtensionService* service =
+  extensions::ExtensionService* service =
       extensions::ExtensionSystem::Get(profile_)->extension_service();
   const Extension* extension = service->GetExtensionById(extension_id_, true);
   if (!extension) {
@@ -83,24 +86,29 @@ void ExtensionEnableFlow::Run() {
 }
 
 void ExtensionEnableFlow::CheckPermissionAndMaybePromptUser() {
-  ExtensionService* service =
-      extensions::ExtensionSystem::Get(profile_)->extension_service();
+  extensions::ExtensionSystem* system =
+      extensions::ExtensionSystem::Get(profile_);
+  extensions::ExtensionService* service = system->extension_service();
   const Extension* extension = service->GetExtensionById(extension_id_, true);
-  if (!extension) {
-    delegate_->ExtensionEnableFlowAborted(false);  // |delegate_| may delete us.
-    return;
-  }
 
-  // Supervised users can't re-enable custodian-installed extensions.
-  if (extensions::util::IsExtensionSupervised(extension, profile_)) {
+  bool abort =
+      !extension ||
+      // The extension might be force-disabled by policy.
+      system->management_policy()->MustRemainDisabled(extension, nullptr,
+                                                      nullptr) ||
+      // Supervised users can't re-enable custodian-installed extensions.
+      extensions::util::IsExtensionSupervised(extension, profile_);
+
+  if (abort) {
     delegate_->ExtensionEnableFlowAborted(false);  // |delegate_| may delete us.
     return;
   }
 
   if (profiles::IsProfileLocked(profile_->GetPath())) {
+#if !defined(OS_CHROMEOS)
     UserManager::Show(base::FilePath(),
-                      profiles::USER_MANAGER_NO_TUTORIAL,
-                      profiles::USER_MANAGER_SELECT_PROFILE_APP_LAUNCHER);
+                      profiles::USER_MANAGER_SELECT_PROFILE_NO_ACTION);
+#endif  // !defined(OS_CHROMEOS)
     return;
   }
 
@@ -110,6 +118,7 @@ void ExtensionEnableFlow::CheckPermissionAndMaybePromptUser() {
     // This is a no-op if the extension was previously terminated.
     service->EnableExtension(extension_id_);
 
+    DCHECK(service->IsExtensionEnabled(extension_id_));
     delegate_->ExtensionEnableFlowFinished();  // |delegate_| may delete us.
     return;
   }
@@ -118,20 +127,17 @@ void ExtensionEnableFlow::CheckPermissionAndMaybePromptUser() {
   ExtensionInstallPrompt::PromptType type =
       ExtensionInstallPrompt::GetReEnablePromptTypeForExtension(profile_,
                                                                 extension);
-  prompt_->ShowDialog(
-      base::Bind(&ExtensionEnableFlow::InstallPromptDone,
-                 weak_ptr_factory_.GetWeakPtr()),
-      extension, nullptr,
-      base::WrapUnique(new ExtensionInstallPrompt::Prompt(type)),
-      ExtensionInstallPrompt::GetDefaultShowDialogCallback());
+  prompt_->ShowDialog(base::Bind(&ExtensionEnableFlow::InstallPromptDone,
+                                 weak_ptr_factory_.GetWeakPtr()),
+                      extension, nullptr,
+                      std::make_unique<ExtensionInstallPrompt::Prompt>(type),
+                      ExtensionInstallPrompt::GetDefaultShowDialogCallback());
 }
 
 void ExtensionEnableFlow::CreatePrompt() {
-  if (!window_getter_.is_null())
-    parent_window_ = window_getter_.Run();
-  prompt_.reset(parent_contents_ ?
-      new ExtensionInstallPrompt(parent_contents_) :
-      new ExtensionInstallPrompt(profile_, parent_window_));
+  prompt_.reset(parent_contents_
+                    ? new ExtensionInstallPrompt(parent_contents_)
+                    : new ExtensionInstallPrompt(profile_, nullptr));
 }
 
 void ExtensionEnableFlow::StartObserving() {
@@ -177,7 +183,7 @@ void ExtensionEnableFlow::OnExtensionUninstalled(
 void ExtensionEnableFlow::InstallPromptDone(
     ExtensionInstallPrompt::Result result) {
   if (result == ExtensionInstallPrompt::Result::ACCEPTED) {
-    ExtensionService* service =
+    extensions::ExtensionService* service =
         extensions::ExtensionSystem::Get(profile_)->extension_service();
 
     // The extension can be uninstalled in another window while the UI was
@@ -189,6 +195,8 @@ void ExtensionEnableFlow::InstallPromptDone(
     }
 
     service->GrantPermissionsAndEnableExtension(extension);
+
+    DCHECK(service->IsExtensionEnabled(extension_id_));
     delegate_->ExtensionEnableFlowFinished();  // |delegate_| may delete us.
   } else {
     delegate_->ExtensionEnableFlowAborted(

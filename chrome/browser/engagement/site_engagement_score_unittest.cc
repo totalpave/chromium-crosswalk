@@ -9,7 +9,12 @@
 #include "base/macros.h"
 #include "base/test/simple_test_clock.h"
 #include "base/values.h"
+#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/engagement/site_engagement_service.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "chrome/test/base/testing_profile.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -21,6 +26,7 @@ const int kLessDaysThanNeededToMaxTotalEngagement = 4;
 const int kMoreDaysThanNeededToMaxTotalEngagement = 40;
 const int kLessPeriodsThanNeededToDecayMaxScore = 2;
 const int kMorePeriodsThanNeededToDecayMaxScore = 40;
+const double kMaxRoundingDeviation = 0.0001;
 
 base::Time GetReferenceTime() {
   base::Time::Exploded exploded_reference_time;
@@ -33,17 +39,20 @@ base::Time GetReferenceTime() {
   exploded_reference_time.second = 0;
   exploded_reference_time.millisecond = 0;
 
-  return base::Time::FromLocalExploded(exploded_reference_time);
+  base::Time out_time;
+  EXPECT_TRUE(
+      base::Time::FromLocalExploded(exploded_reference_time, &out_time));
+  return out_time;
 }
 
 }  // namespace
 
-class SiteEngagementScoreTest : public testing::Test {
+class SiteEngagementScoreTest : public ChromeRenderViewHostTestHarness {
  public:
-  SiteEngagementScoreTest() : score_(&test_clock_, nullptr) {}
+  SiteEngagementScoreTest() : score_(&test_clock_, GURL(), nullptr) {}
 
   void SetUp() override {
-    testing::Test::SetUp();
+    ChromeRenderViewHostTestHarness::SetUp();
     // Disable the first engagement bonus for tests.
     SiteEngagementScore::SetParamValuesForTesting();
   }
@@ -73,7 +82,8 @@ class SiteEngagementScoreTest : public testing::Test {
       double expected_points_added_today,
       base::Time expected_last_engagement_time) {
     std::unique_ptr<base::DictionaryValue> copy(score_dict->DeepCopy());
-    SiteEngagementScore initial_score(&test_clock_, std::move(score_dict));
+    SiteEngagementScore initial_score(&test_clock_, GURL(),
+                                      std::move(score_dict));
     VerifyScore(initial_score, expected_raw_score, expected_points_added_today,
                 expected_last_engagement_time);
 
@@ -87,13 +97,12 @@ class SiteEngagementScoreTest : public testing::Test {
         GetReferenceTime() + base::TimeDelta::FromDays(1);
     UpdateScore(&initial_score, 5, 10, different_day);
     EXPECT_TRUE(initial_score.UpdateScoreDict(copy.get()));
-    SiteEngagementScore updated_score(&test_clock_, std::move(copy));
+    SiteEngagementScore updated_score(&test_clock_, GURL(), std::move(copy));
     VerifyScore(updated_score, 5, 10, different_day);
   }
 
-  void SetFirstDailyEngagementPointsForTesting(double points) {
-    SiteEngagementScore::param_values
-        [SiteEngagementScore::FIRST_DAILY_ENGAGEMENT] = points;
+  void SetParamValue(SiteEngagementScore::Variation variation, double value) {
+    SiteEngagementScore::GetParamValues()[variation].second = value;
   }
 
   base::SimpleTestClock test_clock_;
@@ -110,10 +119,10 @@ TEST_F(SiteEngagementScoreTest, AccumulateOnSameDay) {
     score_.AddPoints(SiteEngagementScore::GetNavigationPoints());
     EXPECT_EQ(std::min(SiteEngagementScore::GetMaxPointsPerDay(),
                        (i + 1) * SiteEngagementScore::GetNavigationPoints()),
-              score_.GetScore());
+              score_.GetTotalScore());
   }
 
-  EXPECT_EQ(SiteEngagementScore::GetMaxPointsPerDay(), score_.GetScore());
+  EXPECT_EQ(SiteEngagementScore::GetMaxPointsPerDay(), score_.GetTotalScore());
 }
 
 // Accumulate on the first day to max that day's engagement, then accumulate on
@@ -126,7 +135,7 @@ TEST_F(SiteEngagementScoreTest, AccumulateOnTwoDays) {
   for (int i = 0; i < kMoreAccumulationsThanNeededToMaxDailyEngagement; ++i)
     score_.AddPoints(SiteEngagementScore::GetNavigationPoints());
 
-  EXPECT_EQ(SiteEngagementScore::GetMaxPointsPerDay(), score_.GetScore());
+  EXPECT_EQ(SiteEngagementScore::GetMaxPointsPerDay(), score_.GetTotalScore());
 
   test_clock_.SetNow(later_date);
   for (int i = 0; i < kMoreAccumulationsThanNeededToMaxDailyEngagement; ++i) {
@@ -135,10 +144,11 @@ TEST_F(SiteEngagementScoreTest, AccumulateOnTwoDays) {
         std::min(SiteEngagementScore::GetMaxPointsPerDay(),
                  (i + 1) * SiteEngagementScore::GetNavigationPoints());
     EXPECT_EQ(day_score + SiteEngagementScore::GetMaxPointsPerDay(),
-              score_.GetScore());
+              score_.GetTotalScore());
   }
 
-  EXPECT_EQ(2 * SiteEngagementScore::GetMaxPointsPerDay(), score_.GetScore());
+  EXPECT_EQ(2 * SiteEngagementScore::GetMaxPointsPerDay(),
+            score_.GetTotalScore());
 }
 
 // Accumulate score on many consecutive days and ensure the score doesn't exceed
@@ -154,10 +164,10 @@ TEST_F(SiteEngagementScoreTest, AccumulateALotOnManyDays) {
 
     EXPECT_EQ(std::min(SiteEngagementScore::kMaxPoints,
                        (i + 1) * SiteEngagementScore::GetMaxPointsPerDay()),
-              score_.GetScore());
+              score_.GetTotalScore());
   }
 
-  EXPECT_EQ(SiteEngagementScore::kMaxPoints, score_.GetScore());
+  EXPECT_EQ(SiteEngagementScore::kMaxPoints, score_.GetTotalScore());
 }
 
 // Accumulate a little on many consecutive days and ensure the score doesn't
@@ -176,10 +186,10 @@ TEST_F(SiteEngagementScoreTest, AccumulateALittleOnManyDays) {
         std::min(SiteEngagementScore::kMaxPoints,
                  (i + 1) * kLessAccumulationsThanNeededToMaxDailyEngagement *
                      SiteEngagementScore::GetNavigationPoints()),
-        score_.GetScore());
+        score_.GetTotalScore());
   }
 
-  EXPECT_EQ(SiteEngagementScore::kMaxPoints, score_.GetScore());
+  EXPECT_EQ(SiteEngagementScore::kMaxPoints, score_.GetTotalScore());
 }
 
 // Accumulate a bit, then check the score decays properly for a range of times.
@@ -195,14 +205,14 @@ TEST_F(SiteEngagementScoreTest, ScoresDecayOverTime) {
       score_.AddPoints(SiteEngagementScore::GetNavigationPoints());
   }
 
-  EXPECT_EQ(SiteEngagementScore::kMaxPoints, score_.GetScore());
+  EXPECT_EQ(SiteEngagementScore::kMaxPoints, score_.GetTotalScore());
 
   // The score should not have decayed before the first decay period has
   // elapsed.
   test_clock_.SetNow(current_day +
                      base::TimeDelta::FromHours(
                          SiteEngagementScore::GetDecayPeriodInHours() - 1));
-  EXPECT_EQ(SiteEngagementScore::kMaxPoints, score_.GetScore());
+  EXPECT_EQ(SiteEngagementScore::kMaxPoints, score_.GetTotalScore());
 
   // The score should have decayed by one chunk after one decay period has
   // elapsed.
@@ -211,7 +221,7 @@ TEST_F(SiteEngagementScoreTest, ScoresDecayOverTime) {
       base::TimeDelta::FromHours(SiteEngagementScore::GetDecayPeriodInHours()));
   EXPECT_EQ(
       SiteEngagementScore::kMaxPoints - SiteEngagementScore::GetDecayPoints(),
-      score_.GetScore());
+      score_.GetTotalScore());
 
   // The score should have decayed by the right number of chunks after a few
   // decay periods have elapsed.
@@ -222,14 +232,14 @@ TEST_F(SiteEngagementScoreTest, ScoresDecayOverTime) {
   EXPECT_EQ(SiteEngagementScore::kMaxPoints -
                 kLessPeriodsThanNeededToDecayMaxScore *
                     SiteEngagementScore::GetDecayPoints(),
-            score_.GetScore());
+            score_.GetTotalScore());
 
   // The score should not decay below zero.
   test_clock_.SetNow(
       current_day +
       base::TimeDelta::FromHours(kMorePeriodsThanNeededToDecayMaxScore *
                                  SiteEngagementScore::GetDecayPeriodInHours()));
-  EXPECT_EQ(0, score_.GetScore());
+  EXPECT_EQ(0, score_.GetTotalScore());
 }
 
 // Test that any expected decays are applied before adding points.
@@ -247,7 +257,7 @@ TEST_F(SiteEngagementScoreTest, DecaysAppliedBeforeAdd) {
 
   double initial_score = kLessDaysThanNeededToMaxTotalEngagement *
                          SiteEngagementScore::GetMaxPointsPerDay();
-  EXPECT_EQ(initial_score, score_.GetScore());
+  EXPECT_EQ(initial_score, score_.GetTotalScore());
 
   // Go forward a few decay periods.
   test_clock_.SetNow(
@@ -258,12 +268,12 @@ TEST_F(SiteEngagementScoreTest, DecaysAppliedBeforeAdd) {
   double decayed_score = initial_score -
                          kLessPeriodsThanNeededToDecayMaxScore *
                              SiteEngagementScore::GetDecayPoints();
-  EXPECT_EQ(decayed_score, score_.GetScore());
+  EXPECT_EQ(decayed_score, score_.GetTotalScore());
 
   // Now add some points.
   score_.AddPoints(SiteEngagementScore::GetNavigationPoints());
   EXPECT_EQ(decayed_score + SiteEngagementScore::GetNavigationPoints(),
-            score_.GetScore());
+            score_.GetTotalScore());
 }
 
 // Test that going back in time is handled properly.
@@ -274,7 +284,7 @@ TEST_F(SiteEngagementScoreTest, GoBackInTime) {
   for (int i = 0; i < kMoreAccumulationsThanNeededToMaxDailyEngagement; ++i)
     score_.AddPoints(SiteEngagementScore::GetNavigationPoints());
 
-  EXPECT_EQ(SiteEngagementScore::GetMaxPointsPerDay(), score_.GetScore());
+  EXPECT_EQ(SiteEngagementScore::GetMaxPointsPerDay(), score_.GetTotalScore());
 
   // Adding to the score on an earlier date should be treated like another day,
   // and should not cause any decay.
@@ -287,10 +297,11 @@ TEST_F(SiteEngagementScoreTest, GoBackInTime) {
         std::min(SiteEngagementScore::GetMaxPointsPerDay(),
                  (i + 1) * SiteEngagementScore::GetNavigationPoints());
     EXPECT_EQ(day_score + SiteEngagementScore::GetMaxPointsPerDay(),
-              score_.GetScore());
+              score_.GetTotalScore());
   }
 
-  EXPECT_EQ(2 * SiteEngagementScore::GetMaxPointsPerDay(), score_.GetScore());
+  EXPECT_EQ(2 * SiteEngagementScore::GetMaxPointsPerDay(),
+            score_.GetTotalScore());
 }
 
 // Test that scores are read / written correctly from / to empty score
@@ -323,11 +334,11 @@ TEST_F(SiteEngagementScoreTest, PopulatedDictionary) {
 
 // Ensure bonus engagement is awarded for the first engagement of a day.
 TEST_F(SiteEngagementScoreTest, FirstDailyEngagementBonus) {
-  SetFirstDailyEngagementPointsForTesting(0.5);
+  SetParamValue(SiteEngagementScore::FIRST_DAILY_ENGAGEMENT, 0.5);
 
-  SiteEngagementScore score1(&test_clock_,
+  SiteEngagementScore score1(&test_clock_, GURL(),
                              std::unique_ptr<base::DictionaryValue>());
-  SiteEngagementScore score2(&test_clock_,
+  SiteEngagementScore score2(&test_clock_, GURL(),
                              std::unique_ptr<base::DictionaryValue>());
   base::Time current_day = GetReferenceTime();
 
@@ -335,32 +346,32 @@ TEST_F(SiteEngagementScoreTest, FirstDailyEngagementBonus) {
 
   // The first engagement event gets the bonus.
   score1.AddPoints(0.5);
-  EXPECT_EQ(1.0, score1.GetScore());
+  EXPECT_EQ(1.0, score1.GetTotalScore());
 
   // Subsequent events do not.
   score1.AddPoints(0.5);
-  EXPECT_EQ(1.5, score1.GetScore());
+  EXPECT_EQ(1.5, score1.GetTotalScore());
 
   // Bonuses are awarded independently between scores.
   score2.AddPoints(1.0);
-  EXPECT_EQ(1.5, score2.GetScore());
+  EXPECT_EQ(1.5, score2.GetTotalScore());
   score2.AddPoints(1.0);
-  EXPECT_EQ(2.5, score2.GetScore());
+  EXPECT_EQ(2.5, score2.GetTotalScore());
 
   test_clock_.SetNow(current_day + base::TimeDelta::FromDays(1));
 
   // The first event for the next day gets the bonus.
   score1.AddPoints(0.5);
-  EXPECT_EQ(2.5, score1.GetScore());
+  EXPECT_EQ(2.5, score1.GetTotalScore());
 
   // Subsequent events do not.
   score1.AddPoints(0.5);
-  EXPECT_EQ(3.0, score1.GetScore());
+  EXPECT_EQ(3.0, score1.GetTotalScore());
 
   score2.AddPoints(1.0);
-  EXPECT_EQ(4.0, score2.GetScore());
+  EXPECT_EQ(4.0, score2.GetTotalScore());
   score2.AddPoints(1.0);
-  EXPECT_EQ(5.0, score2.GetScore());
+  EXPECT_EQ(5.0, score2.GetTotalScore());
 }
 
 // Test that resetting a score has the correct properties.
@@ -369,26 +380,27 @@ TEST_F(SiteEngagementScoreTest, Reset) {
 
   test_clock_.SetNow(current_day);
   score_.AddPoints(SiteEngagementScore::GetNavigationPoints());
-  EXPECT_EQ(SiteEngagementScore::GetNavigationPoints(), score_.GetScore());
+  EXPECT_EQ(SiteEngagementScore::GetNavigationPoints(), score_.GetTotalScore());
 
   current_day += base::TimeDelta::FromDays(7);
   test_clock_.SetNow(current_day);
 
   score_.Reset(20.0, current_day);
-  EXPECT_DOUBLE_EQ(20.0, score_.GetScore());
+  EXPECT_DOUBLE_EQ(20.0, score_.GetTotalScore());
   EXPECT_DOUBLE_EQ(0, score_.points_added_today_);
   EXPECT_EQ(current_day, score_.last_engagement_time_);
   EXPECT_TRUE(score_.last_shortcut_launch_time_.is_null());
 
   // Adding points after the reset should work as normal.
   score_.AddPoints(5);
-  EXPECT_EQ(25.0, score_.GetScore());
+  EXPECT_EQ(25.0, score_.GetTotalScore());
 
   // The decay should happen one decay period from the current time.
   test_clock_.SetNow(current_day +
                      base::TimeDelta::FromHours(
                          SiteEngagementScore::GetDecayPeriodInHours() + 1));
-  EXPECT_EQ(25.0 - SiteEngagementScore::GetDecayPoints(), score_.GetScore());
+  EXPECT_EQ(25.0 - SiteEngagementScore::GetDecayPoints(),
+            score_.GetTotalScore());
 
   // Ensure that manually setting a time works as expected.
   score_.AddPoints(5);
@@ -396,7 +408,7 @@ TEST_F(SiteEngagementScoreTest, Reset) {
   base::Time now = test_clock_.Now();
   score_.Reset(10.0, now);
 
-  EXPECT_DOUBLE_EQ(10.0, score_.GetScore());
+  EXPECT_DOUBLE_EQ(10.0, score_.GetTotalScore());
   EXPECT_DOUBLE_EQ(0, score_.points_added_today_);
   EXPECT_EQ(now, score_.last_engagement_time_);
   EXPECT_TRUE(score_.last_shortcut_launch_time_.is_null());
@@ -409,8 +421,64 @@ TEST_F(SiteEngagementScoreTest, Reset) {
   score_.Reset(15.0, now);
 
   // 5 bonus from the last shortcut launch.
-  EXPECT_DOUBLE_EQ(20.0, score_.GetScore());
+  EXPECT_DOUBLE_EQ(20.0, score_.GetTotalScore());
   EXPECT_DOUBLE_EQ(0, score_.points_added_today_);
   EXPECT_EQ(now, score_.last_engagement_time_);
   EXPECT_EQ(old_now, score_.last_shortcut_launch_time_);
+}
+
+// Test proportional decay.
+TEST_F(SiteEngagementScoreTest, ProportionalDecay) {
+  SetParamValue(SiteEngagementScore::DECAY_PROPORTION, 0.5);
+  SetParamValue(SiteEngagementScore::DECAY_POINTS, 0);
+  SetParamValue(SiteEngagementScore::MAX_POINTS_PER_DAY, 20);
+  base::Time current_day = GetReferenceTime();
+  test_clock_.SetNow(current_day);
+
+  // Single decay period, expect the score to be halved once.
+  score_.AddPoints(2.0);
+  current_day += base::TimeDelta::FromDays(7);
+  test_clock_.SetNow(current_day);
+  EXPECT_DOUBLE_EQ(1.0, score_.GetTotalScore());
+
+  // 3 decay periods, expect the score to be halved 3 times.
+  score_.AddPoints(15.0);
+  current_day += base::TimeDelta::FromDays(21);
+  test_clock_.SetNow(current_day);
+  EXPECT_DOUBLE_EQ(2.0, score_.GetTotalScore());
+
+  // Ensure point removal happens after proportional decay.
+  score_.AddPoints(4.0);
+  EXPECT_DOUBLE_EQ(6.0, score_.GetTotalScore());
+  SetParamValue(SiteEngagementScore::DECAY_POINTS, 2.0);
+  current_day += base::TimeDelta::FromDays(7);
+  test_clock_.SetNow(current_day);
+  EXPECT_NEAR(1.0, score_.GetTotalScore(), kMaxRoundingDeviation);
+}
+
+// Verify that GetDetails fills out all fields correctly.
+TEST_F(SiteEngagementScoreTest, GetDetails) {
+  // Advance the clock, otherwise Now() is the same as the null Time value.
+  test_clock_.Advance(base::TimeDelta::FromDays(365));
+
+  GURL url("http://www.google.com/");
+
+  // Replace |score_| with one with an actual URL, and with a settings map.
+  HostContentSettingsMap* settings_map =
+      HostContentSettingsMapFactory::GetForProfile(profile());
+  score_ = SiteEngagementScore(&test_clock_, url, settings_map);
+
+  // Initially all component scores should be zero.
+  mojom::SiteEngagementDetails details = score_.GetDetails();
+  EXPECT_DOUBLE_EQ(0.0, details.total_score);
+  EXPECT_DOUBLE_EQ(0.0, details.installed_bonus);
+  EXPECT_DOUBLE_EQ(0.0, details.base_score);
+  EXPECT_EQ(url, details.origin);
+
+  // Simulate the app having been launched.
+  score_.set_last_shortcut_launch_time(test_clock_.Now());
+  details = score_.GetDetails();
+  EXPECT_DOUBLE_EQ(details.installed_bonus, details.total_score);
+  EXPECT_LT(0.0, details.installed_bonus);
+  EXPECT_DOUBLE_EQ(0.0, details.base_score);
 }

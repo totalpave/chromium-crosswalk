@@ -20,8 +20,9 @@ namespace {
 // GCC (and Clang) can transparently use vector ops. Only try to do this on
 // architectures where we know it works, otherwise gcc will attempt to emulate
 // the vector ops, which is unlikely to be efficient.
-// TODO(ricea): Add ARCH_CPU_ARM_FAMILY when arm_neon=1 becomes the default.
-#if defined(COMPILER_GCC) && defined(ARCH_CPU_X86_FAMILY) && !defined(OS_NACL)
+#if defined(COMPILER_GCC) &&                                          \
+    (defined(ARCH_CPU_X86_FAMILY) || defined(ARCH_CPU_ARM_FAMILY)) && \
+    !defined(OS_NACL)
 
 using PackedMaskType = uint32_t __attribute__((vector_size(16)));
 
@@ -29,7 +30,8 @@ using PackedMaskType = uint32_t __attribute__((vector_size(16)));
 
 using PackedMaskType = size_t;
 
-#endif  // defined(COMPILER_GCC) && defined(ARCH_CPU_X86_FAMILY) &&
+#endif  // defined(COMPILER_GCC) &&
+        // (defined(ARCH_CPU_X86_FAMILY) || defined(ARCH_CPU_ARM_FAMILY)) &&
         // !defined(OS_NACL)
 
 const uint8_t kFinalBit = 0x80;
@@ -48,16 +50,15 @@ inline void MaskWebSocketFramePayloadByBytes(
     char* const begin,
     char* const end) {
   for (char* masked = begin; masked != end; ++masked) {
-    *masked ^= masking_key.key[masking_key_offset++];
-    if (masking_key_offset == WebSocketFrameHeader::kMaskingKeyLength)
-      masking_key_offset = 0;
+    *masked ^= masking_key.key[masking_key_offset++ %
+                               WebSocketFrameHeader::kMaskingKeyLength];
   }
 }
 
 }  // namespace
 
 std::unique_ptr<WebSocketFrameHeader> WebSocketFrameHeader::Clone() const {
-  std::unique_ptr<WebSocketFrameHeader> ret(new WebSocketFrameHeader(opcode));
+  auto ret = std::make_unique<WebSocketFrameHeader>(opcode);
   ret->CopyFrom(*this);
   return ret;
 }
@@ -75,11 +76,11 @@ void WebSocketFrameHeader::CopyFrom(const WebSocketFrameHeader& source) {
 WebSocketFrame::WebSocketFrame(WebSocketFrameHeader::OpCode opcode)
     : header(opcode) {}
 
-WebSocketFrame::~WebSocketFrame() {}
+WebSocketFrame::~WebSocketFrame() = default;
 
 WebSocketFrameChunk::WebSocketFrameChunk() : final_chunk(false) {}
 
-WebSocketFrameChunk::~WebSocketFrameChunk() {}
+WebSocketFrameChunk::~WebSocketFrameChunk() = default;
 
 int GetWebSocketFrameHeaderSize(const WebSocketFrameHeader& header) {
   int extended_length_size = 0;

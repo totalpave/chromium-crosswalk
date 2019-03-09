@@ -7,16 +7,19 @@
 #include <utility>
 
 #include "base/callback.h"
-#include "base/stl_util.h"
+#include "base/metrics/histogram_macros.h"
 #include "build/build_config.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/download/download_item_model.h"
 #include "chrome/browser/download/download_shelf.h"
+#include "chrome/browser/ssl/security_state_tab_helper.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "content/public/browser/download_item.h"
+#include "components/download/public/common/download_item.h"
+#include "components/security_state/core/security_state.h"
+#include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 
@@ -45,20 +48,11 @@ class AndroidUIControllerDelegate : public DownloadUIController::Delegate {
 
  private:
   // DownloadUIController::Delegate
-  void OnNewDownloadReady(content::DownloadItem* item) override;
+  void OnNewDownloadReady(download::DownloadItem* item) override;
 };
 
 void AndroidUIControllerDelegate::OnNewDownloadReady(
-    content::DownloadItem* item) {
-  // The Android DownloadController is only interested in IN_PROGRESS downloads.
-  // Ones which are INTERRUPTED etc. can't be handed over to the Android
-  // DownloadManager.
-  if (item->GetState() != content::DownloadItem::IN_PROGRESS)
-    return;
-
-  // GET downloads without authentication are delegated to the Android
-  // DownloadManager. Chrome is responsible for the rest.  See
-  // InterceptDownloadResourceThrottle::ProcessDownloadRequest().
+    download::DownloadItem* item) {
   DownloadControllerBase::Get()->OnDownloadStarted(item);
 }
 
@@ -74,14 +68,15 @@ class DownloadShelfUIControllerDelegate
 
  private:
   // DownloadUIController::Delegate
-  void OnNewDownloadReady(content::DownloadItem* item) override;
+  void OnNewDownloadReady(download::DownloadItem* item) override;
 
   Profile* profile_;
 };
 
 void DownloadShelfUIControllerDelegate::OnNewDownloadReady(
-    content::DownloadItem* item) {
-  content::WebContents* web_contents = item->GetWebContents();
+    download::DownloadItem* item) {
+  content::WebContents* web_contents =
+      content::DownloadItemUtils::GetWebContents(item);
   // For the case of DevTools web contents, we'd like to use target browser
   // shelf although saving from the DevTools web contents.
   if (web_contents && DevToolsWindow::IsDevToolsWindow(web_contents)) {
@@ -103,8 +98,10 @@ void DownloadShelfUIControllerDelegate::OnNewDownloadReady(
 
   if (browser && browser->window() &&
       DownloadItemModel(item).ShouldShowInShelf()) {
+    DownloadUIModel::DownloadUIModelPtr model = DownloadItemModel::Wrap(item);
+
     // GetDownloadShelf creates the download shelf if it was not yet created.
-    browser->window()->GetDownloadShelf()->AddDownload(item);
+    browser->window()->GetDownloadShelf()->AddDownload(std::move(model));
   }
 }
 
@@ -115,21 +112,24 @@ void DownloadShelfUIControllerDelegate::OnNewDownloadReady(
 DownloadUIController::Delegate::~Delegate() {
 }
 
-DownloadUIController::DownloadUIController(content::DownloadManager* manager,
-                                           std::unique_ptr<Delegate> delegate)
-    : download_notifier_(manager, this), delegate_(std::move(delegate)) {
+DownloadUIController::DownloadUIController(
+    content::DownloadManager* manager,
+    std::unique_ptr<Delegate> delegate,
+    DownloadOfflineContentProvider* provider)
+    : download_notifier_(manager, this),
+      delegate_(std::move(delegate)),
+      download_provider_(provider) {
 #if defined(OS_ANDROID)
   if (!delegate_)
     delegate_.reset(new AndroidUIControllerDelegate());
-#else
-#if defined(OS_CHROMEOS)
-  if (!delegate_ && DownloadNotificationManager::IsEnabled()) {
+#elif defined(OS_CHROMEOS)
+  if (!delegate_) {
     // The Profile is guaranteed to be valid since DownloadUIController is owned
     // by DownloadService, which in turn is a profile keyed service.
     delegate_.reset(new DownloadNotificationManager(
         Profile::FromBrowserContext(manager->GetBrowserContext())));
   }
-#endif  // defined(OS_CHROMEOS)
+#else  // defined(OS_CHROMEOS)
   if (!delegate_) {
     delegate_.reset(new DownloadShelfUIControllerDelegate(
         Profile::FromBrowserContext(manager->GetBrowserContext())));
@@ -141,14 +141,34 @@ DownloadUIController::~DownloadUIController() {
 }
 
 void DownloadUIController::OnDownloadCreated(content::DownloadManager* manager,
-                                             content::DownloadItem* item) {
+                                             download::DownloadItem* item) {
+  // Record the security level of the page triggering the download. Only record
+  // when the download occurs in the WebContents that initiated the download
+  // (e.g., not downloads in new tabs or windows, which have a different
+  // WebContents).
+  content::WebContents* web_contents =
+      content::DownloadItemUtils::GetWebContents(item);
+  if (web_contents && (item->IsSavePackageDownload() ||
+                       (web_contents->GetURL() != item->GetOriginalUrl() &&
+                        web_contents->GetURL() != item->GetURL()))) {
+    auto* security_state_tab_helper =
+        SecurityStateTabHelper::FromWebContents(web_contents);
+    if (security_state_tab_helper) {
+      security_state::SecurityInfo security_info;
+      security_state_tab_helper->GetSecurityInfo(&security_info);
+      UMA_HISTOGRAM_ENUMERATION("Security.SecurityLevel.DownloadStarted",
+                                security_info.security_level,
+                                security_state::SECURITY_LEVEL_COUNT);
+    }
+  }
+
   // SavePackage downloads are created in a state where they can be shown in the
   // browser. Call OnDownloadUpdated() once to notify the UI immediately.
   OnDownloadUpdated(manager, item);
 }
 
 void DownloadUIController::OnDownloadUpdated(content::DownloadManager* manager,
-                                             content::DownloadItem* item) {
+                                             download::DownloadItem* item) {
   DownloadItemModel item_model(item);
 
   // Ignore if we've already notified the UI about |item| or if it isn't a new
@@ -158,11 +178,12 @@ void DownloadUIController::OnDownloadUpdated(content::DownloadManager* manager,
 
   // Wait until the target path is determined or the download is canceled.
   if (item->GetTargetFilePath().empty() &&
-      item->GetState() != content::DownloadItem::CANCELLED)
+      item->GetState() != download::DownloadItem::CANCELLED)
     return;
 
 #if !defined(OS_ANDROID)
-  content::WebContents* web_contents = item->GetWebContents();
+  content::WebContents* web_contents =
+      content::DownloadItemUtils::GetWebContents(item);
   if (web_contents) {
     Browser* browser = chrome::FindBrowserWithWebContents(web_contents);
     // If the download occurs in a new tab, and it's not a save page
@@ -180,9 +201,11 @@ void DownloadUIController::OnDownloadUpdated(content::DownloadManager* manager,
   }
 #endif
 
-  if (item->GetState() == content::DownloadItem::CANCELLED)
+  if (item->GetState() == download::DownloadItem::CANCELLED)
     return;
 
   DownloadItemModel(item).SetWasUINotified(true);
   delegate_->OnNewDownloadReady(item);
+  if (download_provider_)
+    download_provider_->OnDownloadStarted(item);
 }

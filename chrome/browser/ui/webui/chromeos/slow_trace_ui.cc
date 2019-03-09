@@ -6,9 +6,10 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/message_loop/message_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/url_constants.h"
@@ -33,8 +34,7 @@ std::string SlowTraceSource::GetSource() const {
 
 void SlowTraceSource::StartDataRequest(
     const std::string& path,
-    int render_process_id,
-    int render_frame_id,
+    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
     const content::URLDataSource::GotDataCallback& callback) {
   int trace_id = 0;
   size_t pos = path.find('#');
@@ -63,6 +63,12 @@ void SlowTraceSource::OnGetTraceData(
   callback.Run(trace_data.get());
 }
 
+bool SlowTraceSource::AllowCaching() const {
+  // Should not be cached to reflect dynamically-generated contents that may
+  // depend on current settings.
+  return false;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // SlowTraceController
@@ -71,11 +77,10 @@ void SlowTraceSource::OnGetTraceData(
 
 SlowTraceController::SlowTraceController(content::WebUI* web_ui)
     : WebUIController(web_ui) {
-  SlowTraceSource* html_source = new SlowTraceSource();
 
   // Set up the chrome://slow_trace/ source.
-  Profile* profile = Profile::FromWebUI(web_ui);
-  content::URLDataSource::Add(profile, html_source);
+  content::URLDataSource::Add(Profile::FromWebUI(web_ui),
+                              std::make_unique<SlowTraceSource>());
 }
 
-} // namespace chromeos
+}  // namespace chromeos

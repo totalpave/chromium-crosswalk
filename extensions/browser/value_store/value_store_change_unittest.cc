@@ -5,7 +5,6 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/values.h"
 #include "extensions/browser/value_store/value_store_change.h"
 #include "extensions/common/value_builder.h"
@@ -20,40 +19,39 @@ namespace {
 
 TEST(ValueStoreChangeTest, NullOldValue) {
   ValueStoreChange change("key", nullptr,
-                          base::WrapUnique(new base::StringValue("value")));
+                          std::make_unique<base::Value>("value"));
 
   EXPECT_EQ("key", change.key());
   EXPECT_EQ(NULL, change.old_value());
   {
-    base::StringValue expected("value");
+    base::Value expected("value");
     EXPECT_TRUE(change.new_value()->Equals(&expected));
   }
 }
 
 TEST(ValueStoreChangeTest, NullNewValue) {
-  ValueStoreChange change(
-      "key", base::WrapUnique(new base::StringValue("value")), nullptr);
+  ValueStoreChange change("key", std::make_unique<base::Value>("value"),
+                          nullptr);
 
   EXPECT_EQ("key", change.key());
   {
-    base::StringValue expected("value");
+    base::Value expected("value");
     EXPECT_TRUE(change.old_value()->Equals(&expected));
   }
   EXPECT_EQ(NULL, change.new_value());
 }
 
 TEST(ValueStoreChangeTest, NonNullValues) {
-  ValueStoreChange change("key",
-                          base::WrapUnique(new base::StringValue("old_value")),
-                          base::WrapUnique(new base::StringValue("new_value")));
+  ValueStoreChange change("key", std::make_unique<base::Value>("old_value"),
+                          std::make_unique<base::Value>("new_value"));
 
   EXPECT_EQ("key", change.key());
   {
-    base::StringValue expected("old_value");
+    base::Value expected("old_value");
     EXPECT_TRUE(change.old_value()->Equals(&expected));
   }
   {
-    base::StringValue expected("new_value");
+    base::Value expected("new_value");
     EXPECT_TRUE(change.new_value()->Equals(&expected));
   }
 }
@@ -75,7 +73,8 @@ TEST(ValueStoreChangeTest, ToJson) {
       "key.with.dots", value->CreateDeepCopy(), value->CreateDeepCopy()));
 
   std::string json = ValueStoreChange::ToJson(change_list);
-  std::unique_ptr<base::Value> from_json(base::JSONReader::Read(json));
+  std::unique_ptr<base::Value> from_json(
+      base::JSONReader::ReadDeprecated(json));
   ASSERT_TRUE(from_json.get());
 
   DictionaryBuilder v1(*value);

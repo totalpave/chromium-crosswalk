@@ -4,6 +4,8 @@
 
 #include "chromeos/network/onc/onc_mapper.h"
 
+#include <utility>
+
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/values.h"
@@ -12,25 +14,23 @@
 namespace chromeos {
 namespace onc {
 
-Mapper::Mapper() {
-}
+Mapper::Mapper() = default;
 
-Mapper::~Mapper() {
-}
+Mapper::~Mapper() = default;
 
 std::unique_ptr<base::Value> Mapper::MapValue(
     const OncValueSignature& signature,
     const base::Value& onc_value,
     bool* error) {
   std::unique_ptr<base::Value> result_value;
-  switch (onc_value.GetType()) {
-    case base::Value::TYPE_DICTIONARY: {
+  switch (onc_value.type()) {
+    case base::Value::Type::DICTIONARY: {
       const base::DictionaryValue* dict = NULL;
       onc_value.GetAsDictionary(&dict);
       result_value = MapObject(signature, *dict, error);
       break;
     }
-    case base::Value::TYPE_LIST: {
+    case base::Value::Type::LIST: {
       const base::ListValue* list = NULL;
       onc_value.GetAsList(&list);
       result_value = MapArray(signature, *list, error);
@@ -80,7 +80,7 @@ void Mapper::MapFields(const OncValueSignature& object_signature,
     if (current_field_unknown)
       *found_unknown_field = true;
     else if (result_value.get() != NULL)
-      result->SetWithoutPathExpansion(it.key(), result_value.release());
+      result->SetWithoutPathExpansion(it.key(), std::move(result_value));
     else
       DCHECK(*nested_error);
   }
@@ -118,12 +118,11 @@ std::unique_ptr<base::ListValue> Mapper::MapArray(
   int original_index = 0;
   for (const auto& entry : onc_array) {
     std::unique_ptr<base::Value> result_entry;
-    result_entry = MapEntry(original_index,
-                            *array_signature.onc_array_entry_signature,
-                            *entry,
-                            nested_error);
+    result_entry =
+        MapEntry(original_index, *array_signature.onc_array_entry_signature,
+                 entry, nested_error);
     if (result_entry.get() != NULL)
-      result_array->Append(result_entry.release());
+      result_array->Append(std::move(result_entry));
     else
       DCHECK(*nested_error);
     ++original_index;

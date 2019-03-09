@@ -9,43 +9,77 @@
 #include <string>
 
 #include "base/macros.h"
+#include "base/strings/string_piece.h"
 #include "components/metrics/metrics_log_uploader.h"
-#include "net/url_request/url_fetcher_delegate.h"
+#include "third_party/metrics_proto/reporting_info.pb.h"
+#include "url/gurl.h"
 
-namespace net {
-class URLFetcher;
-class URLRequestContextGetter;
-}
+namespace network {
+class SharedURLLoaderFactory;
+class SimpleURLLoader;
+}  // namespace network
 
 namespace metrics {
 
 // Implementation of MetricsLogUploader using the Chrome network stack.
-class NetMetricsLogUploader : public MetricsLogUploader,
-                              public net::URLFetcherDelegate {
+class NetMetricsLogUploader : public MetricsLogUploader {
  public:
-  // Constructs a NetMetricsLogUploader with the specified request context and
-  // other params (see comments on MetricsLogUploader for details). The caller
-  // must ensure that |request_context_getter| remains valid for the lifetime
-  // of this class.
-  NetMetricsLogUploader(net::URLRequestContextGetter* request_context_getter,
-                        const std::string& server_url,
-                        const std::string& mime_type,
-                        const base::Callback<void(int)>& on_upload_complete);
+  // Constructs a NetMetricsLogUploader which uploads data to |server_url| with
+  // the specified |mime_type|. The |service_type| marks which service the
+  // data usage should be attributed to. The |on_upload_complete| callback will
+  // be called with the HTTP response code of the upload or with -1 on an error.
+  NetMetricsLogUploader(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      const GURL& server_url,
+      base::StringPiece mime_type,
+      MetricsLogUploader::MetricServiceType service_type,
+      const MetricsLogUploader::UploadCallback& on_upload_complete);
+
+  // This constructor allows a secondary non-HTTPS URL to be passed in as
+  // |insecure_server_url|. That URL is used as a fallback if a connection
+  // to |server_url| fails, requests are encrypted when sent to an HTTP URL.
+  NetMetricsLogUploader(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      const GURL& server_url,
+      const GURL& insecure_server_url,
+      base::StringPiece mime_type,
+      MetricsLogUploader::MetricServiceType service_type,
+      const MetricsLogUploader::UploadCallback& on_upload_complete);
+
   ~NetMetricsLogUploader() override;
 
   // MetricsLogUploader:
+  // Uploads a log to the server_url specified in the constructor.
   void UploadLog(const std::string& compressed_log_data,
-                 const std::string& log_hash) override;
+                 const std::string& log_hash,
+                 const std::string& log_signature,
+                 const ReportingInfo& reporting_info) override;
 
  private:
-  // net::URLFetcherDelegate:
-  void OnURLFetchComplete(const net::URLFetcher* source) override;
+  // Uploads a log to a URL passed as a parameter.
+  void UploadLogToURL(const std::string& compressed_log_data,
+                      const std::string& log_hash,
+                      const std::string& log_signature,
+                      const ReportingInfo& reporting_info,
+                      const GURL& url);
 
-  // The request context for fetches done using the network stack.
-  net::URLRequestContextGetter* const request_context_getter_;
+  // Calls |on_upload_complete_| with failure codes. Used when there's a local
+  // reason that prevented an upload over HTTP, such as an error encrpyting
+  // the payload.
+  void HTTPFallbackAborted();
 
+  void OnURLLoadComplete(std::unique_ptr<std::string> response_body);
+
+  // The URLLoader factory for loads done using the network stack.
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+
+  const GURL server_url_;
+  const GURL insecure_server_url_;
+  const std::string mime_type_;
+  const MetricsLogUploader ::MetricServiceType service_type_;
+  const MetricsLogUploader::UploadCallback on_upload_complete_;
   // The outstanding transmission appears as a URL Fetch operation.
-  std::unique_ptr<net::URLFetcher> current_fetch_;
+  std::unique_ptr<network::SimpleURLLoader> url_loader_;
 
   DISALLOW_COPY_AND_ASSIGN(NetMetricsLogUploader);
 };

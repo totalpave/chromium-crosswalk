@@ -4,15 +4,20 @@
 
 #include "ios/chrome/browser/signin/gaia_auth_fetcher_ios.h"
 
+#import <WebKit/WebKit.h>
 #include <memory>
 
-#import "base/mac/scoped_nsobject.h"
+#include "base/ios/ios_util.h"
+#include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_urls.h"
-#include "ios/chrome/browser/signin/gaia_auth_fetcher_ios_private.h"
-#include "ios/web/public/test/test_browser_state.h"
+#include "ios/chrome/browser/browser_state/test_chrome_browser_state.h"
+#import "ios/chrome/browser/signin/gaia_auth_fetcher_ios_wk_webview_bridge.h"
 #include "ios/web/public/test/test_web_thread_bundle.h"
 #include "net/url_request/test_url_fetcher_factory.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
@@ -20,20 +25,27 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
 namespace {
 
-class FakeGaiaAuthFetcherIOSBridge : public GaiaAuthFetcherIOSBridge {
+class FakeGaiaAuthFetcherIOSWKWebViewBridge
+    : public GaiaAuthFetcherIOSWKWebViewBridge {
  public:
-  FakeGaiaAuthFetcherIOSBridge(GaiaAuthFetcherIOS* fetcher,
-                               web::BrowserState* browser_state)
-      : GaiaAuthFetcherIOSBridge(fetcher, browser_state), mock_web_view_(nil) {}
+  FakeGaiaAuthFetcherIOSWKWebViewBridge(
+      GaiaAuthFetcherIOSBridge::GaiaAuthFetcherIOSBridgeDelegate* delegate,
+      web::BrowserState* browser_state)
+      : GaiaAuthFetcherIOSWKWebViewBridge(delegate, browser_state),
+        mock_web_view_(nil) {}
 
  private:
-  WKWebView* CreateWKWebView() override {
+  WKWebView* BuildWKWebView() override {
     if (!mock_web_view_) {
       mock_web_view_ = [OCMockObject niceMockForClass:[WKWebView class]];
     }
-    return [mock_web_view_ retain];
+    return mock_web_view_;
   }
   id mock_web_view_;
 };
@@ -53,31 +65,40 @@ class MockGaiaConsumer : public GaiaAuthConsumer {
 // Tests fixture for GaiaAuthFetcherIOS
 class GaiaAuthFetcherIOSTest : public PlatformTest {
  protected:
-  void SetUp() override {
-    PlatformTest::SetUp();
-    web::BrowserState::GetActiveStateManager(&browser_state_)->SetActive(true);
-    gaia_auth_fetcher_.reset(new GaiaAuthFetcherIOS(&consumer_, std::string(),
-                                                    nullptr, &browser_state_));
-    gaia_auth_fetcher_->bridge_.reset(new FakeGaiaAuthFetcherIOSBridge(
-        gaia_auth_fetcher_.get(), &browser_state_));
+  GaiaAuthFetcherIOSTest() {
+    browser_state_ = TestChromeBrowserState::Builder().Build();
+
+    ActiveStateManager::FromBrowserState(browser_state())->SetActive(true);
+    gaia_auth_fetcher_.reset(new GaiaAuthFetcherIOS(
+        &consumer_, gaia::GaiaSource::kChrome,
+        test_url_loader_factory_.GetSafeWeakWrapper(), browser_state()));
+    gaia_auth_fetcher_->bridge_.reset(new FakeGaiaAuthFetcherIOSWKWebViewBridge(
+        gaia_auth_fetcher_.get(), browser_state()));
   }
 
-  void TearDown() override {
+  ~GaiaAuthFetcherIOSTest() override {
     gaia_auth_fetcher_.reset();
-    web::BrowserState::GetActiveStateManager(&browser_state_)->SetActive(false);
-    PlatformTest::TearDown();
+    ActiveStateManager::FromBrowserState(browser_state())->SetActive(false);
   }
 
   GaiaAuthFetcherIOSBridge* GetBridge() {
     return gaia_auth_fetcher_->bridge_.get();
   }
 
-  id GetMockWKWebView() { return gaia_auth_fetcher_->bridge_->GetWKWebView(); }
+  ios::ChromeBrowserState* browser_state() { return browser_state_.get(); }
+
+  id GetMockWKWebView() {
+    GaiaAuthFetcherIOSWKWebViewBridge* wkWebviewBridge =
+        reinterpret_cast<GaiaAuthFetcherIOSWKWebViewBridge*>(
+            gaia_auth_fetcher_->bridge_.get());
+    return wkWebviewBridge->GetWKWebView();
+  }
 
   web::TestWebThreadBundle thread_bundle_;
   // BrowserState, required for WKWebView creation.
-  web::TestBrowserState browser_state_;
+  std::unique_ptr<ios::ChromeBrowserState> browser_state_;
   MockGaiaConsumer consumer_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
   std::unique_ptr<GaiaAuthFetcherIOS> gaia_auth_fetcher_;
 };
 
@@ -89,8 +110,7 @@ TEST_F(GaiaAuthFetcherIOSTest, StartOAuthLoginCancelled) {
   EXPECT_CALL(consumer_, OnClientLoginFailure(expected_error)).Times(1);
 
   [static_cast<WKWebView*>([GetMockWKWebView() expect])
-      loadHTMLString:[OCMArg any]
-             baseURL:[OCMArg any]];
+      loadRequest:[OCMArg any]];
   [[GetMockWKWebView() expect] stopLoading];
 
   gaia_auth_fetcher_->StartOAuthLogin("fake_token", "gaia");
@@ -105,7 +125,7 @@ TEST_F(GaiaAuthFetcherIOSTest, StartMergeSession) {
   EXPECT_CALL(consumer_, OnMergeSessionSuccess("data")).Times(1);
 
   [static_cast<WKWebView*>([[GetMockWKWebView() expect] andDo:^(NSInvocation*) {
-    GetBridge()->URLFetchSuccess("data");
+    GetBridge()->OnURLFetchSuccess("data", 200);
   }]) loadRequest:[OCMArg any]];
 
   gaia_auth_fetcher_->StartMergeSession("uber_token", "");
@@ -120,7 +140,7 @@ TEST_F(GaiaAuthFetcherIOSTest, StartLogOutError) {
   EXPECT_CALL(consumer_, OnLogOutFailure(expected_error)).Times(1);
 
   [static_cast<WKWebView*>([[GetMockWKWebView() expect] andDo:^(NSInvocation*) {
-    GetBridge()->URLFetchFailure(false);
+    GetBridge()->OnURLFetchFailure(net::ERR_FAILED, 500);
   }]) loadRequest:[OCMArg any]];
 
   gaia_auth_fetcher_->StartLogOut();
@@ -134,13 +154,12 @@ TEST_F(GaiaAuthFetcherIOSTest, StartGetCheckConnectionInfo) {
       "[{\"carryBackToken\": \"token1\", \"url\": \"http://www.google.com\"}]");
   EXPECT_CALL(consumer_, OnGetCheckConnectionInfoSuccess(data)).Times(1);
 
-  // Set up the fake URL Fetcher.
-  std::unique_ptr<net::FakeURLFetcherFactory> fake_url_fetcher_factory(
-      new net::FakeURLFetcherFactory(new net::URLFetcherImplFactory()));
-  fake_url_fetcher_factory->SetFakeResponse(
-      GaiaUrls::GetInstance()->GetCheckConnectionInfoURLWithSource(
-          std::string()),
-      data, net::HTTP_OK, net::URLRequestStatus::SUCCESS);
+  // Set up the fake response.
+  test_url_loader_factory_.AddResponse(
+      GaiaUrls::GetInstance()
+          ->GetCheckConnectionInfoURLWithSource(GaiaConstants::kChromeSource)
+          .spec(),
+      data);
 
   gaia_auth_fetcher_->StartGetCheckConnectionInfo();
   base::RunLoop().RunUntilIdle();
@@ -150,7 +169,7 @@ TEST_F(GaiaAuthFetcherIOSTest, StartGetCheckConnectionInfo) {
 // inactive.
 TEST_F(GaiaAuthFetcherIOSTest, OnInactive) {
   [[GetMockWKWebView() expect] stopLoading];
-  web::BrowserState::GetActiveStateManager(&browser_state_)->SetActive(false);
+  ActiveStateManager::FromBrowserState(browser_state())->SetActive(false);
   EXPECT_OCMOCK_VERIFY(GetMockWKWebView());
 }
 
@@ -163,12 +182,12 @@ TEST_F(GaiaAuthFetcherIOSTest, FetchOnActive) {
   // its navigation delegate are created, and the request is processed.
   [[GetMockWKWebView() expect] setNavigationDelegate:[OCMArg isNotNil]];
   [static_cast<WKWebView*>([[GetMockWKWebView() expect] andDo:^(NSInvocation*) {
-    GetBridge()->URLFetchSuccess("data");
+    GetBridge()->OnURLFetchSuccess("data", 200);
   }]) loadRequest:[OCMArg any]];
 
-  web::BrowserState::GetActiveStateManager(&browser_state_)->SetActive(false);
+  ActiveStateManager::FromBrowserState(browser_state())->SetActive(false);
   gaia_auth_fetcher_->StartMergeSession("uber_token", "");
-  web::BrowserState::GetActiveStateManager(&browser_state_)->SetActive(true);
+  ActiveStateManager::FromBrowserState(browser_state())->SetActive(true);
   EXPECT_OCMOCK_VERIFY(GetMockWKWebView());
 }
 
@@ -182,11 +201,11 @@ TEST_F(GaiaAuthFetcherIOSTest, StopOnInactiveReFetchOnActive) {
   [[GetMockWKWebView() expect] setNavigationDelegate:[OCMArg isNil]];
   [[GetMockWKWebView() expect] setNavigationDelegate:[OCMArg isNotNil]];
   [static_cast<WKWebView*>([[GetMockWKWebView() expect] andDo:^(NSInvocation*) {
-    GetBridge()->URLFetchSuccess("data");
+    GetBridge()->OnURLFetchSuccess("data", 200);
   }]) loadRequest:[OCMArg any]];
 
   gaia_auth_fetcher_->StartMergeSession("uber_token", "");
-  web::BrowserState::GetActiveStateManager(&browser_state_)->SetActive(false);
-  web::BrowserState::GetActiveStateManager(&browser_state_)->SetActive(true);
+  ActiveStateManager::FromBrowserState(browser_state())->SetActive(false);
+  ActiveStateManager::FromBrowserState(browser_state())->SetActive(true);
   EXPECT_OCMOCK_VERIFY(GetMockWKWebView());
 }

@@ -8,10 +8,15 @@
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/error_page/common/net_error_info.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/test/mock_navigation_handle.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "net/base/net_errors.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/page_transition_types.h"
+#include "url/gurl.h"
+
+#undef NO_ERROR  // Defined in winerror.h.
 
 using chrome_browser_net::NetErrorTabHelper;
 using error_page::DnsProbeStatus;
@@ -23,7 +28,11 @@ class TestNetErrorTabHelper : public NetErrorTabHelper {
         mock_probe_running_(false),
         last_status_sent_(error_page::DNS_PROBE_MAX),
         mock_sent_count_(0),
-        times_diagnostics_dialog_invoked_(0) {}
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+        times_download_page_later_invoked_(0),
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
+        times_diagnostics_dialog_invoked_(0) {
+  }
 
   void FinishProbe(DnsProbeStatus status) {
     EXPECT_TRUE(mock_probe_running_);
@@ -35,12 +44,33 @@ class TestNetErrorTabHelper : public NetErrorTabHelper {
   DnsProbeStatus last_status_sent() const { return last_status_sent_; }
   int mock_sent_count() const { return mock_sent_count_; }
 
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  using NetErrorTabHelper::OnDownloadPageLater;
+
+  const GURL& download_page_later_url() const {
+    return download_page_later_url_;
+  }
+
+  int times_download_page_later_invoked() const {
+    return times_download_page_later_invoked_;
+  }
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
+
   const std::string& network_diagnostics_url() const {
     return network_diagnostics_url_;
   }
 
   int times_diagnostics_dialog_invoked() const {
     return times_diagnostics_dialog_invoked_;
+  }
+
+  void SetCurrentTargetFrame(content::RenderFrameHost* render_frame_host) {
+    network_diagnostics_bindings_for_testing().SetCurrentTargetFrameForTesting(
+        render_frame_host);
+  }
+
+  chrome::mojom::NetworkDiagnostics* network_diagnostics_interface() {
+    return this;
   }
 
  private:
@@ -61,9 +91,20 @@ class TestNetErrorTabHelper : public NetErrorTabHelper {
     times_diagnostics_dialog_invoked_++;
   }
 
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  void DownloadPageLaterHelper(const GURL& url) override {
+    download_page_later_url_ = url;
+    times_download_page_later_invoked_++;
+  }
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
+
   bool mock_probe_running_;
   DnsProbeStatus last_status_sent_;
   int mock_sent_count_;
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  GURL download_page_later_url_;
+  int times_download_page_later_invoked_;
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
   std::string network_diagnostics_url_;
   int times_diagnostics_dialog_invoked_;
 };
@@ -71,8 +112,7 @@ class TestNetErrorTabHelper : public NetErrorTabHelper {
 class NetErrorTabHelperTest : public ChromeRenderViewHostTestHarness {
  protected:
   enum MainFrame { SUB_FRAME, MAIN_FRAME };
-  enum ErrorPage { NORMAL_PAGE, ERROR_PAGE };
-  enum ErrorType { DNS_ERROR, OTHER_ERROR };
+  enum ErrorType { DNS_ERROR, OTHER_ERROR, NO_ERROR };
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
@@ -97,38 +137,42 @@ class NetErrorTabHelperTest : public ChromeRenderViewHostTestHarness {
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
-  void StartProvisionalLoad(MainFrame main_frame, ErrorPage error_page) {
-    tab_helper_->DidStartProvisionalLoadForFrame(
-        (main_frame == MAIN_FRAME) ? main_rfh() : subframe_,
-        bogus_url_,  // validated_url
-        (error_page == ERROR_PAGE),
-        false);  // is_iframe_srcdoc
-  }
-
-  void CommitProvisionalLoad(MainFrame main_frame) {
-    tab_helper_->DidCommitProvisionalLoadForFrame(
-        (main_frame == MAIN_FRAME) ? main_rfh() : subframe_,
-        bogus_url_,  // url
-        ui::PAGE_TRANSITION_TYPED);
-  }
-
-  void FailProvisionalLoad(MainFrame main_frame, ErrorType error_type) {
-    int net_error;
-
+  void DidFinishNavigation(MainFrame main_frame,
+                           ErrorType error_type) {
+    net::Error net_error = net::OK;
     if (error_type == DNS_ERROR)
       net_error = net::ERR_NAME_NOT_RESOLVED;
     else
       net_error = net::ERR_TIMED_OUT;
-
-    tab_helper_->DidFailProvisionalLoad(
-        (main_frame == MAIN_FRAME) ? main_rfh() : subframe_,
-        bogus_url_,  // validated_url
-        net_error,
-        base::string16(),
-        false);
+    content::MockNavigationHandle navigation_handle(
+        bogus_url_, (main_frame == MAIN_FRAME) ? main_rfh() : subframe_);
+    navigation_handle.set_net_error_code(net_error);
+    navigation_handle.set_has_committed(true);
+    navigation_handle.set_is_error_page(true);
+    tab_helper_->DidFinishNavigation(&navigation_handle);
   }
 
   void FinishProbe(DnsProbeStatus status) { tab_helper_->FinishProbe(status); }
+
+  void LoadURL(const GURL& url, bool succeeded) {
+    if (succeeded) {
+      content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
+                                                                 url);
+    } else {
+      content::NavigationSimulator::NavigateAndFailFromBrowser(
+          web_contents(), url, net::ERR_TIMED_OUT);
+    }
+  }
+
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  void NoDownloadPageLaterForNonHttpSchemes(const char* url_string,
+                                            bool succeeded) {
+    GURL url(url_string);
+    LoadURL(url, succeeded);
+    tab_helper()->OnDownloadPageLater();
+    EXPECT_EQ(0, tab_helper()->times_download_page_later_invoked());
+  }
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
 
   bool probe_running() { return tab_helper_->mock_probe_running(); }
   DnsProbeStatus last_status_sent() { return tab_helper_->last_status_sent(); }
@@ -147,15 +191,13 @@ TEST_F(NetErrorTabHelperTest, Null) {
 }
 
 TEST_F(NetErrorTabHelperTest, MainFrameNonDnsError) {
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, OTHER_ERROR);
+  DidFinishNavigation(MAIN_FRAME, OTHER_ERROR);
   EXPECT_FALSE(probe_running());
   EXPECT_EQ(0, sent_count());
 }
 
 TEST_F(NetErrorTabHelperTest, NonMainFrameDnsError) {
-  StartProvisionalLoad(SUB_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(SUB_FRAME, DNS_ERROR);
+  DidFinishNavigation(SUB_FRAME, DNS_ERROR);
   EXPECT_FALSE(probe_running());
   EXPECT_EQ(0, sent_count());
 }
@@ -165,90 +207,16 @@ TEST_F(NetErrorTabHelperTest, NonMainFrameDnsError) {
 // is going on, then fails over to the normal error page if and when Link
 // Doctor fails to load or declines to provide a page.
 
-TEST_F(NetErrorTabHelperTest, ProbeResponseBeforeFirstCommit) {
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  FinishProbe(error_page::DNS_PROBE_FINISHED_NXDOMAIN);
-  EXPECT_FALSE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
-  EXPECT_FALSE(probe_running());
-  EXPECT_EQ(1, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NXDOMAIN, last_status_sent());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  EXPECT_FALSE(probe_running());
-  EXPECT_EQ(1, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
-  EXPECT_FALSE(probe_running());
-  EXPECT_EQ(2, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NXDOMAIN, last_status_sent());
-}
-
-TEST_F(NetErrorTabHelperTest, ProbeResponseBetweenFirstAndSecondCommit) {
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
+TEST_F(NetErrorTabHelperTest, ProbeResponse) {
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
   EXPECT_TRUE(probe_running());
   EXPECT_EQ(1, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
 
   FinishProbe(error_page::DNS_PROBE_FINISHED_NXDOMAIN);
   EXPECT_FALSE(probe_running());
   EXPECT_EQ(2, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NXDOMAIN, last_status_sent());
 
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  EXPECT_FALSE(probe_running());
-  EXPECT_EQ(2, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
-  EXPECT_FALSE(probe_running());
-  EXPECT_EQ(3, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NXDOMAIN, last_status_sent());
-}
-
-TEST_F(NetErrorTabHelperTest, ProbeResponseAfterSecondCommit) {
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(1, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(1, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(2, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
-
-  FinishProbe(error_page::DNS_PROBE_FINISHED_NXDOMAIN);
+  DidFinishNavigation(MAIN_FRAME, NO_ERROR);
   EXPECT_FALSE(probe_running());
   EXPECT_EQ(3, sent_count());
   EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NXDOMAIN, last_status_sent());
@@ -257,129 +225,87 @@ TEST_F(NetErrorTabHelperTest, ProbeResponseAfterSecondCommit) {
 // Send result even if a new page load has started; the error page is still
 // visible, and the user might cancel the load.
 TEST_F(NetErrorTabHelperTest, ProbeResponseAfterNewStart) {
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
   EXPECT_TRUE(probe_running());
   EXPECT_EQ(1, sent_count());
   EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
 
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(1, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
   EXPECT_TRUE(probe_running());
   EXPECT_EQ(2, sent_count());
   EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
 
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
+  DidFinishNavigation(MAIN_FRAME, NO_ERROR);
   EXPECT_TRUE(probe_running());
-  EXPECT_EQ(2, sent_count());
+  EXPECT_EQ(3, sent_count());
 
   FinishProbe(error_page::DNS_PROBE_FINISHED_NXDOMAIN);
   EXPECT_FALSE(probe_running());
-  EXPECT_EQ(3, sent_count());
+  EXPECT_EQ(4, sent_count());
   EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NXDOMAIN, last_status_sent());
 }
 
 // Don't send result if a new page has committed; the result would go to the
 // wrong page, and the error page is gone anyway.
 TEST_F(NetErrorTabHelperTest, ProbeResponseAfterNewCommit) {
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(1, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
   EXPECT_TRUE(probe_running());
   EXPECT_EQ(1, sent_count());
 
-  CommitProvisionalLoad(MAIN_FRAME);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(2, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
-
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(2, sent_count());
-
-  CommitProvisionalLoad(MAIN_FRAME);
+  DidFinishNavigation(MAIN_FRAME, NO_ERROR);
   EXPECT_TRUE(probe_running());
   EXPECT_EQ(2, sent_count());
 
   FinishProbe(error_page::DNS_PROBE_FINISHED_NXDOMAIN);
   EXPECT_FALSE(probe_running());
-  EXPECT_EQ(2, sent_count());
+  EXPECT_EQ(3, sent_count());
 }
 
 TEST_F(NetErrorTabHelperTest, MultipleDnsErrorsWithProbesWithoutErrorPages) {
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  FinishProbe(error_page::DNS_PROBE_FINISHED_NXDOMAIN);
-  EXPECT_FALSE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  FinishProbe(error_page::DNS_PROBE_FINISHED_NO_INTERNET);
-  EXPECT_FALSE(probe_running());
-  EXPECT_EQ(0, sent_count());
-}
-
-TEST_F(NetErrorTabHelperTest, MultipleDnsErrorsWithProbesAndErrorPages) {
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(0, sent_count());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  CommitProvisionalLoad(MAIN_FRAME);
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
   EXPECT_TRUE(probe_running());
   EXPECT_EQ(1, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
 
   FinishProbe(error_page::DNS_PROBE_FINISHED_NXDOMAIN);
   EXPECT_FALSE(probe_running());
   EXPECT_EQ(2, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NXDOMAIN, last_status_sent());
 
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(2, sent_count());
-
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  CommitProvisionalLoad(MAIN_FRAME);
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
   EXPECT_TRUE(probe_running());
   EXPECT_EQ(3, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
 
   FinishProbe(error_page::DNS_PROBE_FINISHED_NO_INTERNET);
   EXPECT_FALSE(probe_running());
   EXPECT_EQ(4, sent_count());
+}
+
+TEST_F(NetErrorTabHelperTest, MultipleDnsErrorsWithProbesAndErrorPages) {
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
+  EXPECT_TRUE(probe_running());
+  EXPECT_EQ(1, sent_count());
+
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
+  EXPECT_TRUE(probe_running());
+  EXPECT_EQ(2, sent_count());
+  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
+
+  FinishProbe(error_page::DNS_PROBE_FINISHED_NXDOMAIN);
+  EXPECT_FALSE(probe_running());
+  EXPECT_EQ(3, sent_count());
+  EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NXDOMAIN, last_status_sent());
+
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
+  EXPECT_TRUE(probe_running());
+  EXPECT_EQ(4, sent_count());
+
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
+  EXPECT_TRUE(probe_running());
+  EXPECT_EQ(5, sent_count());
+  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
+
+  FinishProbe(error_page::DNS_PROBE_FINISHED_NO_INTERNET);
+  EXPECT_FALSE(probe_running());
+  EXPECT_EQ(6, sent_count());
   EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NO_INTERNET,
             last_status_sent());
 }
@@ -387,43 +313,34 @@ TEST_F(NetErrorTabHelperTest, MultipleDnsErrorsWithProbesAndErrorPages) {
 // If multiple DNS errors occur in a row before a probe result, don't start
 // multiple probes.
 TEST_F(NetErrorTabHelperTest, CoalesceFailures) {
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  CommitProvisionalLoad(MAIN_FRAME);
-  EXPECT_TRUE(probe_running());
-  EXPECT_EQ(1, sent_count());
-  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
-
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  CommitProvisionalLoad(MAIN_FRAME);
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
   EXPECT_TRUE(probe_running());
   EXPECT_EQ(2, sent_count());
   EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
 
-  StartProvisionalLoad(MAIN_FRAME, NORMAL_PAGE);
-  FailProvisionalLoad(MAIN_FRAME, DNS_ERROR);
-  StartProvisionalLoad(MAIN_FRAME, ERROR_PAGE);
-  CommitProvisionalLoad(MAIN_FRAME);
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
   EXPECT_TRUE(probe_running());
   EXPECT_EQ(3, sent_count());
   EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
 
+  DidFinishNavigation(MAIN_FRAME, DNS_ERROR);
+  EXPECT_TRUE(probe_running());
+  EXPECT_EQ(4, sent_count());
+  EXPECT_EQ(error_page::DNS_PROBE_STARTED, last_status_sent());
+
   FinishProbe(error_page::DNS_PROBE_FINISHED_NXDOMAIN);
   EXPECT_FALSE(probe_running());
-  EXPECT_EQ(4, sent_count());
+  EXPECT_EQ(5, sent_count());
   EXPECT_EQ(error_page::DNS_PROBE_FINISHED_NXDOMAIN, last_status_sent());
 }
 
 // Makes sure that URLs are sanitized before running the platform network
 // diagnostics tool.
 TEST_F(NetErrorTabHelperTest, SanitizeDiagnosticsUrl) {
-  content::RenderFrameHost* rfh = web_contents()->GetMainFrame();
-  rfh->OnMessageReceived(ChromeViewHostMsg_RunNetworkDiagnostics(
-      rfh->GetRoutingID(),
-      GURL("http://foo:bar@somewhere:123/hats?for#goats")));
+  tab_helper()->SetCurrentTargetFrame(web_contents()->GetMainFrame());
+  tab_helper()->network_diagnostics_interface()->RunNetworkDiagnostics(
+      GURL("http://foo:bar@somewhere:123/hats?for#goats"));
   EXPECT_EQ("http://somewhere:123/",
             tab_helper()->network_diagnostics_url());
   EXPECT_EQ(1, tab_helper()->times_diagnostics_dialog_invoked());
@@ -442,9 +359,46 @@ TEST_F(NetErrorTabHelperTest, NoDiagnosticsForNonHttpSchemes) {
   };
 
   for (const char* url : kUrls) {
-    content::RenderFrameHost* rfh = web_contents()->GetMainFrame();
-    rfh->OnMessageReceived(ChromeViewHostMsg_RunNetworkDiagnostics(
-        rfh->GetRoutingID(), GURL(url)));
+    tab_helper()->SetCurrentTargetFrame(web_contents()->GetMainFrame());
+    tab_helper()->network_diagnostics_interface()
+        ->RunNetworkDiagnostics(GURL(url));
     EXPECT_EQ(0, tab_helper()->times_diagnostics_dialog_invoked());
   }
 }
+
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+TEST_F(NetErrorTabHelperTest, DownloadPageLater) {
+  GURL url("http://somewhere:123/");
+  LoadURL(url, false /*succeeded*/);
+  tab_helper()->OnDownloadPageLater();
+  EXPECT_EQ(url, tab_helper()->download_page_later_url());
+  EXPECT_EQ(1, tab_helper()->times_download_page_later_invoked());
+}
+
+TEST_F(NetErrorTabHelperTest, NoDownloadPageLaterOnNonErrorPage) {
+  GURL url("http://somewhere:123/");
+  LoadURL(url, true /*succeeded*/);
+  tab_helper()->OnDownloadPageLater();
+  EXPECT_EQ(0, tab_helper()->times_download_page_later_invoked());
+}
+
+// Makes sure that "Download page later" isn't run on URLs with non-HTTP/HTTPS
+// schemes.
+// NOTE: the test harness code in this file and in TestRendererHost don't always
+// deal with pending RFH correctly. This works because most tests only load
+// once. So workaround it by puting each test case in a separate test.
+TEST_F(NetErrorTabHelperTest, NoDownloadPageLaterForNonHttpSchemes1) {
+  NoDownloadPageLaterForNonHttpSchemes("file:///blah/blah", false);
+}
+
+TEST_F(NetErrorTabHelperTest, NoDownloadPageLaterForNonHttpSchemes2) {
+  NoDownloadPageLaterForNonHttpSchemes("chrome://blah/", false);
+}
+
+TEST_F(NetErrorTabHelperTest, NoDownloadPageLaterForNonHttpSchemes3) {
+  // about:blank always succeeds, and the test harness won't handle URLs that
+  // don't go to the network failing.
+  NoDownloadPageLaterForNonHttpSchemes("about:blank", true);
+}
+
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)

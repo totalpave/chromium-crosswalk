@@ -8,18 +8,27 @@
 #include <jni.h>
 #include <string>
 
-#include "base/macros.h"
+#include "base/android/scoped_java_ref.h"
 
 class AccountFetcherService;
 
 class ChildAccountInfoFetcherAndroid {
  public:
-  static void StartFetchingChildAccountInfo(AccountFetcherService* service,
-                                            const std::string& account_id);
-  // Register JNI methods.
-  static bool Register(JNIEnv* env);
+  static std::unique_ptr<ChildAccountInfoFetcherAndroid> Create(
+      AccountFetcherService* service,
+      const std::string& account_id);
+  ~ChildAccountInfoFetcherAndroid();
 
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ChildAccountInfoFetcherAndroid);
+  static void InitializeForTests();
+
+ private:
+  ChildAccountInfoFetcherAndroid(AccountFetcherService* service,
+                                 const std::string& account_id,
+                                 const std::string& account_name);
+
+  base::android::ScopedJavaGlobalRef<jobject> j_child_account_info_fetcher_;
+
+  DISALLOW_COPY_AND_ASSIGN(ChildAccountInfoFetcherAndroid);
 };
 
 #endif  // COMPONENTS_SIGNIN_CORE_BROWSER_CHILD_ACCOUNT_INFO_FETCHER_ANDROID_H_

@@ -7,6 +7,13 @@ for both Android and iOS. On Android, Cronet offers its own Java asynchronous
 API as well as support for the [java.net.HttpURLConnection] API.
 This document gives a brief introduction to using these two Java APIs.
 
+For instructions on checking out and building Cronet see
+[Cronet build instructions](build_instructions.md).
+
+Testing information is available on the [native
+API](native/test_instructions.md) and [Android
+API](android/test_instructions.md) pages.
+
 ### Basics
 First you will need to extend `UrlRequest.Callback` to handle
 events during the lifetime of a request. For example:
@@ -17,10 +24,10 @@ events during the lifetime of a request. For example:
                 UrlResponseInfo responseInfo, String newLocationUrl) {
             if (followRedirect) {
                 // Let's tell Cronet to follow the redirect!
-                mRequest.followRedirect();
+                request.followRedirect();
             } else {
                 // Not worth following the redirect? Abandon the request.
-                mRequest.cancel();
+                request.cancel();
             }
         }
 
@@ -37,7 +44,7 @@ events during the lifetime of a request. For example:
                  // errors from Cronet's perspective since the response is
                  // successfully read.
              }
-             responseHeaders = responseInfo.getAllHeaders();
+             mResponseHeaders = responseInfo.getAllHeaders();
         }
 
         @Override
@@ -47,7 +54,7 @@ events during the lifetime of a request. For example:
              doSomethingWithResponseData(byteBuffer);
              // Let's tell Cronet to continue reading the response body or
              // inform us that the response is complete!
-             request.read(myBuffer);
+             request.read(mBuffer);
         }
 
         @Override
@@ -58,7 +65,7 @@ events during the lifetime of a request. For example:
 
         @Override
         public void onFailed(UrlRequest request,
-                UrlResponseInfo responseInfo, UrlRequestException error) {
+                UrlResponseInfo responseInfo, CronetException error) {
              // Request has failed. responseInfo might be null.
              Log.e("MyCallback", "Request failed. " + error.getMessage());
              // Maybe handle error here. Typical errors include hostname
@@ -72,8 +79,8 @@ Make a request like this:
     CronetEngine engine = engineBuilder.build();
     Executor executor = Executors.newSingleThreadExecutor();
     MyCallback callback = new MyCallback();
-    UrlRequest.Builder requestBuilder = new UrlRequest.Builder(
-            "https://www.example.com", callback, executor, engine);
+    UrlRequest.Builder requestBuilder = engine.newUrlRequestBuilder(
+            "https://www.example.com", callback, executor);
     UrlRequest request = requestBuilder.build();
     request.start();
 
@@ -114,11 +121,11 @@ invoked again. For more details, please see the API reference.
 Various configuration options are available via the `CronetEngine.Builder`
 object.
 
-Enabling HTTP/2, QUIC, or SDCH:
+Enabling HTTP/2 and QUIC:
 
 - For Example:
 
-        engineBuilder.enableSPDY(true).enableQUIC(true).enableSDCH(true);
+        engineBuilder.enableHttp2(true).enableQuic(true);
 
 Controlling the cache:
 

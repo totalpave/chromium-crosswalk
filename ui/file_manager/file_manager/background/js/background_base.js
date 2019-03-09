@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 /** @typedef {function(!Array<string>):!Promise} */
-var LaunchHandler;
+let LaunchHandler;
 
 /**
  * Root class of the background page.
@@ -12,20 +12,14 @@ var LaunchHandler;
  */
 function BackgroundBase() {
   /**
-   * Map of all currently open app windows. The key is an app ID.
-   * @type {Object<chrome.app.window.AppWindow>}
-   */
-  this.appWindows = {};
-
-  /**
    * Map of all currently open file dialogs. The key is an app ID.
    * @type {!Object<!Window>}
    */
   this.dialogs = {};
 
   // Initializes the strings. This needs for the volume manager.
-  this.initializationPromise_ = new Promise(function(fulfill, reject) {
-    chrome.fileManagerPrivate.getStrings(function(stringData) {
+  this.initializationPromise_ = new Promise((fulfill, reject) => {
+    chrome.fileManagerPrivate.getStrings(stringData => {
       if (chrome.runtime.lastError) {
         console.error(chrome.runtime.lastError.message);
         return;
@@ -44,20 +38,6 @@ function BackgroundBase() {
 }
 
 /**
- * Gets similar windows, it means with the same initial url.
- * @param {string} url URL that the obtained windows have.
- * @return {Array<chrome.app.window.AppWindow>} List of similar windows.
- */
-BackgroundBase.prototype.getSimilarWindows = function(url) {
-  var result = [];
-  for (var appID in this.appWindows) {
-    if (this.appWindows[appID].contentWindow.appInitialURL === url)
-      result.push(this.appWindows[appID]);
-  }
-  return result;
-};
-
-/**
  * Called when an app is launched.
  *
  * @param {!Object} launchData Launch data. See the manual of chrome.app.runtime
@@ -65,16 +45,17 @@ BackgroundBase.prototype.getSimilarWindows = function(url) {
  */
 BackgroundBase.prototype.onLaunched_ = function(launchData) {
   // Skip if files are not selected.
-  if (!launchData || !launchData.items || launchData.items.length == 0)
+  if (!launchData || !launchData.items || launchData.items.length == 0) {
     return;
+  }
 
-  this.initializationPromise_.then(function() {
+  this.initializationPromise_.then(() => {
     // Volume list needs to be initialized (more precisely,
     // chrome.fileSystem.requestFileSystem needs to be called to grant access)
     // before resolveIsolatedEntries().
-    return VolumeManager.getInstance();
-  }).then(function() {
-    var isolatedEntries = launchData.items.map(function(item) {
+    return volumeManagerFactory.getInstance();
+  }).then(() => {
+    const isolatedEntries = launchData.items.map(item => {
       return item.entry;
     });
 
@@ -84,12 +65,13 @@ BackgroundBase.prototype.onLaunched_ = function(launchData) {
     // their parent directory.
     chrome.fileManagerPrivate.resolveIsolatedEntries(
         isolatedEntries,
-        function(externalEntries) {
-          var urls = util.entriesToURLs(externalEntries);
-          if (this.launchHandler_)
+        externalEntries => {
+          const urls = util.entriesToURLs(externalEntries);
+          if (this.launchHandler_) {
             this.launchHandler_(urls);
-        }.bind(this));
-  }.bind(this));
+          }
+        });
+  });
 };
 
 /**
@@ -103,5 +85,5 @@ BackgroundBase.prototype.setLaunchHandler = function(handler) {
 /**
  * Called when an app is restarted.
  */
-BackgroundBase.prototype.onRestarted_ = function() {
+BackgroundBase.prototype.onRestarted_ = () => {
 };

@@ -4,150 +4,271 @@
 
 package org.chromium.chrome.browser.webapps;
 
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.DialogInterface;
 import android.graphics.Bitmap;
+import android.graphics.drawable.Icon;
+import android.os.Build;
 import android.support.v7.app.AlertDialog;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.view.View;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.RatingBar;
+import android.widget.TextView;
 
 import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.banners.AppBannerManager;
 
 /**
- * Helper class showing the UI regarding Add to Homescreen. This class delegates
- * most of the logic to AddToHomescreenDialogHelper.
+ * Displays the "Add to Homescreen" dialog, which contains a (possibly editable) title, icon, and
+ * possibly an origin.
+ *
+ * When show() is invoked, the dialog is shown immediately. A spinner is displayed if any data is
+ * not yet fetched, and accepting the dialog is disabled until all data is available and in its
+ * place on the screen.
  */
-public class AddToHomescreenDialog {
-    private static AlertDialog sCurrentDialog;
+public class AddToHomescreenDialog implements View.OnClickListener {
+    /**
+     * The delegate for which this dialog is displayed. Used by the dialog to indicate when the user
+     * accedes to adding to home screen, and when the dialog is dismissed.
+     */
+    public static interface Delegate {
+        /**
+         * Called when the user accepts adding the item to the home screen with the provided title.
+         */
+        void addToHomescreen(String title);
+
+        /**
+         * Called when the user wants to view a native app in the Play Store.
+         */
+        void onNativeAppDetailsRequested();
+
+        /**
+         * Called when the dialog's lifetime is over and it disappears from the screen.
+         */
+        void onDialogDismissed();
+    }
+
+    private AlertDialog mDialog;
+    private View mProgressBarView;
+    private ImageView mIconView;
+
+    /**
+     * The {@mShortcutTitleInput} and the {@mAppLayout} are mutually exclusive, depending on whether
+     * the home screen item is a bookmark shortcut or a web/native app.
+     */
+    private EditText mShortcutTitleInput;
+    private LinearLayout mAppLayout;
+
+    private TextView mAppNameView;
+    private TextView mAppOriginView;
+    private RatingBar mAppRatingBar;
+    private ImageView mPlayLogoView;
+
+    private Activity mActivity;
+    private Delegate mDelegate;
+
+    private boolean mHasIcon;
+
+    public AddToHomescreenDialog(Activity activity, Delegate delegate) {
+        mActivity = activity;
+        mDelegate = delegate;
+    }
 
     @VisibleForTesting
-    public static AlertDialog getCurrentDialogForTest() {
-        return sCurrentDialog;
+    public AlertDialog getAlertDialogForTesting() {
+        return mDialog;
     }
 
     /**
      * Shows the dialog for adding a shortcut to the home screen.
      * @param activity The current activity in which to create the dialog.
-     * @param currentTab The current tab for which the shortcut is being created.
      */
-    public static void show(final Activity activity, final Tab currentTab) {
-        View view = activity.getLayoutInflater().inflate(
-                R.layout.add_to_homescreen_dialog, null);
-        AlertDialog.Builder builder = new AlertDialog.Builder(activity, R.style.AlertDialogTheme)
-                .setTitle(R.string.menu_add_to_homescreen)
-                .setNegativeButton(R.string.cancel,
-                        new DialogInterface.OnClickListener() {
+    public void show() {
+        View view = mActivity.getLayoutInflater().inflate(R.layout.add_to_homescreen_dialog, null);
+        AlertDialog.Builder builder =
+                new AlertDialog.Builder(mActivity, R.style.Theme_Chromium_AlertDialog)
+                        .setTitle(AppBannerManager.getHomescreenLanguageOption())
+                        .setNegativeButton(R.string.cancel, new DialogInterface.OnClickListener() {
                             @Override
                             public void onClick(DialogInterface dialog, int id) {
                                 dialog.cancel();
                             }
                         });
 
-        final AlertDialog dialog = builder.create();
-        dialog.getDelegate().setHandleNativeActionModesEnabled(false);
+        mDialog = builder.create();
+        mDialog.getDelegate().setHandleNativeActionModesEnabled(false);
         // On click of the menu item for "add to homescreen", an alert dialog pops asking the user
         // if the title needs to be edited. On click of "Add", shortcut is created. Default
-        // title is the title of the page. OK button is disabled if the title text is empty.
-        final View progressBarView = view.findViewById(R.id.spinny);
-        final ImageView iconView = (ImageView) view.findViewById(R.id.icon);
-        final EditText input = (EditText) view.findViewById(R.id.text);
-        input.setEnabled(false);
+        // title is the title of the page.
+        mProgressBarView = view.findViewById(R.id.spinny);
+        mIconView = (ImageView) view.findViewById(R.id.icon);
+        mShortcutTitleInput = (EditText) view.findViewById(R.id.text);
+        mAppLayout = (LinearLayout) view.findViewById(R.id.app_info);
+
+        mAppNameView = (TextView) mAppLayout.findViewById(R.id.name);
+        mAppOriginView = (TextView) mAppLayout.findViewById(R.id.origin);
+        mAppRatingBar = (RatingBar) mAppLayout.findViewById(R.id.control_rating);
+        mPlayLogoView = (ImageView) view.findViewById(R.id.play_logo);
+
+        // The dialog's text field is disabled till the "user title" is fetched,
+        mShortcutTitleInput.setVisibility(View.INVISIBLE);
 
         view.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
             public void onLayoutChange(View v, int left, int top, int right, int bottom,
                     int oldLeft, int oldTop, int oldRight, int oldBottom) {
-                if (progressBarView.getMeasuredHeight() == input.getMeasuredHeight()
-                        && input.getBackground() != null) {
+                if (mProgressBarView.getMeasuredHeight() == mShortcutTitleInput.getMeasuredHeight()
+                        && mShortcutTitleInput.getBackground() != null) {
                     // Force the text field to align better with the icon by accounting for the
                     // padding introduced by the background drawable.
-                    input.getLayoutParams().height =
-                            progressBarView.getMeasuredHeight() + input.getPaddingBottom();
+                    mShortcutTitleInput.getLayoutParams().height =
+                            mProgressBarView.getMeasuredHeight()
+                            + mShortcutTitleInput.getPaddingBottom();
                     v.requestLayout();
                     v.removeOnLayoutChangeListener(this);
                 }
             }
         });
 
-        final AddToHomescreenDialogHelper dialogHelper =
-                new AddToHomescreenDialogHelper(activity.getApplicationContext(), currentTab);
-
-        // Initializing the AddToHomescreenDialogHelper is asynchronous. Until
-        // it is initialized, the UI will show a disabled text field and OK
-        // buttons. They will be enabled and pre-filled as soon as the
-        // onInitialized callback will be run. The user will still be able to
-        // cancel the operation.
-        dialogHelper.initialize(new AddToHomescreenDialogHelper.Observer() {
+        // The "Add" button should be disabled if the dialog's text field is empty.
+        mShortcutTitleInput.addTextChangedListener(new TextWatcher() {
             @Override
-            public void onUserTitleAvailable(String title) {
-                input.setEnabled(true);
-                input.setText(title);
-            }
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
 
             @Override
-            public void onIconAvailable(Bitmap icon) {
-                progressBarView.setVisibility(View.GONE);
-                iconView.setVisibility(View.VISIBLE);
-                iconView.setImageBitmap(icon);
-                dialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(true);
-            }
-        });
-
-        input.addTextChangedListener(new TextWatcher() {
-            @Override
-            public void onTextChanged(CharSequence s, int start, int before, int count) {
-            }
-
-            @Override
-            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-            }
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
 
             @Override
             public void afterTextChanged(Editable editableText) {
-                if (TextUtils.isEmpty(editableText)) {
-                    dialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(false);
-                } else {
-                    dialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(true);
-                }
+                updateAddButtonEnabledState();
             }
         });
 
-        dialog.setView(view);
-        dialog.setButton(DialogInterface.BUTTON_POSITIVE,
-                activity.getResources().getString(R.string.add),
+        mDialog.setView(view);
+        mDialog.setButton(DialogInterface.BUTTON_POSITIVE,
+                mActivity.getResources().getString(R.string.add),
                 new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int id) {
-                        dialogHelper.addShortcut(input.getText().toString());
+                        mDelegate.addToHomescreen(mShortcutTitleInput.getText().toString());
                     }
                 });
 
-        // The "OK" button should only be shown when |dialogHelper| is
-        // initialized, it should be kept disabled until then.
-        dialog.setOnShowListener(new DialogInterface.OnShowListener() {
+        mDialog.setOnShowListener(new DialogInterface.OnShowListener() {
             @Override
             public void onShow(DialogInterface d) {
-                dialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(
-                        dialogHelper.isInitialized());
+                updateAddButtonEnabledState();
             }
         });
 
-        // We need to keep track of the current dialog for testing purposes.
-        sCurrentDialog = dialog;
-        dialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
+        mDialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
             @Override
             public void onDismiss(DialogInterface dialog) {
-                sCurrentDialog = null;
-                dialogHelper.destroy();
+                mDialog = null;
+                mDelegate.onDialogDismissed();
             }
         });
 
-        dialog.show();
+        mDialog.show();
+    }
+
+    /**
+     * Called when the home screen icon title (and possibly information from the web manifest) is
+     * available. Used for web apps and bookmark shortcuts.
+     * @param title    Text to be displayed in the title field.
+     * @param url      URL of the web app/shortcut.
+     * @param isWebapp True if this is for a web app, and false otherwise.
+     */
+    public void onUserTitleAvailable(String title, String url, boolean isWebapp) {
+        // Users may edit the title of bookmark shortcuts, but we respect web app names and do not
+        // let users change them.
+        if (isWebapp) {
+            mShortcutTitleInput.setVisibility(View.GONE);
+            mAppNameView.setText(title);
+            mAppOriginView.setText(url);
+            mAppRatingBar.setVisibility(View.GONE);
+            mPlayLogoView.setVisibility(View.GONE);
+            mAppLayout.setVisibility(View.VISIBLE);
+            return;
+        }
+
+        mShortcutTitleInput.setText(title);
+        mShortcutTitleInput.setVisibility(View.VISIBLE);
+    }
+
+    /**
+     * Called when the home screen icon title, install text, and app rating are available. Used for
+     * native apps.
+     * @param title       Text to be displayed in the title field
+     * @param installText String to be displayed on the positive button
+     * @param rating      The rating of the app in the store.
+     */
+    public void onUserTitleAvailable(String title, String installText, float rating) {
+        mShortcutTitleInput.setVisibility(View.GONE);
+        mAppNameView.setText(title);
+        mAppOriginView.setVisibility(View.GONE);
+        mAppRatingBar.setRating(rating);
+        mPlayLogoView.setImageResource(R.drawable.google_play);
+        mAppLayout.setVisibility(View.VISIBLE);
+
+        // Update the text on the primary button.
+        Button button = mDialog.getButton(DialogInterface.BUTTON_POSITIVE);
+        button.setText(installText);
+        button.setContentDescription(mActivity.getString(
+                R.string.app_banner_view_native_app_install_accessibility, installText));
+
+        // Clicking on the app title or the icon will open the Play Store for more details.
+        mAppNameView.setOnClickListener(this);
+        mIconView.setOnClickListener(this);
+    }
+
+    /**
+     * Called when the home screen icon is available. Must be called after onUserTitleAvailable().
+     * @param icon that will be used in the launcher.
+     */
+    public void onIconAvailable(Bitmap icon) {
+        mIconView.setImageBitmap(icon);
+        setIconAvailable();
+    }
+
+    /**
+     * Called when the home screen icon is available and was generated to be an Android adaptable
+     * icon. Must be called after onUserTitleAvailable().
+     * @param icon that will be used in the launcher.
+     */
+    @TargetApi(Build.VERSION_CODES.O)
+    public void onAdaptableIconAvailable(Bitmap icon) {
+        mIconView.setImageIcon(Icon.createWithAdaptiveBitmap(icon));
+        setIconAvailable();
+    }
+
+    private void setIconAvailable() {
+        mProgressBarView.setVisibility(View.GONE);
+        mIconView.setVisibility(View.VISIBLE);
+        mHasIcon = true;
+        updateAddButtonEnabledState();
+    }
+
+    @Override
+    public void onClick(View v) {
+        if (v == mAppNameView || v == mIconView) {
+            mDelegate.onNativeAppDetailsRequested();
+            mDialog.cancel();
+        }
+    }
+
+    void updateAddButtonEnabledState() {
+        boolean enable = mHasIcon
+                && (!TextUtils.isEmpty(mShortcutTitleInput.getText())
+                           || mAppLayout.getVisibility() == View.VISIBLE);
+        mDialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(enable);
     }
 }

@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -22,8 +23,8 @@
 #include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/extension_constants.h"
+#include "chrome/common/extensions/extension_test_util.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
@@ -36,10 +37,10 @@
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/customization/customization_document.h"
-#include "chrome/browser/chromeos/login/users/scoped_user_manager_enabler.h"
+#include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
 #include "chromeos/system/fake_statistics_provider.h"
 #include "chromeos/system/statistics_provider.h"
-#include "components/user_manager/fake_user_manager.h"
+#include "components/user_manager/scoped_user_manager.h"
 #endif
 
 using ::testing::NotNull;
@@ -62,8 +63,8 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
 
   void InitServiceWithExternalProviders() {
 #if defined(OS_CHROMEOS)
-    chromeos::ScopedUserManagerEnabler scoped_user_manager(
-        new user_manager::FakeUserManager);
+    user_manager::ScopedUserManager scoped_user_manager(
+        std::make_unique<chromeos::FakeChromeUserManager>());
 #endif
     InitializeExtensionServiceWithUpdaterAndPrefs();
 
@@ -79,11 +80,8 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
     extensions::ExternalProviderImpl::CreateExternalProviders(
         service_, profile_.get(), &providers);
 
-    for (ProviderCollection::iterator i = providers.begin();
-         i != providers.end();
-         ++i) {
-      service_->AddProviderForTesting(i->release());
-    }
+    for (std::unique_ptr<ExternalProviderInterface>& provider : providers)
+      service_->AddProviderForTesting(std::move(provider));
   }
 
   void InitializeExtensionServiceWithUpdaterAndPrefs() {
@@ -102,16 +100,15 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
     ExtensionServiceTestBase::SetUp();
     test_server_.reset(new EmbeddedTestServer());
 
-    ASSERT_TRUE(test_server_->Start());
     test_server_->RegisterRequestHandler(
         base::Bind(&ExternalProviderImplTest::HandleRequest,
                    base::Unretained(this)));
+    ASSERT_TRUE(test_server_->Start());
 
     test_extension_cache_.reset(new ExtensionCacheFake());
 
-    base::CommandLine* cmdline = base::CommandLine::ForCurrentProcess();
-    cmdline->AppendSwitchASCII(switches::kAppsGalleryUpdateURL,
-                               test_server_->GetURL(kManifestPath).spec());
+    extension_test_util::SetGalleryUpdateURL(
+        test_server_->GetURL(kManifestPath));
   }
 
  private:
@@ -135,7 +132,7 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
     }
     if (url.path() == kAppPath) {
       base::FilePath test_data_dir;
-      PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
+      base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
       std::string contents;
       base::ReadFileToString(
           test_data_dir.AppendASCII("extensions/dummyiap.crx"),
@@ -163,6 +160,7 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
 
 }  // namespace
 
+#if defined(GOOGLE_CHROME_BUILD)
 TEST_F(ExternalProviderImplTest, InAppPayments) {
   InitServiceWithExternalProviders();
 
@@ -179,5 +177,6 @@ TEST_F(ExternalProviderImplTest, InAppPayments) {
   EXPECT_TRUE(service_->IsExtensionEnabled(
       extension_misc::kInAppPaymentsSupportAppId));
 }
+#endif  // defined(GOOGLE_CHROME_BUILD)
 
 }  // namespace extensions

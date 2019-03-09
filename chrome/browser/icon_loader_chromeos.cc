@@ -13,12 +13,14 @@
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/lazy_instance.h"
-#include "base/macros.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/message_loop/message_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
-#include "chrome/browser/icon_loader.h"
-#include "grit/theme_resources.h"
+#include "base/task/post_task.h"
+#include "chrome/grit/theme_resources.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
+#include "media/media_buildflags.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/layout.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -71,7 +73,7 @@ const IdrBySize kImageIdrs = {
   IDR_FILETYPE_IMAGE,
   IDR_FILETYPE_IMAGE
 };
-#if defined(USE_PROPRIETARY_CODECS)
+#if BUILDFLAG(USE_PROPRIETARY_CODECS)
 const IdrBySize kPdfIdrs = {
   IDR_FILETYPE_PDF,
   IDR_FILETYPE_PDF,
@@ -96,7 +98,7 @@ IconMapper::IconMapper() {
   // 'video': /\.(mov|mp4|m4v|mpe?g4?|ogm|ogv|ogx|webm)$/i
 
   const ExtensionIconMap::value_type kExtensionIdrBySizeData[] = {
-#if defined(USE_PROPRIETARY_CODECS)
+#if BUILDFLAG(USE_PROPRIETARY_CODECS)
     std::make_pair(".m4a", kAudioIdrs),
     std::make_pair(".mp3", kAudioIdrs),
     std::make_pair(".pdf", kPdfIdrs),
@@ -127,7 +129,7 @@ IconMapper::IconMapper() {
     std::make_pair(".webm", kVideoIdrs),
   };
 
-  const size_t kESize = arraysize(kExtensionIdrBySizeData);
+  const size_t kESize = base::size(kExtensionIdrBySizeData);
   ExtensionIconMap source(&kExtensionIdrBySizeData[0],
                           &kExtensionIdrBySizeData[kESize]);
   extension_icon_map_.swap(source);
@@ -184,30 +186,30 @@ int IconSizeToDIPSize(IconLoader::IconSize size) {
 }  // namespace
 
 // static
-IconGroupID IconLoader::ReadGroupIDFromFilepath(
-    const base::FilePath& filepath) {
-  return base::ToLowerASCII(filepath.Extension());
+IconLoader::IconGroup IconLoader::GroupForFilepath(
+    const base::FilePath& file_path) {
+  return base::ToLowerASCII(file_path.Extension());
 }
 
 // static
-bool IconLoader::IsIconMutableFromFilepath(const base::FilePath&) {
-  return false;
-}
-
-// static
-content::BrowserThread::ID IconLoader::ReadIconThreadID() {
-  return content::BrowserThread::FILE;
+scoped_refptr<base::TaskRunner> IconLoader::GetReadIconTaskRunner() {
+  // ReadIcon touches non thread safe ResourceBundle images, so it must be on
+  // the UI thread.
+  return base::CreateSingleThreadTaskRunnerWithTraits(
+      {content::BrowserThread::UI});
 }
 
 void IconLoader::ReadIcon() {
   static base::LazyInstance<IconMapper>::Leaky icon_mapper =
       LAZY_INSTANCE_INITIALIZER;
   int idr = icon_mapper.Get().Lookup(group_, icon_size_);
-  ResourceBundle& rb = ResourceBundle::GetSharedInstance();
+  ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
   gfx::ImageSkia image_skia(ResizeImage(*(rb.GetImageNamed(idr)).ToImageSkia(),
                                         IconSizeToDIPSize(icon_size_)));
   image_skia.MakeThreadSafe();
-  image_.reset(new gfx::Image(image_skia));
+  std::unique_ptr<gfx::Image> image = std::make_unique<gfx::Image>(image_skia);
   target_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&IconLoader::NotifyDelegate, this));
+      FROM_HERE,
+      base::BindOnce(std::move(callback_), std::move(image), group_));
+  delete this;
 }

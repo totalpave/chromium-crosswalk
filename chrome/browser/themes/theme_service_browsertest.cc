@@ -5,6 +5,7 @@
 #include "chrome/browser/themes/theme_service.h"
 
 #include "base/macros.h"
+#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/profiles/profile.h"
@@ -13,18 +14,19 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/test/test_utils.h"
 
 namespace {
 
-// The toolbar color specified in the theme.
-const SkColor kThemeToolbarColor = 0xFFCFDDC0;
+// The ntp link color specified in the theme.
+constexpr SkColor kThemeNtpLinkColor = SkColorSetRGB(36, 70, 0);
 
 bool UsingCustomTheme(const ThemeService& theme_service) {
   return !theme_service.UsingSystemTheme() &&
          !theme_service.UsingDefaultTheme();
 }
 
-class ThemeServiceBrowserTest : public ExtensionBrowserTest {
+class ThemeServiceBrowserTest : public extensions::ExtensionBrowserTest {
  public:
   ThemeServiceBrowserTest() {
   }
@@ -32,7 +34,7 @@ class ThemeServiceBrowserTest : public ExtensionBrowserTest {
 
   void SetUp() override {
     extensions::ComponentLoader::EnableBackgroundExtensionsForTesting();
-    ExtensionBrowserTest::SetUp();
+    extensions::ExtensionBrowserTest::SetUp();
   }
 
  private:
@@ -51,26 +53,29 @@ IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, PRE_ThemeDataPackInvalid) {
 
   // Test initial state.
   EXPECT_FALSE(UsingCustomTheme(*theme_service));
-  EXPECT_NE(kThemeToolbarColor,
-            theme_provider.GetColor(ThemeProperties::COLOR_TOOLBAR));
+  EXPECT_NE(kThemeNtpLinkColor,
+            theme_provider.GetColor(ThemeProperties::COLOR_NTP_LINK));
   EXPECT_EQ(base::FilePath(),
             profile->GetPrefs()->GetFilePath(prefs::kCurrentThemePackFilename));
 
+  content::WindowedNotificationObserver theme_change_observer(
+      chrome::NOTIFICATION_BROWSER_THEME_CHANGED,
+      content::Source<ThemeService>(theme_service));
   InstallExtension(test_data_dir_.AppendASCII("theme"), 1);
+  theme_change_observer.Wait();
 
   // Check that the theme was installed.
   EXPECT_TRUE(UsingCustomTheme(*theme_service));
-  EXPECT_EQ(kThemeToolbarColor,
-            theme_provider.GetColor(ThemeProperties::COLOR_TOOLBAR));
+  EXPECT_EQ(kThemeNtpLinkColor,
+            theme_provider.GetColor(ThemeProperties::COLOR_NTP_LINK));
   EXPECT_NE(base::FilePath(),
             profile->GetPrefs()->GetFilePath(prefs::kCurrentThemePackFilename));
 
   // Change the theme data pack path to an invalid location such that second
   // part of the test is forced to recreate the theme pack when the theme
   // service is initialized.
-  profile->GetPrefs()->SetFilePath(
-      prefs::kCurrentThemePackFilename,
-      base::FilePath());
+  profile->GetPrefs()->SetFilePath(prefs::kCurrentThemePackFilename,
+                                   base::FilePath());
 }
 
 IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, ThemeDataPackInvalid) {
@@ -79,8 +84,8 @@ IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, ThemeDataPackInvalid) {
   const ui::ThemeProvider& theme_provider =
       ThemeService::GetThemeProviderForProfile(browser()->profile());
   EXPECT_TRUE(UsingCustomTheme(*theme_service));
-  EXPECT_EQ(kThemeToolbarColor,
-            theme_provider.GetColor(ThemeProperties::COLOR_TOOLBAR));
+  EXPECT_EQ(kThemeNtpLinkColor,
+            theme_provider.GetColor(ThemeProperties::COLOR_NTP_LINK));
 }
 
 }  // namespace

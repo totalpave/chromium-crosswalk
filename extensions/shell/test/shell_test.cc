@@ -4,37 +4,36 @@
 
 #include "extensions/shell/test/shell_test.h"
 
-#include "base/base_paths.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/path_service.h"
-#include "build/build_config.h"
+#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "content/public/common/content_switches.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/shell/browser/desktop_controller.h"
 #include "extensions/shell/browser/shell_content_browser_client.h"
 #include "extensions/shell/browser/shell_extension_system.h"
+#include "ui/base/ui_base_features.h"
+
+#if defined(OS_CHROMEOS)
+#include "content/public/test/network_connection_change_simulator.h"
+#endif
 
 namespace extensions {
 
-AppShellTest::AppShellTest() : browser_context_(NULL), extension_system_(NULL) {
-#if defined(OS_MACOSX)
-  // TODO(phajdan.jr): Make browser tests self-contained on Mac; remove this.
-  // Set up the application path as though we we are inside the App Shell.app
-  // bundle, rather than the top-level extensions_browsertests, because we
-  // make many assumptions about where the executable is located.
-  base::FilePath app_shell_path;
-  CHECK(PathService::Get(base::FILE_EXE, &app_shell_path));
-  app_shell_path = app_shell_path.DirName();
-  app_shell_path = app_shell_path.Append(
-      FILE_PATH_LITERAL("App Shell.app/Contents/MacOS/App Shell"));
-  CHECK(PathService::Override(base::FILE_EXE, app_shell_path));
-#endif
+AppShellTest::AppShellTest()
+    : browser_context_(nullptr),
+      extension_system_(nullptr) {
+  // Disable mash until app_shell test infra is updated to use Window Service.
+  scoped_feature_list_.InitWithFeatures(
+      {} /* enabled */,
+      {features::kMash, features::kSingleProcessMash} /* disabled */);
+
+  CreateTestServer(base::FilePath(FILE_PATH_LITERAL("extensions/test/data")));
 }
 
-AppShellTest::~AppShellTest() {
-}
+AppShellTest::~AppShellTest() = default;
 
 void AppShellTest::SetUp() {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
@@ -43,22 +42,22 @@ void AppShellTest::SetUp() {
   content::BrowserTestBase::SetUp();
 }
 
-void AppShellTest::SetUpOnMainThread() {
+void AppShellTest::PreRunTestOnMainThread() {
+#if defined(OS_CHROMEOS)
+  content::NetworkConnectionChangeSimulator network_change_simulator;
+  network_change_simulator.InitializeChromeosConnectionType();
+#endif
+
   browser_context_ = ShellContentBrowserClient::Get()->GetBrowserContext();
 
   extension_system_ = static_cast<ShellExtensionSystem*>(
       ExtensionSystem::Get(browser_context_));
+  extension_system_->FinishInitialization();
+  DCHECK(base::MessageLoopCurrentForUI::IsSet());
+  base::RunLoop().RunUntilIdle();
 }
 
-void AppShellTest::RunTestOnMainThreadLoop() {
-  base::MessageLoopForUI::current()->RunUntilIdle();
-
-  SetUpOnMainThread();
-
-  RunTestOnMainThread();
-
-  TearDownOnMainThread();
-
+void AppShellTest::PostRunTestOnMainThread() {
   // Clean up the app window.
   DesktopController::instance()->CloseAppWindows();
 }

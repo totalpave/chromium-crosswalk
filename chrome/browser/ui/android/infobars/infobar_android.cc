@@ -15,6 +15,8 @@
 #include "components/infobars/core/infobar_delegate.h"
 #include "jni/InfoBar_jni.h"
 
+using base::android::JavaParamRef;
+using base::android::JavaRef;
 
 // InfoBarAndroid -------------------------------------------------------------
 
@@ -25,7 +27,7 @@ InfoBarAndroid::InfoBarAndroid(
 InfoBarAndroid::~InfoBarAndroid() {
   if (!java_info_bar_.is_null()) {
     JNIEnv* env = base::android::AttachCurrentThread();
-    Java_InfoBar_onNativeDestroyed(env, java_info_bar_.obj());
+    Java_InfoBar_onNativeDestroyed(env, java_info_bar_);
   }
 }
 
@@ -42,16 +44,21 @@ void InfoBarAndroid::SetJavaInfoBar(
   DCHECK(java_info_bar_.is_null());
   java_info_bar_.Reset(java_info_bar);
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_InfoBar_setNativeInfoBar(env, java_info_bar.obj(),
+  Java_InfoBar_setNativeInfoBar(env, java_info_bar,
                                 reinterpret_cast<intptr_t>(this));
 }
 
-jobject InfoBarAndroid::GetJavaInfoBar() {
-  return java_info_bar_.obj();
+const JavaRef<jobject>& InfoBarAndroid::GetJavaInfoBar() {
+  return java_info_bar_;
 }
 
 bool InfoBarAndroid::HasSetJavaInfoBar() const {
   return !java_info_bar_.is_null();
+}
+
+int InfoBarAndroid::GetInfoBarIdentifier(JNIEnv* env,
+                                         const JavaParamRef<jobject>& obj) {
+  return delegate()->GetIdentifier();
 }
 
 void InfoBarAndroid::OnButtonClicked(JNIEnv* env,
@@ -71,17 +78,10 @@ void InfoBarAndroid::OnCloseButtonClicked(JNIEnv* env,
 void InfoBarAndroid::CloseJavaInfoBar() {
   if (!java_info_bar_.is_null()) {
     JNIEnv* env = base::android::AttachCurrentThread();
-    Java_InfoBar_closeInfoBar(env, java_info_bar_.obj());
+    Java_InfoBar_closeInfoBar(env, java_info_bar_);
   }
 }
 
 int InfoBarAndroid::GetEnumeratedIconId() {
   return ResourceMapper::MapFromChromiumId(delegate()->GetIconId());
-}
-
-
-// Native JNI methods ---------------------------------------------------------
-
-bool RegisterNativeInfoBar(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }

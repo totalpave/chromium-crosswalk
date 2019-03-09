@@ -8,7 +8,7 @@
 
 #include "base/command_line.h"
 #include "base/location.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -17,7 +17,7 @@
 #include "content/public/renderer/render_frame.h"
 #include "content/renderer/peripheral_content_heuristic.h"
 #include "ppapi/shared_impl/ppapi_constants.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace content {
@@ -25,7 +25,7 @@ namespace content {
 namespace {
 
 const char kPeripheralHeuristicHistogram[] =
-    "Plugin.PowerSaver.PeripheralHeuristic";
+    "Plugin.PowerSaver.PeripheralHeuristicInitialDecision";
 
 }  // namespace
 
@@ -48,11 +48,11 @@ PluginPowerSaverHelper::~PluginPowerSaverHelper() {
 }
 
 void PluginPowerSaverHelper::DidCommitProvisionalLoad(
-    bool is_new_navigation,
-    bool is_same_page_navigation) {
+    bool is_same_document_navigation,
+    ui::PageTransition transition) {
   blink::WebFrame* frame = render_frame()->GetWebFrame();
   // Only apply to top-level and new page navigation.
-  if (frame->parent() || is_same_page_navigation)
+  if (frame->Parent() || is_same_document_navigation)
     return;  // Not a top-level navigation.
 
   origin_whitelist_.clear();
@@ -102,7 +102,8 @@ RenderFrame::PeripheralContentStatus
 PluginPowerSaverHelper::GetPeripheralContentStatus(
     const url::Origin& main_frame_origin,
     const url::Origin& content_origin,
-    const gfx::Size& unobscured_size) const {
+    const gfx::Size& unobscured_size,
+    RenderFrame::RecordPeripheralDecision record_decision) const {
   if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
           switches::kOverridePluginPowerSaverForTesting) == "always") {
     return RenderFrame::CONTENT_STATUS_PERIPHERAL;
@@ -110,15 +111,12 @@ PluginPowerSaverHelper::GetPeripheralContentStatus(
 
   auto status = PeripheralContentHeuristic::GetPeripheralStatus(
       origin_whitelist_, main_frame_origin, content_origin, unobscured_size);
-  if (status == RenderFrame::CONTENT_STATUS_ESSENTIAL_UNKNOWN_SIZE) {
-    // Early exit here to avoid recording a UMA. Every plugin will call this
-    // method once before the size is known (to faciliate early-exit for
-    // same-origin and whitelisted-origin content).
-    return status;
+
+  if (record_decision == RenderFrame::RECORD_DECISION) {
+    UMA_HISTOGRAM_ENUMERATION(kPeripheralHeuristicHistogram, status,
+                              RenderFrame::CONTENT_STATUS_NUM_ITEMS);
   }
 
-  UMA_HISTOGRAM_ENUMERATION(kPeripheralHeuristicHistogram, status,
-                            RenderFrame::CONTENT_STATUS_NUM_ITEMS);
   return status;
 }
 

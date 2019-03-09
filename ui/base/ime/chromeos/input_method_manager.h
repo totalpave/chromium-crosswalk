@@ -14,18 +14,15 @@
 
 #include "base/memory/ref_counted.h"
 #include "ui/base/ime/chromeos/input_method_descriptor.h"
+#include "ui/base/ime/chromeos/public/interfaces/ime_keyset.mojom.h"
 #include "ui/base/ime/ui_base_ime_export.h"
 
 class Profile;
 
 namespace ui {
-class Accelerator;
 class IMEEngineHandlerInterface;
+class InputMethodKeyboardController;
 }  // namespace ui
-
-namespace user_manager {
-class User;
-}  // namespace user_manager
 
 namespace chromeos {
 class ComponentExtensionIMEManager;
@@ -69,6 +66,13 @@ class UI_BASE_IME_EXPORT InputMethodManager {
     std::vector<MenuItem> children;
   };
 
+  enum ImeMenuFeature {
+    FEATURE_EMOJI = 1 << 0,
+    FEATURE_HANDWRITING = 1 << 1,
+    FEATURE_VOICE = 1 << 2,
+    FEATURE_ALL = ~0,
+  };
+
   class Observer {
    public:
     virtual ~Observer() {}
@@ -77,6 +81,19 @@ class UI_BASE_IME_EXPORT InputMethodManager {
     virtual void InputMethodChanged(InputMethodManager* manager,
                                     Profile* profile,
                                     bool show_message) = 0;
+    // Called when the availability of any of the extra input methods (emoji,
+    // handwriting, voice) has changed. The overall state is toggle-able
+    // independently of the individual options.
+    virtual void OnExtraInputEnabledStateChange(
+        bool is_extra_input_options_enabled,
+        bool is_emoji_enabled,
+        bool is_handwriting_enabled,
+        bool is_voice_enabled) {}
+
+    // Called when an input method extension is added or removed.
+    virtual void OnInputMethodExtensionAdded(const std::string& extension_id) {}
+    virtual void OnInputMethodExtensionRemoved(
+        const std::string& extension_id) {}
   };
 
   // CandidateWindowObserver is notified of events related to the candidate
@@ -134,6 +151,11 @@ class UI_BASE_IME_EXPORT InputMethodManager {
     virtual void ChangeInputMethod(const std::string& input_method_id,
                                    bool show_message) = 0;
 
+    // Switching the input methods for JP106 language input keys.
+    virtual void ChangeInputMethodToJpKeyboard() = 0;
+    virtual void ChangeInputMethodToJpIme() = 0;
+    virtual void ToggleInputMethodForJpIme() = 0;
+
     // Adds one entry to the list of active input method IDs, and then starts or
     // stops the system input method framework as needed.
     virtual bool EnableInputMethod(
@@ -189,25 +211,12 @@ class UI_BASE_IME_EXPORT InputMethodManager {
         const std::string& locale,
         const std::string& layout) = 0;
 
-    // Returns whether the input method (or keyboard layout) can be switched
-    // to the next or previous one. Returns false if only one input method is
-    // enabled.
-    virtual bool CanCycleInputMethod() = 0;
-
     // Switches the current input method (or keyboard layout) to the next one.
     virtual void SwitchToNextInputMethod() = 0;
 
-    // Switches the current input method (or keyboard layout) to the previous
+    // Switches the current input method (or keyboard layout) to the last used
     // one.
-    virtual void SwitchToPreviousInputMethod() = 0;
-
-    // Returns true if the input method can be switched to the input method
-    // associated with |accelerator|.
-    virtual bool CanSwitchInputMethod(const ui::Accelerator& accelerator) = 0;
-
-    // Switches to an input method (or keyboard layout) which is associated with
-    // the |accelerator|.
-    virtual void SwitchInputMethod(const ui::Accelerator& accelerator) = 0;
+    virtual void SwitchToLastUsedInputMethod() = 0;
 
     // Gets the descriptor of the input method which is currently selected.
     virtual InputMethodDescriptor GetCurrentInputMethod() const = 0;
@@ -216,6 +225,29 @@ class UI_BASE_IME_EXPORT InputMethodManager {
     // system input method framework as needed.
     virtual bool ReplaceEnabledInputMethods(
         const std::vector<std::string>& new_active_input_method_ids) = 0;
+
+    // Sets the currently allowed input methods (e.g. due to policy). Invalid
+    // input method ids are ignored. Passing an empty vector means that all
+    // input methods are allowed, which is the default.  When
+    // |enable_allowed_input_menthods| is true, the allowed input methods are
+    // also automatically enabled.
+    virtual bool SetAllowedInputMethods(
+        const std::vector<std::string>& allowed_input_method_ids,
+        bool enable_allowed_input_methods) = 0;
+
+    // Returns the currently allowed input methods, as set by
+    // SetAllowedInputMethodIds. An empty vector means that all input methods
+    // are allowed.
+    virtual const std::vector<std::string>& GetAllowedInputMethods() = 0;
+
+    // Methods related to custom input view of the input method.
+    // Enables custom input view of the active input method.
+    virtual void EnableInputView() = 0;
+    // Disables custom input view of the active input method.
+    // The fallback system input view will be used.
+    virtual void DisableInputView() = 0;
+    // Returns the URL of the input view of the active input method.
+    virtual const GURL& GetInputViewUrl() const = 0;
 
    protected:
     friend base::RefCounted<InputMethodManager::State>;
@@ -299,6 +331,35 @@ class UI_BASE_IME_EXPORT InputMethodManager {
   virtual void NotifyImeMenuItemsChanged(
       const std::string& engine_id,
       const std::vector<MenuItem>& items) = 0;
+
+  // Notify the IME menu activation changed if the current profile's activation
+  // is different from previous.
+  virtual void MaybeNotifyImeMenuActivationChanged() = 0;
+
+  // Overrides active keyset with the given keyset if the active IME supports
+  // the given keyset.
+  virtual void OverrideKeyboardKeyset(mojom::ImeKeyset keyset) = 0;
+
+  // Enables or disables some advanced features, e.g. handwiring, voices input.
+  virtual void SetImeMenuFeatureEnabled(ImeMenuFeature feature,
+                                        bool enabled) = 0;
+
+  // Returns the true if the given feature is enabled.
+  virtual bool GetImeMenuFeatureEnabled(ImeMenuFeature feature) const = 0;
+
+  // Notifies when any of the extra inputs (emoji, handwriting, voice) enabled
+  // status has changed.
+  virtual void NotifyObserversImeExtraInputStateChange() = 0;
+
+  // Gets the implementation of the keyboard controller.
+  virtual ui::InputMethodKeyboardController*
+  GetInputMethodKeyboardController() = 0;
+
+  // Notifies an input method extension is added or removed.
+  virtual void NotifyInputMethodExtensionAdded(
+      const std::string& extension_id) = 0;
+  virtual void NotifyInputMethodExtensionRemoved(
+      const std::string& extension_id) = 0;
 };
 
 }  // namespace input_method

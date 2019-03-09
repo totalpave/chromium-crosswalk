@@ -3,11 +3,13 @@
 // found in the LICENSE file.
 
 #include "base/strings/string_number_conversions.h"
-#include "content/browser/accessibility/accessibility_tree_formatter.h"
+#include "content/browser/accessibility/accessibility_tree_formatter_blink.h"
+#include "content/browser/accessibility/accessibility_tree_formatter_browser.h"
 
 namespace content {
 
-class AccessibilityTreeFormatterStub : public AccessibilityTreeFormatter {
+class AccessibilityTreeFormatterStub
+    : public AccessibilityTreeFormatterBrowser {
  public:
   explicit AccessibilityTreeFormatterStub();
   ~AccessibilityTreeFormatterStub() override;
@@ -17,24 +19,35 @@ class AccessibilityTreeFormatterStub : public AccessibilityTreeFormatter {
   const std::string GetAllowEmptyString() override;
   const std::string GetAllowString() override;
   const std::string GetDenyString() override;
+  const std::string GetDenyNodeString() override;
   void AddProperties(const BrowserAccessibility& node,
                      base::DictionaryValue* dict) override;
-  base::string16 ToString(const base::DictionaryValue& node) override;
+  base::string16 ProcessTreeForOutput(
+      const base::DictionaryValue& node,
+      base::DictionaryValue* filtered_dict_result = nullptr) override;
 };
 
 #if !defined(PLATFORM_HAS_NATIVE_ACCESSIBILITY_IMPL)
 // static
-AccessibilityTreeFormatter* AccessibilityTreeFormatter::Create() {
-  return new AccessibilityTreeFormatterStub();
+std::unique_ptr<AccessibilityTreeFormatter>
+AccessibilityTreeFormatter::Create() {
+  return std::make_unique<AccessibilityTreeFormatterStub>();
+}
+
+// static
+std::vector<AccessibilityTreeFormatter::FormatterFactory>
+AccessibilityTreeFormatter::GetTestPasses() {
+  return {
+      &AccessibilityTreeFormatterBlink::CreateBlink,
+      &AccessibilityTreeFormatter::Create,
+  };
 }
 #endif
 
 AccessibilityTreeFormatterStub::AccessibilityTreeFormatterStub()
-    : AccessibilityTreeFormatter() {
-}
+    : AccessibilityTreeFormatterBrowser() {}
 
-AccessibilityTreeFormatterStub::~AccessibilityTreeFormatterStub() {
-}
+AccessibilityTreeFormatterStub::~AccessibilityTreeFormatterStub() {}
 
 void AccessibilityTreeFormatterStub::AddProperties(
     const BrowserAccessibility& node,
@@ -42,11 +55,12 @@ void AccessibilityTreeFormatterStub::AddProperties(
   dict->SetInteger("id", node.GetId());
 }
 
-base::string16 AccessibilityTreeFormatterStub::ToString(
-    const base::DictionaryValue& node) {
+base::string16 AccessibilityTreeFormatterStub::ProcessTreeForOutput(
+    const base::DictionaryValue& node,
+    base::DictionaryValue* filtered_dict_result) {
   int id_value;
   node.GetInteger("id", &id_value);
-  return base::IntToString16(id_value);
+  return base::NumberToString16(id_value);
 }
 
 const base::FilePath::StringType
@@ -63,6 +77,10 @@ const std::string AccessibilityTreeFormatterStub::GetAllowString() {
 }
 
 const std::string AccessibilityTreeFormatterStub::GetDenyString() {
+  return std::string();
+}
+
+const std::string AccessibilityTreeFormatterStub::GetDenyNodeString() {
   return std::string();
 }
 

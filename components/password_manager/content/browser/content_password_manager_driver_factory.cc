@@ -4,6 +4,7 @@
 
 #include "components/password_manager/content/browser/content_password_manager_driver_factory.h"
 
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -11,19 +12,17 @@
 #include "base/stl_util.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
 #include "components/autofill/content/browser/content_autofill_driver_factory.h"
-#include "components/autofill/content/common/autofill_messages.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/password_form.h"
 #include "components/password_manager/content/browser/content_password_manager_driver.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
+#include "content/public/browser/ssl_status.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/ssl_status.h"
-#include "ipc/ipc_message_macros.h"
 #include "net/cert/cert_status_flags.h"
 
 namespace password_manager {
@@ -42,6 +41,7 @@ void ContentPasswordManagerDriverFactory::CreateForWebContents(
   if (FromWebContents(web_contents))
     return;
 
+  // NOTE: Can't use |std::make_unique| due to private constructor.
   auto new_factory = base::WrapUnique(new ContentPasswordManagerDriverFactory(
       web_contents, password_client, autofill_client));
   const std::vector<content::RenderFrameHost*> frames =
@@ -53,7 +53,7 @@ void ContentPasswordManagerDriverFactory::CreateForWebContents(
 
   web_contents->SetUserData(
       kContentPasswordManagerDriverFactoryWebContentsUserDataKey,
-      new_factory.release());
+      std::move(new_factory));
 }
 
 ContentPasswordManagerDriverFactory::ContentPasswordManagerDriverFactory(
@@ -89,8 +89,8 @@ void ContentPasswordManagerDriverFactory::RenderFrameCreated(
   // This is called twice for the main frame.
   if (insertion_result.second) {  // This was the first time.
     insertion_result.first->second =
-        base::WrapUnique(new ContentPasswordManagerDriver(
-            render_frame_host, password_client_, autofill_client_));
+        std::make_unique<ContentPasswordManagerDriver>(
+            render_frame_host, password_client_, autofill_client_);
   }
 }
 
@@ -99,25 +99,13 @@ void ContentPasswordManagerDriverFactory::RenderFrameDeleted(
   frame_driver_map_.erase(render_frame_host);
 }
 
-bool ContentPasswordManagerDriverFactory::OnMessageReceived(
-    const IPC::Message& message,
-    content::RenderFrameHost* render_frame_host) {
-  return frame_driver_map_.find(render_frame_host)
-      ->second->HandleMessage(message);
-}
+void ContentPasswordManagerDriverFactory::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!navigation_handle->HasCommitted())
+    return;
 
-void ContentPasswordManagerDriverFactory::DidNavigateAnyFrame(
-    content::RenderFrameHost* render_frame_host,
-    const content::LoadCommittedDetails& details,
-    const content::FrameNavigateParams& params) {
-  frame_driver_map_.find(render_frame_host)
-      ->second->DidNavigateFrame(details, params);
-}
-
-void ContentPasswordManagerDriverFactory::TestingSetDriverForFrame(
-    content::RenderFrameHost* render_frame_host,
-    std::unique_ptr<ContentPasswordManagerDriver> driver) {
-  frame_driver_map_[render_frame_host] = std::move(driver);
+  if (auto* driver = GetDriverForFrame(navigation_handle->GetRenderFrameHost()))
+    driver->DidNavigateFrame(navigation_handle);
 }
 
 void ContentPasswordManagerDriverFactory::RequestSendLoggingAvailability() {

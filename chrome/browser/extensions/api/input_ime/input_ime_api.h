@@ -16,13 +16,16 @@
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/input_method/input_method_engine_base.h"
+#include "chrome/common/extensions/api/input_ime.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/notification_observer.h"
+#include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/extension.h"
+#include "ui/base/ime/ime_bridge_observer.h"
 #include "ui/base/ime/ime_engine_handler_interface.h"
 #include "ui/base/ime/text_input_flags.h"
 
@@ -33,10 +36,6 @@
 #endif  // defined(OS_CHROMEOS)
 
 class Profile;
-
-namespace content {
-class NotificationRegistrar;
-}
 
 namespace ui {
 class IMEEngineHandlerInterface;
@@ -54,7 +53,7 @@ class ImeObserver : public input_method::InputMethodEngineBase::Observer {
   void OnKeyEvent(
       const std::string& component_id,
       const input_method::InputMethodEngineBase::KeyboardEvent& event,
-      IMEEngineHandlerInterface::KeyEventDoneCallback& key_data) override;
+      IMEEngineHandlerInterface::KeyEventDoneCallback key_data) override;
   void OnReset(const std::string& component_id) override;
   void OnDeactivated(const std::string& component_id) override;
   void OnCompositionBoundsChanged(
@@ -82,16 +81,23 @@ class ImeObserver : public input_method::InputMethodEngineBase::Observer {
   bool ShouldForwardKeyEvent() const;
 
   // Returns true if there are any listeners on the given event.
+  // TODO(https://crbug.com/835699): Merge this with |ExtensionHasListener|.
   bool HasListener(const std::string& event_name) const;
+
+  // Returns true if the extension has any listeners on the given event.
+  bool ExtensionHasListener(const std::string& event_name) const;
 
   // Functions used to convert InputContext struct to string
   std::string ConvertInputContextType(
       IMEEngineHandlerInterface::InputContext input_context);
-  bool ConvertInputContextAutoCorrect(
+  virtual bool ConvertInputContextAutoCorrect(
       IMEEngineHandlerInterface::InputContext input_context);
-  bool ConvertInputContextAutoComplete(
+  virtual bool ConvertInputContextAutoComplete(
       IMEEngineHandlerInterface::InputContext input_context);
-  bool ConvertInputContextSpellCheck(
+  virtual extensions::api::input_ime::AutoCapitalizeType
+  ConvertInputContextAutoCapitalize(
+      IMEEngineHandlerInterface::InputContext input_context);
+  virtual bool ConvertInputContextSpellCheck(
       IMEEngineHandlerInterface::InputContext input_context);
 
   std::string extension_id_;
@@ -179,12 +185,14 @@ class InputImeAPI : public BrowserContextKeyedAPI,
   // BrowserContextKeyedAPI implementation.
   static BrowserContextKeyedAPIFactory<InputImeAPI>* GetFactoryInstance();
 
+  void Shutdown() override;
+
   // ExtensionRegistryObserver implementation.
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const Extension* extension) override;
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
 
   // EventRouter::Observer implementation.
   void OnListenerAdded(const EventListenerInfo& details) override;
@@ -211,6 +219,8 @@ class InputImeAPI : public BrowserContextKeyedAPI,
       extension_registry_observer_;
 
   content::NotificationRegistrar registrar_;
+
+  std::unique_ptr<ui::IMEBridgeObserver> observer_;
 };
 
 InputImeEventRouter* GetInputImeEventRouter(Profile* profile);

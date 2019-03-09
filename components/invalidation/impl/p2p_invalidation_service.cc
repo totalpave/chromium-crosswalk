@@ -9,25 +9,21 @@
 #include "base/command_line.h"
 #include "components/invalidation/impl/invalidation_service_util.h"
 #include "components/invalidation/impl/p2p_invalidator.h"
-#include "google_apis/gaia/identity_provider.h"
+#include "jingle/glue/network_service_config_test_util.h"
 #include "jingle/notifier/base/notifier_options.h"
 #include "jingle/notifier/listener/push_client.h"
-#include "net/url_request/url_request_context_getter.h"
-
-namespace net {
-class URLRequestContextGetter;
-}
 
 namespace invalidation {
 
 P2PInvalidationService::P2PInvalidationService(
-    std::unique_ptr<IdentityProvider> identity_provider,
-    const scoped_refptr<net::URLRequestContextGetter>& request_context,
+    std::unique_ptr<jingle_glue::NetworkServiceConfigTestUtil> config_helper,
+    network::NetworkConnectionTracker* network_connection_tracker,
     syncer::P2PNotificationTarget notification_target)
-    : identity_provider_(std::move(identity_provider)) {
+    : config_helper_(std::move(config_helper)) {
   notifier::NotifierOptions notifier_options =
       ParseNotifierOptions(*base::CommandLine::ForCurrentProcess());
-  notifier_options.request_context_getter = request_context;
+  config_helper_->FillInNetworkConfig(&notifier_options.network_config);
+  notifier_options.network_connection_tracker = network_connection_tracker;
   invalidator_id_ = GenerateInvalidatorClientId();
   invalidator_.reset(new syncer::P2PInvalidator(
           notifier::PushClient::CreateDefault(notifier_options),
@@ -36,6 +32,7 @@ P2PInvalidationService::P2PInvalidationService(
 }
 
 P2PInvalidationService::~P2PInvalidationService() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
 void P2PInvalidationService::UpdateCredentials(const std::string& username,
@@ -73,17 +70,13 @@ std::string P2PInvalidationService::GetInvalidatorClientId() const {
 }
 
 InvalidationLogger* P2PInvalidationService::GetInvalidationLogger() {
-  return NULL;
+  return nullptr;
 }
 
 void P2PInvalidationService::RequestDetailedStatus(
     base::Callback<void(const base::DictionaryValue&)> caller) const {
   base::DictionaryValue value;
   caller.Run(value);
-}
-
-IdentityProvider* P2PInvalidationService::GetIdentityProvider() {
-  return identity_provider_.get();
 }
 
 }  // namespace invalidation

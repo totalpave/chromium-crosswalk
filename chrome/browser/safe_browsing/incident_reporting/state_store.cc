@@ -12,8 +12,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/incident_reporting/incident.h"
 #include "chrome/browser/safe_browsing/incident_reporting/platform_state_store.h"
-#include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "components/safe_browsing/common/safe_browsing_prefs.h"
 
 namespace safe_browsing {
 
@@ -37,15 +37,15 @@ StateStore::Transaction::~Transaction() {
 void StateStore::Transaction::MarkAsReported(IncidentType type,
                                              const std::string& key,
                                              IncidentDigest digest) {
-  std::string type_string(base::IntToString(static_cast<int32_t>(type)));
+  std::string type_string(base::NumberToString(static_cast<int>(type)));
   base::DictionaryValue* incidents_sent = GetPrefDict();
-  base::DictionaryValue* type_dict = nullptr;
-  if (!incidents_sent->GetDictionaryWithoutPathExpansion(type_string,
-                                                         &type_dict)) {
-    type_dict = new base::DictionaryValue();
-    incidents_sent->SetWithoutPathExpansion(type_string, type_dict);
+  base::Value* type_dict =
+      incidents_sent->FindKeyOfType(type_string, base::Value::Type::DICTIONARY);
+  if (!type_dict) {
+    type_dict = incidents_sent->SetKey(
+        type_string, base::Value(base::Value::Type::DICTIONARY));
   }
-  type_dict->SetStringWithoutPathExpansion(key, base::UintToString(digest));
+  type_dict->SetKey(key, base::Value(base::NumberToString(digest)));
 }
 
 void StateStore::Transaction::Clear(IncidentType type, const std::string& key) {
@@ -57,7 +57,7 @@ void StateStore::Transaction::Clear(IncidentType type, const std::string& key) {
   // to remove before committing to making a change since any use of GetPrefDict
   // will result in a full serialize-and-write operation on the preferences
   // store.
-  std::string type_string(base::IntToString(static_cast<int32_t>(type)));
+  std::string type_string(base::NumberToString(static_cast<int>(type)));
   const base::DictionaryValue* const_type_dict = nullptr;
   if (store_->incidents_sent_->GetDictionaryWithoutPathExpansion(
           type_string, &const_type_dict) &&
@@ -77,7 +77,7 @@ void StateStore::Transaction::ClearForType(IncidentType type) {
   // to remove before committing to making a change since any use of GetPrefDict
   // will result in a full serialize-and-write operation on the preferences
   // store.
-  std::string type_string(base::IntToString(static_cast<int32_t>(type)));
+  std::string type_string(base::NumberToString(static_cast<int>(type)));
   const base::DictionaryValue* type_dict = nullptr;
   if (store_->incidents_sent_->GetDictionaryWithoutPathExpansion(type_string,
                                                                  &type_dict)) {
@@ -160,16 +160,15 @@ bool StateStore::HasBeenReported(IncidentType type,
   std::string digest_string;
   return (incidents_sent_ &&
           incidents_sent_->GetDictionaryWithoutPathExpansion(
-              base::IntToString(static_cast<int32_t>(type)), &type_dict) &&
+              base::NumberToString(static_cast<int>(type)), &type_dict) &&
           type_dict->GetStringWithoutPathExpansion(key, &digest_string) &&
-          digest_string == base::UintToString(digest));
+          digest_string == base::NumberToString(digest));
 }
 
 void StateStore::CleanLegacyValues(Transaction* transaction) {
   static const IncidentType kLegacyTypes[] = {
-      // TODO(grt): remove in M44 (crbug.com/451173).
-      IncidentType::OMNIBOX_INTERACTION,
-  };
+      IncidentType::OBSOLETE_BLACKLIST_LOAD,
+      IncidentType::OBSOLETE_SUSPICIOUS_MODULE};
 
   for (IncidentType type : kLegacyTypes)
     transaction->ClearForType(type);

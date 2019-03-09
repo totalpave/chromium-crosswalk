@@ -13,6 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/core/common/cloud/cloud_policy_validator.h"
+#include "components/policy/core/common/policy_types.h"
 #include "components/policy/policy_export.h"
 
 namespace base {
@@ -25,21 +26,24 @@ namespace policy {
 // functionality.
 class POLICY_EXPORT UserCloudPolicyStoreBase : public CloudPolicyStore {
  public:
-  explicit UserCloudPolicyStoreBase(
-      scoped_refptr<base::SequencedTaskRunner> background_task_runner);
+  UserCloudPolicyStoreBase(
+      scoped_refptr<base::SequencedTaskRunner> background_task_runner,
+      PolicyScope policy_scope);
   ~UserCloudPolicyStoreBase() override;
 
  protected:
   // Creates a validator configured to validate a user policy. The caller owns
   // the resulting object until StartValidation() is invoked.
-  std::unique_ptr<UserCloudPolicyValidator> CreateValidator(
+  virtual std::unique_ptr<UserCloudPolicyValidator> CreateValidator(
       std::unique_ptr<enterprise_management::PolicyFetchResponse> policy,
       CloudPolicyValidatorBase::ValidateTimestampOption option);
 
-  // Sets |policy_data| and |payload| as the active policy.
+  // Sets |policy_data| and |payload| as the active policy, and sets
+  // |policy_signature_public_key| as the active public key.
   void InstallPolicy(
       std::unique_ptr<enterprise_management::PolicyData> policy_data,
-      std::unique_ptr<enterprise_management::CloudPolicySettings> payload);
+      std::unique_ptr<enterprise_management::CloudPolicySettings> payload,
+      const std::string& policy_signature_public_key);
 
   scoped_refptr<base::SequencedTaskRunner> background_task_runner() const {
     return background_task_runner_;
@@ -48,6 +52,7 @@ class POLICY_EXPORT UserCloudPolicyStoreBase : public CloudPolicyStore {
  private:
   // Task runner for background file operations.
   scoped_refptr<base::SequencedTaskRunner> background_task_runner_;
+  PolicyScope policy_scope_;
 
   DISALLOW_COPY_AND_ASSIGN(UserCloudPolicyStoreBase);
 };

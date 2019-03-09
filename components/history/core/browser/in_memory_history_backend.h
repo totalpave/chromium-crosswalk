@@ -39,7 +39,6 @@ class HistoryBackendTestBase;
 class HistoryService;
 class InMemoryDatabase;
 class InMemoryHistoryBackendTest;
-class URLDatabase;
 class URLRow;
 
 class InMemoryHistoryBackend : public HistoryServiceObserver {
@@ -79,10 +78,7 @@ class InMemoryHistoryBackend : public HistoryServiceObserver {
   void OnURLsModified(HistoryService* history_service,
                       const URLRows& changed_urls) override;
   void OnURLsDeleted(HistoryService* history_service,
-                     bool all_history,
-                     bool expired,
-                     const URLRows& deleted_rows,
-                     const std::set<GURL>& favicon_urls) override;
+                     const DeletionInfo& deletion_info) override;
   void OnKeywordSearchTermUpdated(HistoryService* history_service,
                                   const URLRow& row,
                                   KeywordID keyword_id,

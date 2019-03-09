@@ -45,8 +45,7 @@ goog.addSingletonGetter(cvox.BrailleOverlayWidget);
  * listener for braille content messages from the background page.
  */
 cvox.BrailleOverlayWidget.prototype.init = function() {
-  cvox.ExtensionBridge.addMessageListener(goog.bind(
-      this.onMessage_, this));
+  cvox.ExtensionBridge.addMessageListener(goog.bind(this.onMessage_, this));
 };
 
 
@@ -139,7 +138,7 @@ cvox.BrailleOverlayWidget.prototype.createContainerNode_ = function() {
   containerNode.style['position'] = 'fixed';
   containerNode.style['top'] = '50%';
   containerNode.style['left'] = '50%';
-  containerNode.style['-webkit-transition'] = 'all 0.3s ease-in';
+  containerNode.style['transition'] = 'all 0.3s ease-in';
   containerNode.style['opacity'] = '0.0';
   containerNode.style['z-index'] = '2147483647';
   containerNode.setAttribute('aria-hidden', 'true');

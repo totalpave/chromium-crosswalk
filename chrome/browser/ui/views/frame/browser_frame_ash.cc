@@ -4,12 +4,18 @@
 
 #include "chrome/browser/ui/views/frame/browser_frame_ash.h"
 
-#include "ash/common/wm/window_state.h"
-#include "ash/common/wm/window_state_delegate.h"
-#include "ash/shell.h"
-#include "ash/wm/window_properties.h"
-#include "ash/wm/window_state_aura.h"
-#include "ash/wm/window_util.h"
+#include <memory>
+
+// This file is only instantiated in classic ash/mus. It is never used in mash.
+// See native_browser_frame_factory_chromeos.cc switches on
+// features::IsUsingWindowService().
+#include "ash/public/cpp/window_properties.h"
+#include "ash/public/cpp/window_state_type.h"
+#include "ash/shell.h"                     // mash-ok
+#include "ash/wm/window_properties.h"      // mash-ok
+#include "ash/wm/window_state.h"           // mash-ok
+#include "ash/wm/window_state_delegate.h"  // mash-ok
+#include "ash/wm/window_util.h"            // mash-ok
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -18,6 +24,7 @@
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/view.h"
 
 namespace {
@@ -52,34 +59,36 @@ class BrowserWindowStateDelegate : public ash::wm::WindowStateDelegate {
 ///////////////////////////////////////////////////////////////////////////////
 // BrowserFrameAsh, public:
 
-// static
-const char BrowserFrameAsh::kWindowName[] = "BrowserFrameAsh";
-
 BrowserFrameAsh::BrowserFrameAsh(BrowserFrame* browser_frame,
                                  BrowserView* browser_view)
     : views::NativeWidgetAura(browser_frame),
       browser_view_(browser_view) {
-  GetNativeWindow()->SetName(kWindowName);
+  DCHECK(!features::IsUsingWindowService());
+  GetNativeWindow()->SetName("BrowserFrameAsh");
   Browser* browser = browser_view->browser();
-  ash::wm::WindowState* window_state =
-      ash::wm::GetWindowState(GetNativeWindow());
-  window_state->SetDelegate(std::unique_ptr<ash::wm::WindowStateDelegate>(
-      new BrowserWindowStateDelegate(browser)));
 
   // Turn on auto window management if we don't need an explicit bounds.
   // This way the requested bounds are honored.
   if (!browser->bounds_overridden() && !browser->is_session_restore())
     SetWindowAutoManaged();
-#if defined(OS_CHROMEOS)
-  // For legacy reasons v1 apps (like Secure Shell) are allowed to consume keys
-  // like brightness, volume, etc. Otherwise these keys are handled by the
-  // Ash window manager.
-  window_state->set_can_consume_system_keys(browser->is_app());
-#endif  // defined(OS_CHROMEOS)
 }
+
+BrowserFrameAsh::~BrowserFrameAsh() {}
 
 ///////////////////////////////////////////////////////////////////////////////
 // BrowserFrameAsh, views::NativeWidgetAura overrides:
+
+void BrowserFrameAsh::OnWidgetInitDone() {
+  Browser* browser = browser_view_->browser();
+  ash::wm::WindowState* window_state =
+      ash::wm::GetWindowState(GetNativeWindow());
+  window_state->SetDelegate(
+      std::make_unique<BrowserWindowStateDelegate>(browser));
+  // For legacy reasons v1 apps (like Secure Shell) are allowed to consume keys
+  // like brightness, volume, etc. Otherwise these keys are handled by the
+  // Ash window manager.
+  window_state->SetCanConsumeSystemKeys(browser->is_app());
+}
 
 void BrowserFrameAsh::OnWindowTargetVisibilityChanged(bool visible) {
   if (visible) {
@@ -89,6 +98,9 @@ void BrowserFrameAsh::OnWindowTargetVisibilityChanged(bool visible) {
   }
   views::NativeWidgetAura::OnWindowTargetVisibilityChanged(visible);
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// BrowserFrameAsh, NativeBrowserFrame implementation:
 
 bool BrowserFrameAsh::ShouldSaveWindowPlacement() const {
   return nullptr == GetWidget()->GetNativeWindow()->GetProperty(
@@ -102,47 +114,37 @@ void BrowserFrameAsh::GetWindowPlacement(
                                    ash::kRestoreBoundsOverrideKey);
   if (override_bounds && !override_bounds->IsEmpty()) {
     *bounds = *override_bounds;
-    *show_state = GetWidget()->GetNativeWindow()->GetProperty(
-                      ash::kRestoreShowStateOverrideKey);
+    *show_state =
+        ash::ToWindowShowState(GetWidget()->GetNativeWindow()->GetProperty(
+            ash::kRestoreWindowStateTypeOverrideKey));
   } else {
     *bounds = GetWidget()->GetRestoredBounds();
     *show_state = GetWidget()->GetNativeWindow()->GetProperty(
                       aura::client::kShowStateKey);
   }
 
+  // Session restore might be unable to correctly restore other states.
+  // For the record, https://crbug.com/396272
   if (*show_state != ui::SHOW_STATE_MAXIMIZED &&
       *show_state != ui::SHOW_STATE_MINIMIZED) {
     *show_state = ui::SHOW_STATE_NORMAL;
   }
-
-  if (ash::wm::GetWindowState(GetNativeWindow())->IsDocked()) {
-    if (browser_view_->browser()->is_app()) {
-      // Only web app windows (not tabbed browser windows) persist docked state.
-      *show_state = ui::SHOW_STATE_DOCKED;
-    } else {
-      // Restore original restore bounds for tabbed browser windows ignoring
-      // the docked origin.
-      gfx::Rect* restore_bounds = GetWidget()->GetNativeWindow()->GetProperty(
-          aura::client::kRestoreBoundsKey);
-      if (restore_bounds)
-        *bounds = *restore_bounds;
-    }
-  }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// BrowserFrameAsh, NativeBrowserFrame implementation:
+content::KeyboardEventProcessingResult BrowserFrameAsh::PreHandleKeyboardEvent(
+    const content::NativeWebKeyboardEvent& event) {
+  return content::KeyboardEventProcessingResult::NOT_HANDLED;
+}
+
+bool BrowserFrameAsh::HandleKeyboardEvent(
+    const content::NativeWebKeyboardEvent& event) {
+  return false;
+}
 
 views::Widget::InitParams BrowserFrameAsh::GetWidgetParams() {
   views::Widget::InitParams params;
   params.native_widget = this;
-
   params.context = ash::Shell::GetPrimaryRootWindow();
-#if defined(OS_WIN)
-  // If this window is under ASH on Windows, we need it to be translucent.
-  params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
-#endif
-
   return params;
 }
 
@@ -158,16 +160,12 @@ int BrowserFrameAsh::GetMinimizeButtonOffset() const {
   return 0;
 }
 
-BrowserFrameAsh::~BrowserFrameAsh() {
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // BrowserFrameAsh, private:
 
 void BrowserFrameAsh::SetWindowAutoManaged() {
-  if (!browser_view_->browser()->is_type_popup() ||
-      browser_view_->browser()->is_app()) {
-    ash::wm::GetWindowState(GetNativeWindow())->
-        set_window_position_managed(true);
-  }
+  // For browser window in Chrome OS, we should only enable the auto window
+  // management logic for tabbed browser.
+  if (!browser_view_->browser()->is_type_popup())
+    GetNativeWindow()->SetProperty(ash::kWindowPositionManagedTypeKey, true);
 }

@@ -2,43 +2,117 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/bind.h"
-#include "base/location.h"
-#include "base/strings/stringprintf.h"
-#include "base/threading/thread_task_runner_handle.h"
-#include "build/build_config.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/api/image_writer_private/image_writer_utility_client.h"
-#include "chrome/common/extensions/chrome_utility_extensions_messages.h"
+
+#include "base/bind.h"
+#include "base/files/file_path.h"
+#include "base/location.h"
+#include "base/optional.h"
 #include "chrome/grit/generated_resources.h"
+#include "chrome/services/removable_storage_writer/public/mojom/constants.mojom.h"
 #include "content/public/browser/browser_thread.h"
+#include "mojo/public/cpp/bindings/binding.h"
+#include "services/service_manager/public/cpp/connector.h"
 #include "ui/base/l10n/l10n_util.h"
 
-using content::BrowserThread;
+namespace extensions {
+namespace image_writer {
 
-ImageWriterUtilityClient::ImageWriterUtilityClient()
-    : task_runner_(base::ThreadTaskRunnerHandle::Get()) {
+namespace {
+ImageWriterUtilityClient::ImageWriterUtilityClientFactory*
+    g_factory_for_testing = nullptr;
+
+void DeleteInterfacePtr(chrome::mojom::RemovableStorageWriterPtr writer_ptr) {
+  // Just let the parameters go out of scope so they are deleted.
 }
-ImageWriterUtilityClient::~ImageWriterUtilityClient() {}
+}  // namespace
+
+class ImageWriterUtilityClient::RemovableStorageWriterClientImpl
+    : public chrome::mojom::RemovableStorageWriterClient {
+ public:
+  RemovableStorageWriterClientImpl(
+      ImageWriterUtilityClient* owner,
+      chrome::mojom::RemovableStorageWriterClientPtr* interface_ptr)
+      : binding_(this, mojo::MakeRequest(interface_ptr)),
+        image_writer_utility_client_(owner) {
+    binding_.set_connection_error_handler(
+        base::BindOnce(&ImageWriterUtilityClient::OnConnectionError,
+                       image_writer_utility_client_));
+  }
+
+  ~RemovableStorageWriterClientImpl() override = default;
+
+ private:
+  void Progress(int64_t progress) override {
+    image_writer_utility_client_->OperationProgress(progress);
+  }
+
+  void Complete(const base::Optional<std::string>& error) override {
+    if (error) {
+      image_writer_utility_client_->OperationFailed(error.value());
+    } else {
+      image_writer_utility_client_->OperationSucceeded();
+    }
+  }
+
+  mojo::Binding<chrome::mojom::RemovableStorageWriterClient> binding_;
+  // |image_writer_utility_client_| owns |this|.
+  ImageWriterUtilityClient* const image_writer_utility_client_;
+
+  DISALLOW_COPY_AND_ASSIGN(RemovableStorageWriterClientImpl);
+};
+
+ImageWriterUtilityClient::ImageWriterUtilityClient(
+    const scoped_refptr<base::SequencedTaskRunner>& task_runner,
+    std::unique_ptr<service_manager::Connector> connector)
+    : task_runner_(task_runner), connector_(std::move(connector)) {}
+
+ImageWriterUtilityClient::~ImageWriterUtilityClient() {
+  // We could be running on a different TaskRunner (typically, the UI thread).
+  // Post to be safe.
+  task_runner_->DeleteSoon(FROM_HERE, std::move(connector_));
+  task_runner_->PostTask(FROM_HERE,
+                         base::BindOnce(&DeleteInterfacePtr,
+                                        std::move(removable_storage_writer_)));
+}
+
+// static
+scoped_refptr<ImageWriterUtilityClient> ImageWriterUtilityClient::Create(
+    const scoped_refptr<base::SequencedTaskRunner>& task_runner,
+    std::unique_ptr<service_manager::Connector> connector) {
+  // connector_ can be null in unit-tests.
+  DCHECK(!connector || !connector->IsBound());
+  if (g_factory_for_testing)
+    return g_factory_for_testing->Run();
+  return base::WrapRefCounted(
+      new ImageWriterUtilityClient(task_runner, std::move(connector)));
+}
+
+// static
+void ImageWriterUtilityClient::SetFactoryForTesting(
+    ImageWriterUtilityClientFactory* factory) {
+  g_factory_for_testing = factory;
+}
 
 void ImageWriterUtilityClient::Write(const ProgressCallback& progress_callback,
                                      const SuccessCallback& success_callback,
                                      const ErrorCallback& error_callback,
                                      const base::FilePath& source,
                                      const base::FilePath& target) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-
-  StartHost();
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(!removable_storage_writer_client_);
 
   progress_callback_ = progress_callback;
   success_callback_ = success_callback;
   error_callback_ = error_callback;
 
-  if (!Send(new ChromeUtilityMsg_ImageWriter_Write(source, target))) {
-    DLOG(ERROR) << "Unable to send Write message to Utility Process.";
-    task_runner_->PostTask(
-        FROM_HERE, base::Bind(error_callback_, "IPC communication failed"));
-  }
+  BindServiceIfNeeded();
+
+  chrome::mojom::RemovableStorageWriterClientPtr client;
+  removable_storage_writer_client_ =
+      std::make_unique<RemovableStorageWriterClientImpl>(this, &client);
+
+  removable_storage_writer_->Write(source, target, std::move(client));
 }
 
 void ImageWriterUtilityClient::Verify(const ProgressCallback& progress_callback,
@@ -46,124 +120,84 @@ void ImageWriterUtilityClient::Verify(const ProgressCallback& progress_callback,
                                       const ErrorCallback& error_callback,
                                       const base::FilePath& source,
                                       const base::FilePath& target) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-
-  StartHost();
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(!removable_storage_writer_client_);
 
   progress_callback_ = progress_callback;
   success_callback_ = success_callback;
   error_callback_ = error_callback;
 
-  if (!Send(new ChromeUtilityMsg_ImageWriter_Verify(source, target))) {
-    DLOG(ERROR) << "Unable to send Verify message to Utility Process.";
-    task_runner_->PostTask(
-        FROM_HERE, base::Bind(error_callback_, "IPC communication failed"));
-  }
+  BindServiceIfNeeded();
+
+  chrome::mojom::RemovableStorageWriterClientPtr client;
+  removable_storage_writer_client_ =
+      std::make_unique<RemovableStorageWriterClientImpl>(this, &client);
+
+  removable_storage_writer_->Verify(source, target, std::move(client));
 }
 
 void ImageWriterUtilityClient::Cancel(const CancelCallback& cancel_callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(cancel_callback);
 
-  if (!utility_process_host_) {
-    // If we haven't connected, there is nothing to cancel.
-    task_runner_->PostTask(FROM_HERE, cancel_callback);
-    return;
-  }
-
-  cancel_callback_ = cancel_callback;
-
-  if (!Send(new ChromeUtilityMsg_ImageWriter_Cancel())) {
-    DLOG(ERROR) << "Unable to send Cancel message to Utility Process.";
-  }
+  ResetRequest();
+  base::SequencedTaskRunnerHandle::Get()->PostTask(FROM_HERE, cancel_callback);
 }
 
 void ImageWriterUtilityClient::Shutdown() {
-  if (utility_process_host_ &&
-      Send(new ChromeUtilityMsg_ImageWriter_Cancel())) {
-    utility_process_host_->EndBatchMode();
-  }
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  ResetRequest();
+  removable_storage_writer_.reset();
+}
+
+void ImageWriterUtilityClient::BindServiceIfNeeded() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (removable_storage_writer_)
+    return;
+
+  connector_->BindInterface(chrome::mojom::kRemovableStorageWriterServiceName,
+                            mojo::MakeRequest(&removable_storage_writer_));
+  removable_storage_writer_.set_connection_error_handler(
+      base::BindOnce(&ImageWriterUtilityClient::OnConnectionError, this));
+}
+
+void ImageWriterUtilityClient::OnConnectionError() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  OperationFailed(
+      "Error with the connection to the RemovableStorageWriter service.");
+  removable_storage_writer_.reset();
+}
+
+void ImageWriterUtilityClient::OperationProgress(int64_t progress) {
+  if (progress_callback_)
+    progress_callback_.Run(progress);
+}
+
+void ImageWriterUtilityClient::OperationSucceeded() {
+  SuccessCallback success_callback = success_callback_;
+  ResetRequest();
+  if (success_callback)
+    success_callback.Run();
+}
+
+void ImageWriterUtilityClient::OperationFailed(const std::string& error) {
+  ErrorCallback error_callback = error_callback_;
+  ResetRequest();
+  if (error_callback)
+    error_callback.Run(error);
+}
+
+void ImageWriterUtilityClient::ResetRequest() {
+  removable_storage_writer_client_.reset();
 
   // Clear handlers to not hold any reference to the caller.
-  success_callback_ = base::Closure();
-  progress_callback_ = base::Callback<void(int64_t)>();
-  error_callback_ = base::Callback<void(const std::string&)>();
-  cancel_callback_ = base::Closure();
+  progress_callback_.Reset();
+  success_callback_.Reset();
+  error_callback_.Reset();
 }
 
-void ImageWriterUtilityClient::StartHost() {
-  if (!utility_process_host_) {
-    scoped_refptr<base::SequencedTaskRunner> task_runner =
-        base::ThreadTaskRunnerHandle::Get();
-    utility_process_host_ = content::UtilityProcessHost::Create(
-                                this, task_runner.get())->AsWeakPtr();
-    utility_process_host_->SetName(l10n_util::GetStringUTF16(
-        IDS_UTILITY_PROCESS_IMAGE_WRITER_NAME));
-
-#if defined(OS_WIN)
-    utility_process_host_->ElevatePrivileges();
-#else
-    utility_process_host_->DisableSandbox();
-#endif
-    utility_process_host_->StartBatchMode();
-  }
-}
-
-void ImageWriterUtilityClient::OnProcessCrashed(int exit_code) {
-  task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(error_callback_,
-                 base::StringPrintf("Utility process crashed with code %08x.",
-                                    exit_code)));
-}
-
-void ImageWriterUtilityClient::OnProcessLaunchFailed(int error_code) {
-  task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(error_callback_,
-                 base::StringPrintf("Process launch failed with code %08x.",
-                                    error_code)));
-}
-
-bool ImageWriterUtilityClient::OnMessageReceived(const IPC::Message& message) {
-  bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(ImageWriterUtilityClient, message)
-  IPC_MESSAGE_HANDLER(ChromeUtilityHostMsg_ImageWriter_Succeeded,
-                      OnWriteImageSucceeded)
-  IPC_MESSAGE_HANDLER(ChromeUtilityHostMsg_ImageWriter_Cancelled,
-                      OnWriteImageCancelled)
-  IPC_MESSAGE_HANDLER(ChromeUtilityHostMsg_ImageWriter_Failed,
-                      OnWriteImageFailed)
-  IPC_MESSAGE_HANDLER(ChromeUtilityHostMsg_ImageWriter_Progress,
-                      OnWriteImageProgress)
-  IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-  return handled;
-}
-
-bool ImageWriterUtilityClient::Send(IPC::Message* msg) {
-  return utility_process_host_ && utility_process_host_->Send(msg);
-}
-
-void ImageWriterUtilityClient::OnWriteImageSucceeded() {
-  if (!success_callback_.is_null()) {
-    task_runner_->PostTask(FROM_HERE, success_callback_);
-  }
-}
-
-void ImageWriterUtilityClient::OnWriteImageCancelled() {
-  if (!cancel_callback_.is_null()) {
-    task_runner_->PostTask(FROM_HERE, cancel_callback_);
-  }
-}
-
-void ImageWriterUtilityClient::OnWriteImageFailed(const std::string& message) {
-  if (!error_callback_.is_null()) {
-    task_runner_->PostTask(FROM_HERE, base::Bind(error_callback_, message));
-  }
-}
-
-void ImageWriterUtilityClient::OnWriteImageProgress(int64_t progress) {
-  if (!progress_callback_.is_null()) {
-    task_runner_->PostTask(FROM_HERE, base::Bind(progress_callback_, progress));
-  }
-}
+}  // namespace image_writer
+}  // namespace extensions

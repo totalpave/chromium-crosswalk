@@ -1,6 +1,4 @@
-dsinclair@chromium.org
-jbauman@chromium.org
-nduca@chromium.org
-oysteine@chromium.org
-primiano@chromium.org
-simonhatch@chromium.org
+file://base/trace_event/OWNERS
+
+# TEAM: tracing@chromium.org
+# COMPONENT: Speed>Tracing

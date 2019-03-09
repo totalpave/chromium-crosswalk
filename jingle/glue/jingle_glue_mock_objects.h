@@ -8,14 +8,14 @@
 #include <stddef.h>
 
 #include "testing/gmock/include/gmock/gmock.h"
-#include "third_party/webrtc/base/stream.h"
+#include "third_party/webrtc/rtc_base/stream.h"
 
 namespace jingle_glue {
 
 class MockStream : public rtc::StreamInterface {
  public:
   MockStream();
-  virtual ~MockStream();
+  ~MockStream() override;
 
   MOCK_CONST_METHOD0(GetState, rtc::StreamState());
 

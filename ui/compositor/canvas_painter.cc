@@ -4,26 +4,43 @@
 
 #include "ui/compositor/canvas_painter.h"
 
-#include "cc/playback/display_item_list.h"
-#include "cc/playback/display_item_list_settings.h"
-#include "ui/gfx/canvas.h"
+#include "cc/paint/display_item_list.h"
 
 namespace ui {
 
-CanvasPainter::CanvasPainter(gfx::Canvas* canvas, float raster_scale_factor)
-    : canvas_(canvas),
-      raster_scale_factor_(raster_scale_factor),
-      rect_(gfx::ScaleToEnclosedRect(
-          gfx::Rect(canvas_->sk_canvas()->getBaseLayerSize().width(),
-                    canvas_->sk_canvas()->getBaseLayerSize().height()),
-          1.f / raster_scale_factor)),
-      list_(cc::DisplayItemList::Create(rect_, cc::DisplayItemListSettings())),
-      context_(list_.get(), raster_scale_factor_, rect_) {
-}
+CanvasPainter::CanvasPainter(SkBitmap* output,
+                             const gfx::Size& output_size,
+                             float device_scale_factor,
+                             SkColor clear_color,
+                             bool is_pixel_canvas)
+    : output_(output),
+      pixel_output_size_(
+          gfx::ScaleToCeiledSize(output_size, device_scale_factor)),
+      raster_scale_(is_pixel_canvas ? 1.f : device_scale_factor),
+      clear_color_(clear_color),
+      list_(new cc::DisplayItemList),
+      context_(list_.get(),
+               device_scale_factor,
+               gfx::Rect(output_size),
+               is_pixel_canvas) {}
 
 CanvasPainter::~CanvasPainter() {
+  SkImageInfo info =
+      SkImageInfo::MakeN32(pixel_output_size_.width(),
+                           pixel_output_size_.height(), kPremul_SkAlphaType);
+  if (!output_->tryAllocPixels(info))
+    return;
+
+  SkCanvas canvas(*output_);
+  canvas.clear(clear_color_);
+
+  // When pixel canvas is enabled, the recordings and canvas are already scaled
+  // to the correct raster size. This additional scaling is not required and
+  // hence |raster_scale_| should be equal to 1 during this operation.
+  canvas.scale(raster_scale_, raster_scale_);
+
   list_->Finalize();
-  list_->Raster(canvas_->sk_canvas(), nullptr, rect_, raster_scale_factor_);
+  list_->Raster(&canvas, nullptr);
 }
 
 }  // namespace ui

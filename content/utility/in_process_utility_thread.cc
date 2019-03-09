@@ -4,6 +4,8 @@
 
 #include "content/utility/in_process_utility_thread.h"
 
+#include "base/bind.h"
+#include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -14,7 +16,8 @@ namespace content {
 
 // We want to ensure there's only one utility thread running at a time, as there
 // are many globals used in the utility process.
-static base::LazyInstance<base::Lock> g_one_utility_thread_lock;
+static base::LazyInstance<base::Lock>::DestructorAtExit
+    g_one_utility_thread_lock;
 
 InProcessUtilityThread::InProcessUtilityThread(
     const InProcessChildThreadParams& params)
@@ -32,8 +35,8 @@ void InProcessUtilityThread::Init() {
   // We need to return right away or else the main thread that started us will
   // hang.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&InProcessUtilityThread::InitInternal,
-                            base::Unretained(this)));
+      FROM_HERE, base::BindOnce(&InProcessUtilityThread::InitInternal,
+                                base::Unretained(this)));
 }
 
 void InProcessUtilityThread::CleanUp() {

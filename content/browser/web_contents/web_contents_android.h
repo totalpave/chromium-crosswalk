@@ -10,7 +10,6 @@
 #include <memory>
 
 #include "base/android/jni_android.h"
-#include "base/android/scoped_java_ref.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
@@ -19,9 +18,10 @@
 #include "content/browser/renderer_host/render_widget_host_view_android.h"
 #include "content/common/content_export.h"
 
+class GURL;
+
 namespace content {
 
-class SynchronousCompositorClient;
 class WebContentsImpl;
 
 // Android wrapper around WebContents that provides safer passage from java and
@@ -30,8 +30,6 @@ class WebContentsImpl;
 class CONTENT_EXPORT WebContentsAndroid
     : public base::SupportsUserData::Data {
  public:
-  static bool Register(JNIEnv* env);
-
   explicit WebContentsAndroid(WebContentsImpl* web_contents);
   ~WebContentsAndroid() override;
 
@@ -40,6 +38,20 @@ class CONTENT_EXPORT WebContentsAndroid
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
 
   // Methods called from Java
+  base::android::ScopedJavaLocalRef<jobject> GetTopLevelNativeWindow(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+  void SetTopLevelNativeWindow(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& jwindow_android);
+  void SetViewAndroidDelegate(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& jview_delegate);
+  base::android::ScopedJavaLocalRef<jobject> GetMainFrame(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj) const;
   base::android::ScopedJavaLocalRef<jstring> GetTitle(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj) const;
@@ -57,16 +69,16 @@ class CONTENT_EXPORT WebContentsAndroid
   void Cut(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
   void Copy(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
   void Paste(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  void PasteAsPlainText(JNIEnv* env,
+                        const base::android::JavaParamRef<jobject>& obj);
   void Replace(JNIEnv* env,
                const base::android::JavaParamRef<jobject>& obj,
                const base::android::JavaParamRef<jstring>& jstr);
   void SelectAll(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
-  void Unselect(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  void CollapseSelection(JNIEnv* env,
+                         const base::android::JavaParamRef<jobject>& obj);
   jint GetBackgroundColor(JNIEnv* env,
                           const base::android::JavaParamRef<jobject>& obj);
-  base::android::ScopedJavaLocalRef<jstring> GetURL(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>&) const;
   base::android::ScopedJavaLocalRef<jstring> GetLastCommittedURL(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>&) const;
@@ -79,16 +91,15 @@ class CONTENT_EXPORT WebContentsAndroid
 
   void OnHide(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
   void OnShow(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  void SetImportance(JNIEnv* env,
+                     const base::android::JavaParamRef<jobject>& obj,
+                     jint importance);
   void SuspendAllMediaPlayers(JNIEnv* env,
                               const base::android::JavaParamRef<jobject>& jobj);
   void SetAudioMuted(JNIEnv* env,
                      const base::android::JavaParamRef<jobject>& jobj,
                      jboolean mute);
 
-  void ShowInterstitialPage(JNIEnv* env,
-                            const base::android::JavaParamRef<jobject>& obj,
-                            const base::android::JavaParamRef<jstring>& jurl,
-                            jlong delegate_ptr);
   jboolean IsShowingInterstitialPage(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
@@ -100,13 +111,6 @@ class CONTENT_EXPORT WebContentsAndroid
       const base::android::JavaParamRef<jobject>& obj);
   void ExitFullscreen(JNIEnv* env,
                       const base::android::JavaParamRef<jobject>& obj);
-  void UpdateTopControlsState(JNIEnv* env,
-                              const base::android::JavaParamRef<jobject>& obj,
-                              bool enable_hiding,
-                              bool enable_showing,
-                              bool animate);
-  void ShowImeIfNeeded(JNIEnv* env,
-                       const base::android::JavaParamRef<jobject>& obj);
   void ScrollFocusedEditableNodeIntoView(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
@@ -116,10 +120,8 @@ class CONTENT_EXPORT WebContentsAndroid
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
       jint start_adjust,
-      jint end_adjust);
-  void InsertCSS(JNIEnv* env,
-                 const base::android::JavaParamRef<jobject>& jobj,
-                 const base::android::JavaParamRef<jstring>& jcss);
+      jint end_adjust,
+      jboolean show_selection_menu);
   void EvaluateJavaScript(JNIEnv* env,
                           const base::android::JavaParamRef<jobject>& obj,
                           const base::android::JavaParamRef<jstring>& script,
@@ -136,12 +138,14 @@ class CONTENT_EXPORT WebContentsAndroid
       jint level,
       const base::android::JavaParamRef<jstring>& message);
 
-  void SendMessageToFrame(
+  void PostMessageToFrame(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
-      const base::android::JavaParamRef<jstring>& frame_name,
-      const base::android::JavaParamRef<jstring>& message,
-      const base::android::JavaParamRef<jstring>& target_origin);
+      const base::android::JavaParamRef<jstring>& jframe_name,
+      const base::android::JavaParamRef<jstring>& jmessage,
+      const base::android::JavaParamRef<jstring>& jsource_origin,
+      const base::android::JavaParamRef<jstring>& jtarget_origin,
+      const base::android::JavaParamRef<jobjectArray>& jports);
 
   jboolean HasAccessedInitialDocument(
       JNIEnv* env,
@@ -150,45 +154,40 @@ class CONTENT_EXPORT WebContentsAndroid
   jint GetThemeColor(JNIEnv* env,
                      const base::android::JavaParamRef<jobject>& obj);
 
+  void RequestSmartClipExtract(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& callback,
+      jint x,
+      jint y,
+      jint width,
+      jint height);
+
   void RequestAccessibilitySnapshot(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
       const base::android::JavaParamRef<jobject>& callback);
 
-  void ResumeMediaSession(JNIEnv* env,
-                          const base::android::JavaParamRef<jobject>& obj);
-  void SuspendMediaSession(JNIEnv* env,
-                           const base::android::JavaParamRef<jobject>& obj);
-  void StopMediaSession(JNIEnv* env,
-                        const base::android::JavaParamRef<jobject>& obj);
-
   base::android::ScopedJavaLocalRef<jstring> GetEncoding(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj) const;
 
-  // Relay the access from Java layer to GetScaledContentBitmap through JNI.
-  void GetContentBitmap(JNIEnv* env,
-                        const base::android::JavaParamRef<jobject>& obj,
-                        const base::android::JavaParamRef<jobject>& jcallback,
-                        const base::android::JavaParamRef<jobject>& color_type,
-                        jfloat scale,
-                        jfloat x,
-                        jfloat y,
-                        jfloat width,
-                        jfloat height);
+  void SetOverscrollRefreshHandler(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& overscroll_refresh_handler);
 
-  void OnContextMenuClosed(JNIEnv* env,
-                           const base::android::JavaParamRef<jobject>& obj);
+  // Relay the access from Java layer to RWHV::CopyFromSurface() through JNI.
+  void WriteContentBitmapToDisk(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      jint width,
+      jint height,
+      const base::android::JavaParamRef<jstring>& jpath,
+      const base::android::JavaParamRef<jobject>& jcallback);
 
   void ReloadLoFiImages(JNIEnv* env,
                         const base::android::JavaParamRef<jobject>& obj);
-
-  void set_synchronous_compositor_client(SynchronousCompositorClient* client) {
-    synchronous_compositor_client_ = client;
-  }
-  SynchronousCompositorClient* synchronous_compositor_client() const {
-    return synchronous_compositor_client_;
-  }
 
   int DownloadImage(JNIEnv* env,
                     const base::android::JavaParamRef<jobject>& obj,
@@ -197,29 +196,83 @@ class CONTENT_EXPORT WebContentsAndroid
                     jint max_bitmap_size,
                     jboolean bypass_cache,
                     const base::android::JavaParamRef<jobject>& jcallback);
+  void DismissTextHandles(JNIEnv* env,
+                          const base::android::JavaParamRef<jobject>& obj);
+  void ShowContextMenuAtTouchHandle(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      int x,
+      int y);
+  void SetHasPersistentVideo(JNIEnv* env,
+                             const base::android::JavaParamRef<jobject>& obj,
+                             jboolean value);
+  bool HasActiveEffectivelyFullscreenVideo(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+  bool IsPictureInPictureAllowedForFullscreenVideo(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
 
- private:
+  base::android::ScopedJavaLocalRef<jobject> GetFullscreenVideoSize(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+  void SetSize(JNIEnv* env,
+               const base::android::JavaParamRef<jobject>& obj,
+               jint width,
+               jint height);
+  int GetWidth(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  int GetHeight(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+
+  base::android::ScopedJavaLocalRef<jobject> GetOrCreateEventForwarder(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+
+  void SetMediaSession(
+      const base::android::ScopedJavaLocalRef<jobject>& j_media_session);
+
+  void SendOrientationChangeEvent(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      jint orientation);
+
+  void OnScaleFactorChanged(JNIEnv* env,
+                            const base::android::JavaParamRef<jobject>& obj);
+  void SetFocus(JNIEnv* env,
+                const base::android::JavaParamRef<jobject>& obj,
+                jboolean focused);
+  bool IsBeingDestroyed(JNIEnv* env,
+                        const base::android::JavaParamRef<jobject>& obj);
+
+  void SetDisplayCutoutSafeArea(JNIEnv* env,
+                                const base::android::JavaParamRef<jobject>& obj,
+                                int top,
+                                int left,
+                                int bottom,
+                                int right);
+
   RenderWidgetHostViewAndroid* GetRenderWidgetHostViewAndroid();
 
-  void OnFinishGetContentBitmap(
-      base::android::ScopedJavaGlobalRef<jobject>* obj,
-      base::android::ScopedJavaGlobalRef<jobject>* callback,
-      const SkBitmap& bitmap,
-      ReadbackResponse response);
+ private:
+  void OnFinishGetContentBitmap(const base::android::JavaRef<jobject>& obj,
+                                const base::android::JavaRef<jobject>& callback,
+                                const std::string& path,
+                                const SkBitmap& bitmap);
 
-  void OnFinishDownloadImage(
-      base::android::ScopedJavaGlobalRef<jobject>* obj,
-      base::android::ScopedJavaGlobalRef<jobject>* callback,
-      int id,
-      int http_status_code,
-      const GURL& url,
-      const std::vector<SkBitmap>& bitmaps,
-      const std::vector<gfx::Size>& sizes);
+  void OnFinishDownloadImage(const base::android::JavaRef<jobject>& obj,
+                             const base::android::JavaRef<jobject>& callback,
+                             int id,
+                             int http_status_code,
+                             const GURL& url,
+                             const std::vector<SkBitmap>& bitmaps,
+                             const std::vector<gfx::Size>& sizes);
+  void SelectWordAroundCaretAck(bool did_select,
+                                int start_adjust,
+                                int end_adjust);
 
   WebContentsImpl* web_contents_;
+
   NavigationControllerAndroid navigation_controller_;
   base::android::ScopedJavaGlobalRef<jobject> obj_;
-  SynchronousCompositorClient* synchronous_compositor_client_;
 
   base::WeakPtrFactory<WebContentsAndroid> weak_factory_;
 

@@ -18,6 +18,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/test_navigation_observer.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
 
@@ -31,10 +32,12 @@ namespace {
 class WebBluetoothTest : public InProcessBrowserTest {
  protected:
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    // This is needed while Web Bluetooth is an Origin Trial, but can go away
-    // once it ships globally.
-    command_line->AppendSwitch(switches::kEnableWebBluetooth);
-    InProcessBrowserTest::SetUpCommandLine(command_line);
+    // TODO(juncai): Remove this switch once Web Bluetooth is supported on Linux
+    // and Windows.
+    // https://crbug.com/570344
+    // https://crbug.com/507419
+    command_line->AppendSwitch(
+        switches::kEnableExperimentalWebPlatformFeatures);
   }
 
   void SetUpOnMainThread() override {
@@ -60,6 +63,9 @@ IN_PROC_BROWSER_TEST_F(WebBluetoothTest, WebBluetoothAfterCrash) {
       new NiceMockBluetoothAdapter());
   ON_CALL(*adapter, IsPresent()).WillByDefault(Return(false));
 
+  auto bt_global_values =
+      device::BluetoothAdapterFactory::Get().InitGlobalValuesForTesting();
+  bt_global_values->SetLESupported(true);
   device::BluetoothAdapterFactory::SetAdapterForTesting(adapter);
 
   std::string result;
@@ -71,14 +77,15 @@ IN_PROC_BROWSER_TEST_F(WebBluetoothTest, WebBluetoothAfterCrash) {
   EXPECT_EQ("NotFoundError: Bluetooth adapter not available.", result);
 
   // Crash the renderer process.
-  content::RenderProcessHost* process = web_contents_->GetRenderProcessHost();
+  content::RenderProcessHost* process =
+      web_contents_->GetMainFrame()->GetProcess();
   content::RenderProcessHostWatcher crash_observer(
       process, content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
-  process->Shutdown(0, false);
+  process->Shutdown(0);
   crash_observer.Wait();
 
   // Reload tab.
-  chrome::Reload(browser(), CURRENT_TAB);
+  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
   content::WaitForLoadStop(
       browser()->tab_strip_model()->GetActiveWebContents());
 
@@ -98,6 +105,9 @@ IN_PROC_BROWSER_TEST_F(WebBluetoothTest, KillSwitchShouldBlock) {
   scoped_refptr<device::MockBluetoothAdapter> adapter =
       new testing::NiceMock<device::MockBluetoothAdapter>;
   EXPECT_CALL(*adapter, IsPresent()).WillRepeatedly(Return(true));
+  auto bt_global_values =
+      device::BluetoothAdapterFactory::Get().InitGlobalValuesForTesting();
+  bt_global_values->SetLESupported(true);
   device::BluetoothAdapterFactory::SetAdapterForTesting(adapter);
 
   // Turn on the global kill switch.
@@ -123,32 +133,77 @@ IN_PROC_BROWSER_TEST_F(WebBluetoothTest, KillSwitchShouldBlock) {
               testing::MatchesRegex("NotFoundError: .*globally disabled.*"));
 }
 
-// Tests that using Finch field trial parameters for blacklist additions has
+// Tests that using Finch field trial parameters for blocklist additions has
 // the effect of rejecting requestDevice calls.
-IN_PROC_BROWSER_TEST_F(WebBluetoothTest, BlacklistShouldBlock) {
+IN_PROC_BROWSER_TEST_F(WebBluetoothTest, BlocklistShouldBlock) {
   // Fake the BluetoothAdapter to say it's present.
   scoped_refptr<device::MockBluetoothAdapter> adapter =
       new testing::NiceMock<device::MockBluetoothAdapter>;
   EXPECT_CALL(*adapter, IsPresent()).WillRepeatedly(Return(true));
+  auto bt_global_values =
+      device::BluetoothAdapterFactory::Get().InitGlobalValuesForTesting();
+  bt_global_values->SetLESupported(true);
   device::BluetoothAdapterFactory::SetAdapterForTesting(adapter);
 
-  std::map<std::string, std::string> params;
-  params["blacklist_additions"] = "ee01:e";
-  variations::AssociateVariationParams("WebBluetoothBlacklist", "TestGroup",
-                                       params);
-  base::FieldTrialList::CreateFieldTrial("WebBluetoothBlacklist", "TestGroup");
+  if (base::FieldTrialList::TrialExists("WebBluetoothBlocklist")) {
+    LOG(INFO) << "WebBluetoothBlocklist field trial already configured.";
+    ASSERT_NE(variations::GetVariationParamValue("WebBluetoothBlocklist",
+                                                 "blocklist_additions")
+                  .find("ed5f25a4"),
+              std::string::npos)
+        << "ERROR: WebBluetoothBlocklist field trial being tested in\n"
+           "testing/variations/fieldtrial_testing_config_*.json must\n"
+           "include this test's random UUID 'ed5f25a4' in\n"
+           "blocklist_additions.\n";
+  } else {
+    LOG(INFO) << "Creating WebBluetoothBlocklist field trial for test.";
+    // Create a field trial with test parameter.
+    std::map<std::string, std::string> params;
+    params["blocklist_additions"] = "ed5f25a4:e";
+    variations::AssociateVariationParams("WebBluetoothBlocklist", "TestGroup",
+                                         params);
+    base::FieldTrialList::CreateFieldTrial("WebBluetoothBlocklist",
+                                           "TestGroup");
+  }
 
   std::string rejection;
   EXPECT_TRUE(content::ExecuteScriptAndExtractString(
       web_contents_,
-      "navigator.bluetooth.requestDevice({filters: [{services: [0xee01]}]})"
+      "navigator.bluetooth.requestDevice({filters: [{services: [0xed5f25a4]}]})"
       "  .then(() => { domAutomationController.send('Success'); },"
       "        reason => {"
       "      domAutomationController.send(reason.name + ': ' + reason.message);"
       "  });",
       &rejection));
   EXPECT_THAT(rejection,
-              testing::MatchesRegex("SecurityError: .*blacklisted UUID.*"));
+              testing::MatchesRegex("SecurityError: .*blocklisted UUID.*"));
+}
+
+IN_PROC_BROWSER_TEST_F(WebBluetoothTest, NavigateWithChooserCrossOrigin) {
+  // Fake the BluetoothAdapter to say it's present.
+  scoped_refptr<device::MockBluetoothAdapter> adapter =
+      new testing::NiceMock<device::MockBluetoothAdapter>;
+  EXPECT_CALL(*adapter, IsPresent()).WillRepeatedly(Return(true));
+  auto bt_global_values =
+      device::BluetoothAdapterFactory::Get().InitGlobalValuesForTesting();
+  bt_global_values->SetLESupported(true);
+  device::BluetoothAdapterFactory::SetAdapterForTesting(adapter);
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  content::TestNavigationObserver observer(
+      web_contents, 1 /* number_of_navigations */,
+      content::MessageLoopRunner::QuitMode::DEFERRED);
+
+  EXPECT_TRUE(content::ExecuteScript(
+      web_contents,
+      "navigator.bluetooth.requestDevice({filters: [{name: 'Hello'}]});"
+      "document.location.href = \"https://google.com\";"));
+
+  observer.Wait();
+  EXPECT_EQ(0u, browser()->GetBubbleManager()->GetBubbleCountForTesting());
+  EXPECT_EQ(GURL("https://google.com"), web_contents->GetLastCommittedURL());
 }
 
 }  // namespace

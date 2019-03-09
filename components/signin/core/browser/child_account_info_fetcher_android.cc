@@ -4,38 +4,59 @@
 
 #include "components/signin/core/browser/child_account_info_fetcher_android.h"
 
+#include <memory>
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
+#include "base/memory/ptr_util.h"
 #include "components/signin/core/browser/account_fetcher_service.h"
 #include "components/signin/core/browser/account_tracker_service.h"
 #include "jni/ChildAccountInfoFetcher_jni.h"
 
+using base::android::JavaParamRef;
+
 // static
-void ChildAccountInfoFetcherAndroid::StartFetchingChildAccountInfo(
-    AccountFetcherService* service,
-    const std::string& account_id) {
-  JNIEnv* env = base::android::AttachCurrentThread();
+std::unique_ptr<ChildAccountInfoFetcherAndroid>
+ChildAccountInfoFetcherAndroid::Create(AccountFetcherService* service,
+                                       const std::string& account_id) {
   std::string account_name =
       service->account_tracker_service()->GetAccountInfo(account_id).email;
   // The AccountTrackerService may not be populated correctly in tests.
   if (account_name.empty())
-    return;
-  Java_ChildAccountInfoFetcher_fetch(
+    return nullptr;
+
+  // Call the constructor directly instead of using std::make_unique because the
+  // constructor is private.
+  return base::WrapUnique(
+      new ChildAccountInfoFetcherAndroid(service, account_id, account_name));
+}
+
+void ChildAccountInfoFetcherAndroid::InitializeForTests() {
+  Java_ChildAccountInfoFetcher_initializeForTests(
+      base::android::AttachCurrentThread());
+}
+
+ChildAccountInfoFetcherAndroid::ChildAccountInfoFetcherAndroid(
+    AccountFetcherService* service,
+    const std::string& account_id,
+    const std::string& account_name) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  j_child_account_info_fetcher_.Reset(Java_ChildAccountInfoFetcher_create(
       env, reinterpret_cast<jlong>(service),
-      base::android::ConvertUTF8ToJavaString(env, account_id).obj(),
-      base::android::ConvertUTF8ToJavaString(env, account_name).obj());
+      base::android::ConvertUTF8ToJavaString(env, account_id),
+      base::android::ConvertUTF8ToJavaString(env, account_name)));
 }
 
-// static
-bool ChildAccountInfoFetcherAndroid::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+ChildAccountInfoFetcherAndroid::~ChildAccountInfoFetcherAndroid() {
+  Java_ChildAccountInfoFetcher_destroy(base::android::AttachCurrentThread(),
+                                       j_child_account_info_fetcher_);
 }
 
-void SetIsChildAccount(JNIEnv* env,
-                       const JavaParamRef<jclass>& caller,
-                       jlong native_service,
-                       const JavaParamRef<jstring>& j_account_id,
-                       jboolean is_child_account) {
+void JNI_ChildAccountInfoFetcher_SetIsChildAccount(
+    JNIEnv* env,
+    jlong native_service,
+    const JavaParamRef<jstring>& j_account_id,
+    jboolean is_child_account) {
   AccountFetcherService* service =
       reinterpret_cast<AccountFetcherService*>(native_service);
   service->SetIsChildAccount(

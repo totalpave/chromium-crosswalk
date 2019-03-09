@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -18,7 +19,6 @@
 #include "chrome/browser/plugins/plugin_prefs.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/pref_names.h"
-#include "components/metrics/proto/system_profile.pb.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -26,11 +26,12 @@
 #include "content/public/browser/plugin_service.h"
 #include "content/public/common/process_type.h"
 #include "content/public/common/webplugininfo.h"
+#include "third_party/metrics_proto/system_profile.pb.h"
 
 namespace {
 
 // Delay for RecordCurrentState execution.
-const int kRecordStateDelayMs = 15 * base::Time::kMillisecondsPerSecond;
+constexpr base::TimeDelta kRecordStateDelay = base::TimeDelta::FromSeconds(15);
 
 // Returns the plugin preferences corresponding for this user, if available.
 // If multiple user profiles are loaded, returns the preferences corresponding
@@ -116,8 +117,7 @@ PluginMetricsProvider::~PluginMetricsProvider() {
   BrowserChildProcessObserver::Remove(this);
 }
 
-void PluginMetricsProvider::GetPluginInformation(
-    const base::Closure& done_callback) {
+void PluginMetricsProvider::AsyncInit(const base::Closure& done_callback) {
   content::PluginService::GetInstance()->GetPlugins(
       base::Bind(&PluginMetricsProvider::OnGotPlugins,
                  weak_ptr_factory_.GetWeakPtr(),
@@ -144,8 +144,8 @@ void PluginMetricsProvider::ProvideStabilityMetrics(
   metrics::SystemProfileProto::Stability* stability =
       system_profile_proto->mutable_stability();
   for (const auto& value : *plugin_stats_list) {
-    base::DictionaryValue* plugin_dict;
-    if (!value->GetAsDictionary(&plugin_dict)) {
+    const base::DictionaryValue* plugin_dict;
+    if (!value.GetAsDictionary(&plugin_dict)) {
       NOTREACHED();
       continue;
     }
@@ -210,9 +210,9 @@ void PluginMetricsProvider::RecordCurrentState() {
   base::ListValue* plugins = update.Get();
   DCHECK(plugins);
 
-  for (const auto& value : *plugins) {
+  for (auto& value : *plugins) {
     base::DictionaryValue* plugin_dict;
-    if (!value->GetAsDictionary(&plugin_dict)) {
+    if (!value.GetAsDictionary(&plugin_dict)) {
       NOTREACHED();
       continue;
     }
@@ -304,7 +304,7 @@ void PluginMetricsProvider::LogPluginLoadingError(
     DCHECK(IsPluginProcess(stats.process_type));
   }
   stats.loading_errors++;
-  RecordCurrentStateWithDelay(kRecordStateDelayMs);
+  RecordCurrentStateWithDelay();
 }
 
 void PluginMetricsProvider::SetPluginsForTesting(
@@ -334,7 +334,7 @@ PluginMetricsProvider::ChildProcessStats&
 PluginMetricsProvider::GetChildProcessStats(
     const content::ChildProcessData& data) {
   const base::string16& child_name = data.name;
-  if (!ContainsKey(child_process_stats_buffer_, child_name)) {
+  if (!base::ContainsKey(child_process_stats_buffer_, child_name)) {
     child_process_stats_buffer_[child_name] =
         ChildProcessStats(data.process_type);
   }
@@ -344,35 +344,35 @@ PluginMetricsProvider::GetChildProcessStats(
 void PluginMetricsProvider::BrowserChildProcessHostConnected(
     const content::ChildProcessData& data) {
   GetChildProcessStats(data).process_launches++;
-  RecordCurrentStateWithDelay(kRecordStateDelayMs);
+  RecordCurrentStateWithDelay();
 }
 
 void PluginMetricsProvider::BrowserChildProcessCrashed(
     const content::ChildProcessData& data,
-    int exit_code) {
+    const content::ChildProcessTerminationInfo& info) {
   GetChildProcessStats(data).process_crashes++;
-  RecordCurrentStateWithDelay(kRecordStateDelayMs);
+  RecordCurrentStateWithDelay();
 }
 
 void PluginMetricsProvider::BrowserChildProcessKilled(
     const content::ChildProcessData& data,
-    int exit_code) {
+    const content::ChildProcessTerminationInfo& info) {
   // Treat a kill as a crash, since Flash returns STATUS_DEBUGGER_INACTIVE for
   // actual crashes, which is treated as a kill rather than a crash by
   // base::GetTerminationStatus
   GetChildProcessStats(data).process_crashes++;
-  RecordCurrentStateWithDelay(kRecordStateDelayMs);
+  RecordCurrentStateWithDelay();
 }
 
-bool PluginMetricsProvider::RecordCurrentStateWithDelay(int delay_sec) {
+bool PluginMetricsProvider::RecordCurrentStateWithDelay() {
   if (weak_ptr_factory_.HasWeakPtrs())
     return false;
 
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&PluginMetricsProvider::RecordCurrentState,
-                weak_ptr_factory_.GetWeakPtr()),
-                base::TimeDelta::FromMilliseconds(delay_sec));
+      base::BindOnce(&PluginMetricsProvider::RecordCurrentState,
+                     weak_ptr_factory_.GetWeakPtr()),
+      kRecordStateDelay);
   return true;
 }
 
@@ -383,4 +383,9 @@ bool PluginMetricsProvider::RecordCurrentStateIfPending() {
   weak_ptr_factory_.InvalidateWeakPtrs();
   RecordCurrentState();
   return true;
+}
+
+// static
+base::TimeDelta PluginMetricsProvider::GetRecordStateDelay() {
+  return kRecordStateDelay;
 }

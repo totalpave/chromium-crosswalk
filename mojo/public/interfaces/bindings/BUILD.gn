@@ -4,9 +4,21 @@
 
 import("../../tools/bindings/mojom.gni")
 
-mojom("bindings") {
+mojom_component("bindings") {
+  output_prefix = "mojo_mojom_bindings"
+  macro_prefix = "MOJO_MOJOM_BINDINGS"
+
+  visibility = [
+    "//mojo/public/cpp/bindings",
+    "//ipc:mojom",
+  ]
+
   sources = [
     "interface_control_messages.mojom",
+    "native_struct.mojom",
     "pipe_control_messages.mojom",
   ]
+
+  disallow_native_types = true
+  disallow_interfaces = true
 }

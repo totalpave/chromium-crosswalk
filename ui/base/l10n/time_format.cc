@@ -16,13 +16,12 @@
 #include "ui/base/ui_base_export.h"
 #include "ui/strings/grit/ui_strings.h"
 
-using base::Time;
 using base::TimeDelta;
 using ui::TimeFormat;
 
 namespace ui {
 
-UI_BASE_EXPORT base::LazyInstance<FormatterContainer> g_container =
+UI_BASE_EXPORT base::LazyInstance<FormatterContainer>::Leaky g_container =
     LAZY_INSTANCE_INITIALIZER;
 
 // static
@@ -32,11 +31,28 @@ base::string16 TimeFormat::Simple(TimeFormat::Format format,
   return Detailed(format, length, 0, delta);
 }
 
+base::string16 TimeFormat::SimpleWithMonthAndYear(TimeFormat::Format format,
+                                                  TimeFormat::Length length,
+                                                  const base::TimeDelta& delta,
+                                                  bool with_month_and_year) {
+  return DetailedWithMonthAndYear(format, length, 0, delta,
+                                  with_month_and_year);
+}
+
 // static
 base::string16 TimeFormat::Detailed(TimeFormat::Format format,
                                     TimeFormat::Length length,
                                     int cutoff,
                                     const base::TimeDelta& delta) {
+  return DetailedWithMonthAndYear(format, length, cutoff, delta, false);
+}
+
+base::string16 TimeFormat::DetailedWithMonthAndYear(
+    TimeFormat::Format format,
+    TimeFormat::Length length,
+    int cutoff,
+    const base::TimeDelta& delta,
+    bool with_month_and_year) {
   if (delta < TimeDelta::FromSeconds(0)) {
     NOTREACHED() << "Negative duration";
     return base::string16();
@@ -49,6 +65,13 @@ base::string16 TimeFormat::Detailed(TimeFormat::Format format,
   const TimeDelta one_minute(TimeDelta::FromMinutes(1));
   const TimeDelta one_hour(TimeDelta::FromHours(1));
   const TimeDelta one_day(TimeDelta::FromDays(1));
+
+  // An average month is a twelfth of a year.
+  const TimeDelta one_month(TimeDelta::FromDays(365) / 12);
+
+  // Simplify one year to be 365 days.
+  const TimeDelta one_year(TimeDelta::FromDays(365));
+
   const TimeDelta half_second(TimeDelta::FromMilliseconds(500));
   const TimeDelta half_minute(TimeDelta::FromSeconds(30));
   const TimeDelta half_hour(TimeDelta::FromMinutes(30));
@@ -91,8 +114,7 @@ base::string16 TimeFormat::Detailed(TimeFormat::Format format,
       formatter->Format(Formatter::TWO_UNITS_HOUR_MIN,
                         hours, minutes, &time_string);
     }
-
-  } else {
+  } else if (!with_month_and_year || delta < one_month) {
     // Anything bigger is formatted as days (respectively days and hours).
     if (delta >= cutoff * one_day - half_hour) {
       const int days = (delta + half_day).InDays();
@@ -103,6 +125,15 @@ base::string16 TimeFormat::Detailed(TimeFormat::Format format,
       formatter->Format(Formatter::TWO_UNITS_DAY_HOUR,
                         days, hours, &time_string);
     }
+  } else if (delta < one_year) {
+    DCHECK(with_month_and_year);
+    int month = delta / one_month;
+    DCHECK(month >= 1 && month <= 12);
+    formatter->Format(Formatter::UNIT_MONTH, month, &time_string);
+  } else {
+    DCHECK(with_month_and_year);
+    int year = delta / one_year;
+    formatter->Format(Formatter::UNIT_YEAR, year, &time_string);
   }
 
   const int capacity = time_string.length() + 1;
@@ -117,13 +148,14 @@ base::string16 TimeFormat::Detailed(TimeFormat::Format format,
 
 // static
 base::string16 TimeFormat::RelativeDate(
-    const Time& time,
-    const Time* optional_midnight_today) {
-  Time midnight_today = optional_midnight_today ? *optional_midnight_today :
-      Time::Now().LocalMidnight();
-  TimeDelta day = TimeDelta::FromMicroseconds(Time::kMicrosecondsPerDay);
-  Time tomorrow = midnight_today + day;
-  Time yesterday = midnight_today - day;
+    const base::Time& time,
+    const base::Time* optional_midnight_today) {
+  base::Time midnight_today = optional_midnight_today
+                                  ? *optional_midnight_today
+                                  : base::Time::Now().LocalMidnight();
+  TimeDelta day = TimeDelta::FromMicroseconds(base::Time::kMicrosecondsPerDay);
+  base::Time tomorrow = midnight_today + day;
+  base::Time yesterday = midnight_today - day;
   if (time >= tomorrow)
     return base::string16();
   else if (time >= midnight_today)

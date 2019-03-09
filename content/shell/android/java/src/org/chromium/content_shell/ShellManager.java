@@ -4,22 +4,16 @@
 
 package org.chromium.content_shell;
 
-import android.app.Activity;
 import android.content.Context;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
-import android.view.View;
 import android.widget.FrameLayout;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.content.browser.ActivityContentVideoViewEmbedder;
-import org.chromium.content.browser.ContentVideoViewEmbedder;
-import org.chromium.content.browser.ContentViewClient;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.ContentViewRenderView;
+import org.chromium.components.embedder_support.view.ContentViewRenderView;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 
 /**
@@ -29,7 +23,6 @@ import org.chromium.ui.base.WindowAndroid;
 public class ShellManager extends FrameLayout {
 
     public static final String DEFAULT_SHELL_URL = "http://www.google.com";
-    private static boolean sStartup = true;
     private WindowAndroid mWindow;
     private Shell mActiveShell;
 
@@ -37,7 +30,6 @@ public class ShellManager extends FrameLayout {
 
     // The target for all content rendering.
     private ContentViewRenderView mContentViewRenderView;
-    private ContentViewClient mContentViewClient;
 
     /**
      * Constructor for inflating via XML.
@@ -45,50 +37,15 @@ public class ShellManager extends FrameLayout {
     public ShellManager(final Context context, AttributeSet attrs) {
         super(context, attrs);
         nativeInit(this);
-        mContentViewClient = new ContentViewClient() {
-            @Override
-            public ContentVideoViewEmbedder getContentVideoViewEmbedder() {
-                return new ActivityContentVideoViewEmbedder((Activity) context) {
-                    @Override
-                    public void enterFullscreenVideo(View view) {
-                        super.enterFullscreenVideo(view);
-                        setOverlayVideoMode(true);
-                    }
-
-                    @Override
-                    public void exitFullscreenVideo() {
-                        super.exitFullscreenVideo();
-                        setOverlayVideoMode(false);
-                    }
-                };
-            }
-        };
     }
 
     /**
      * @param window The window used to generate all shells.
      */
     public void setWindow(WindowAndroid window) {
-        setWindow(window, true);
-    }
-
-    /**
-     * @param window The window used to generate all shells.
-     * @param initialLoadingNeeded Whether initial loading is needed or not.
-     */
-    @VisibleForTesting
-    public void setWindow(WindowAndroid window, final boolean initialLoadingNeeded) {
         assert window != null;
         mWindow = window;
-        mContentViewRenderView = new ContentViewRenderView(getContext()) {
-            @Override
-            protected void onReadyToRender() {
-                if (sStartup) {
-                    if (initialLoadingNeeded) mActiveShell.loadUrl(mStartupUrl);
-                    sStartup = false;
-                }
-            }
-        };
+        mContentViewRenderView = new ContentViewRenderView(getContext());
         mContentViewRenderView.onNativeLibraryLoaded(window);
     }
 
@@ -131,23 +88,17 @@ public class ShellManager extends FrameLayout {
         if (previousShell != null) previousShell.close();
     }
 
-    /**
-     * Enter or leave overlay video mode.
-     * @param enabled Whether overlay mode is enabled.
-     */
-    public void setOverlayVideoMode(boolean enabled) {
-        if (mContentViewRenderView == null) return;
-        mContentViewRenderView.setOverlayVideoMode(enabled);
-    }
-
     @SuppressWarnings("unused")
     @CalledByNative
     private Object createShell(long nativeShellPtr) {
-        assert mContentViewRenderView != null;
+        if (mContentViewRenderView == null) {
+            mContentViewRenderView = new ContentViewRenderView(getContext());
+            mContentViewRenderView.onNativeLibraryLoaded(mWindow);
+        }
         LayoutInflater inflater =
                 (LayoutInflater) getContext().getSystemService(Context.LAYOUT_INFLATER_SERVICE);
         Shell shellView = (Shell) inflater.inflate(R.layout.shell_view, null);
-        shellView.initialize(nativeShellPtr, mWindow, mContentViewClient);
+        shellView.initialize(nativeShellPtr, mWindow);
 
         // TODO(tedchoc): Allow switching back to these inactive shells.
         if (mActiveShell != null) removeShell(mActiveShell);
@@ -161,10 +112,10 @@ public class ShellManager extends FrameLayout {
         addView(shellView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         mActiveShell = shellView;
-        ContentViewCore contentViewCore = mActiveShell.getContentViewCore();
-        if (contentViewCore != null) {
-            mContentViewRenderView.setCurrentContentViewCore(contentViewCore);
-            contentViewCore.onShow();
+        WebContents webContents = mActiveShell.getWebContents();
+        if (webContents != null) {
+            mContentViewRenderView.setCurrentWebContents(webContents);
+            webContents.onShow();
         }
     }
 
@@ -172,20 +123,25 @@ public class ShellManager extends FrameLayout {
     private void removeShell(Shell shellView) {
         if (shellView == mActiveShell) mActiveShell = null;
         if (shellView.getParent() == null) return;
-        ContentViewCore contentViewCore = shellView.getContentViewCore();
-        if (contentViewCore != null) contentViewCore.onHide();
         shellView.setContentViewRenderView(null);
         removeView(shellView);
     }
 
     /**
      * Destroys the Shell manager and associated components.
+     * Always called at activity exit, and potentially called by native in cases where we need to
+     * control the timing of mContentViewRenderView destruction. Must handle being called twice.
      */
+    @CalledByNative
     public void destroy() {
         // Remove active shell (Currently single shell support only available).
-        removeShell(mActiveShell);
-        mContentViewRenderView.destroy();
-        mContentViewRenderView = null;
+        if (mActiveShell != null) {
+            removeShell(mActiveShell);
+        }
+        if (mContentViewRenderView != null) {
+            mContentViewRenderView.destroy();
+            mContentViewRenderView = null;
+        }
     }
 
     private static native void nativeInit(Object shellManagerInstance);

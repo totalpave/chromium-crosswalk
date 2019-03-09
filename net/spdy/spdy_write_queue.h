@@ -5,18 +5,18 @@
 #ifndef NET_SPDY_SPDY_WRITE_QUEUE_H_
 #define NET_SPDY_SPDY_WRITE_QUEUE_H_
 
-#include <deque>
 #include <memory>
 
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "net/base/net_export.h"
 #include "net/base/request_priority.h"
-#include "net/spdy/spdy_protocol.h"
+#include "net/third_party/quiche/src/spdy/core/spdy_protocol.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace net {
 
-class SpdyBuffer;
 class SpdyBufferProducer;
 class SpdyStream;
 
@@ -37,52 +37,70 @@ class NET_EXPORT_PRIVATE SpdyWriteQueue {
   // is non-NULL, its priority must be equal to |priority|, and it
   // must remain non-NULL until the write is dequeued or removed.
   void Enqueue(RequestPriority priority,
-               SpdyFrameType frame_type,
+               spdy::SpdyFrameType frame_type,
                std::unique_ptr<SpdyBufferProducer> frame_producer,
-               const base::WeakPtr<SpdyStream>& stream);
+               const base::WeakPtr<SpdyStream>& stream,
+               const NetworkTrafficAnnotationTag& traffic_annotation);
 
   // Dequeues the frame producer with the highest priority that was
   // enqueued the earliest and its associated stream. Returns true and
   // fills in |frame_type|, |frame_producer|, and |stream| if
   // successful -- otherwise, just returns false.
-  bool Dequeue(SpdyFrameType* frame_type,
+  bool Dequeue(spdy::SpdyFrameType* frame_type,
                std::unique_ptr<SpdyBufferProducer>* frame_producer,
-               base::WeakPtr<SpdyStream>* stream);
+               base::WeakPtr<SpdyStream>* stream,
+               MutableNetworkTrafficAnnotationTag* traffic_annotation);
 
   // Removes all pending writes for the given stream, which must be
   // non-NULL.
-  void RemovePendingWritesForStream(const base::WeakPtr<SpdyStream>& stream);
+  void RemovePendingWritesForStream(SpdyStream* stream);
 
   // Removes all pending writes for streams after |last_good_stream_id|
   // and streams with no stream id.
-  void RemovePendingWritesForStreamsAfter(SpdyStreamId last_good_stream_id);
+  void RemovePendingWritesForStreamsAfter(
+      spdy::SpdyStreamId last_good_stream_id);
+
+  // Change priority of all pending writes for the given stream.  Frames will be
+  // queued after other writes with |new_priority|.
+  void ChangePriorityOfWritesForStream(SpdyStream* stream,
+                                       RequestPriority old_priority,
+                                       RequestPriority new_priority);
 
   // Removes all pending writes.
   void Clear();
 
+  // Returns the estimate of dynamically allocated memory in bytes.
+  size_t EstimateMemoryUsage() const;
+
  private:
   // A struct holding a frame producer and its associated stream.
   struct PendingWrite {
-    SpdyFrameType frame_type;
-    // This has to be a raw pointer since we store this in an STL
-    // container.
-    SpdyBufferProducer* frame_producer;
+    spdy::SpdyFrameType frame_type;
+    std::unique_ptr<SpdyBufferProducer> frame_producer;
     base::WeakPtr<SpdyStream> stream;
+    MutableNetworkTrafficAnnotationTag traffic_annotation;
     // Whether |stream| was non-NULL when enqueued.
     bool has_stream;
 
     PendingWrite();
-    PendingWrite(SpdyFrameType frame_type,
-                 SpdyBufferProducer* frame_producer,
-                 const base::WeakPtr<SpdyStream>& stream);
-    PendingWrite(const PendingWrite& other);
+    PendingWrite(spdy::SpdyFrameType frame_type,
+                 std::unique_ptr<SpdyBufferProducer> frame_producer,
+                 const base::WeakPtr<SpdyStream>& stream,
+                 const MutableNetworkTrafficAnnotationTag& traffic_annotation);
     ~PendingWrite();
+    PendingWrite(PendingWrite&& other);
+    PendingWrite& operator=(PendingWrite&& other);
+
+    size_t EstimateMemoryUsage() const;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(PendingWrite);
   };
 
   bool removing_writes_;
 
   // The actual write queue, binned by priority.
-  std::deque<PendingWrite> queue_[NUM_PRIORITIES];
+  base::circular_deque<PendingWrite> queue_[NUM_PRIORITIES];
 
   DISALLOW_COPY_AND_ASSIGN(SpdyWriteQueue);
 };

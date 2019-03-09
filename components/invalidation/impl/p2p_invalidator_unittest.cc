@@ -23,7 +23,7 @@ namespace {
 
 class P2PInvalidatorTestDelegate {
  public:
-  P2PInvalidatorTestDelegate() : fake_push_client_(NULL) {}
+  P2PInvalidatorTestDelegate() : fake_push_client_(nullptr) {}
 
   ~P2PInvalidatorTestDelegate() {
     DestroyInvalidator();
@@ -35,7 +35,7 @@ class P2PInvalidatorTestDelegate {
       const base::WeakPtr<InvalidationStateTracker>&
           invalidation_state_tracker) {
     DCHECK(!fake_push_client_);
-    DCHECK(!invalidator_.get());
+    DCHECK(!invalidator_);
     fake_push_client_ = new notifier::FakePushClient();
     invalidator_.reset(new P2PInvalidator(base::WrapUnique(fake_push_client_),
                                           invalidator_client_id,
@@ -52,7 +52,7 @@ class P2PInvalidatorTestDelegate {
 
   void DestroyInvalidator() {
     invalidator_.reset();
-    fake_push_client_ = NULL;
+    fake_push_client_ = nullptr;
   }
 
   void WaitForInvalidator() {
@@ -351,9 +351,9 @@ TEST_F(P2PInvalidatorTest, SendNotificationData) {
   EXPECT_EQ(5, fake_handler_.GetInvalidationCount());
 }
 
-INSTANTIATE_TYPED_TEST_CASE_P(
-    P2PInvalidatorTest, InvalidatorTest,
-    P2PInvalidatorTestDelegate);
+INSTANTIATE_TYPED_TEST_SUITE_P(P2PInvalidatorTest,
+                               InvalidatorTest,
+                               P2PInvalidatorTestDelegate);
 
 }  // namespace
 

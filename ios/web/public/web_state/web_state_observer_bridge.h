@@ -9,57 +9,63 @@
 
 #include <string>
 
-#import "base/ios/weak_nsobject.h"
 #include "base/macros.h"
-#import "ios/web/public/web_state/web_state_observer.h"
-
-class GURL;
+#include "ios/web/public/web_state/web_state_observer.h"
 
 // Observes page lifecyle events from Objective-C. To use as a
 // web::WebStateObserver, wrap in a web::WebStateObserverBridge.
 @protocol CRWWebStateObserver<NSObject>
 @optional
 
-// Invoked by WebStateObserverBridge::ProvisionalNavigationStarted.
-- (void)webState:(web::WebState*)webState
-    didStartProvisionalNavigationForURL:(const GURL&)URL;
+// Invoked by WebStateObserverBridge::WasShown.
+- (void)webStateWasShown:(web::WebState*)webState;
 
-// Invoked by WebStateObserverBridge::NavigationItemCommitted.
+// Invoked by WebStateObserverBridge::WasHidden.
+- (void)webStateWasHidden:(web::WebState*)webState;
+
+// Invoked by WebStateObserverBridge::NavigationItemsPruned.
 - (void)webState:(web::WebState*)webState
-    didCommitNavigationWithDetails:
-        (const web::LoadCommittedDetails&)load_details;
+    didPruneNavigationItemsWithCount:(size_t)pruned_item_count;
+
+// Invoked by WebStateObserverBridge::DidStartNavigation.
+- (void)webState:(web::WebState*)webState
+    didStartNavigation:(web::NavigationContext*)navigation;
+
+// Invoked by WebStateObserverBridge::DidFinishNavigation.
+- (void)webState:(web::WebState*)webState
+    didFinishNavigation:(web::NavigationContext*)navigation;
 
 // Invoked by WebStateObserverBridge::PageLoaded.
-- (void)webStateDidLoadPage:(web::WebState*)webState;
+- (void)webState:(web::WebState*)webState didLoadPageWithSuccess:(BOOL)success;
 
-// Invoked by WebStateObserverBridge::InterstitialDismissed.
-- (void)webStateDidDismissInterstitial:(web::WebState*)webState;
-
-// Invoked by WebStateObserverBridge::UrlHashChanged.
-- (void)webStateDidChangeURLHash:(web::WebState*)webState;
-
-// Invoked by WebStateObserverBridge::HistoryStateChanged.
-- (void)webStateDidChangeHistoryState:(web::WebState*)webState;
-
-// Invoked by WebStateObserverBridge::DocumentSubmitted.
+// Invoked by WebStateObserverBridge::LoadProgressChanged.
 - (void)webState:(web::WebState*)webState
-    didSubmitDocumentWithFormNamed:(const std::string&)formName
-                     userInitiated:(BOOL)userInitiated;
+    didChangeLoadingProgress:(double)progress;
 
-// Invoked by WebStateObserverBridge::FormActivityRegistered.
-// TODO(ios): Method should take data transfer object rather than parameters.
-- (void)webState:(web::WebState*)webState
-    didRegisterFormActivityWithFormNamed:(const std::string&)formName
-                               fieldName:(const std::string&)fieldName
-                                    type:(const std::string&)type
-                                   value:(const std::string&)value
-                                 keyCode:(int)keyCode
-                            inputMissing:(BOOL)inputMissing;
+// Invoked by WebStateObserverBridge::DidChangeBackForwardState.
+- (void)webStateDidChangeBackForwardState:(web::WebState*)webState;
+
+// Invoked by WebStateObserverBridge::TitleWasSet.
+- (void)webStateDidChangeTitle:(web::WebState*)webState;
+
+// Invoked by WebStateObserverBridge::DidChangeVisibleSecurityState.
+- (void)webStateDidChangeVisibleSecurityState:(web::WebState*)webState;
 
 // Invoked by WebStateObserverBridge::FaviconUrlUpdated.
 - (void)webState:(web::WebState*)webState
     didUpdateFaviconURLCandidates:
         (const std::vector<web::FaviconURL>&)candidates;
+
+// Invoked by WebStateObserverBridge::WebFrameDidBecomeAvailable.
+- (void)webState:(web::WebState*)webState
+    frameDidBecomeAvailable:(web::WebFrame*)web_frame;
+
+// Invoked by WebStateObserverBridge::WebFrameWillBecomeUnavailable.
+- (void)webState:(web::WebState*)webState
+    frameWillBecomeUnavailable:(web::WebFrame*)web_frame;
+
+// Invoked by WebStateObserverBridge::RenderProcessGone.
+- (void)renderProcessGoneForWebState:(web::WebState*)webState;
 
 // Note: after |webStateDestroyed:| is invoked, the WebState being observed
 // is no longer valid.
@@ -75,42 +81,43 @@ class GURL;
 
 namespace web {
 
-class WebState;
-
 // Bridge to use an id<CRWWebStateObserver> as a web::WebStateObserver.
-// Will be added/removed as an observer of the underlying WebState during
-// construction/destruction. Instances should be owned by instances of the
-// class they're bridging.
 class WebStateObserverBridge : public web::WebStateObserver {
  public:
-  WebStateObserverBridge(web::WebState* web_state,
-                         id<CRWWebStateObserver> observer);
+  // It it the responsibility of calling code to add/remove the instance
+  // from the WebStates observer lists.
+  WebStateObserverBridge(id<CRWWebStateObserver> observer);
   ~WebStateObserverBridge() override;
 
   // web::WebStateObserver methods.
-  void ProvisionalNavigationStarted(const GURL& url) override;
-  void NavigationItemCommitted(
-      const LoadCommittedDetails& load_details) override;
+  void WasShown(web::WebState* web_state) override;
+  void WasHidden(web::WebState* web_state) override;
+  void NavigationItemsPruned(web::WebState* web_state,
+                             size_t pruned_item_count) override;
+  void DidStartNavigation(web::WebState* web_state,
+                          NavigationContext* navigation_context) override;
+  void DidFinishNavigation(web::WebState* web_state,
+                           NavigationContext* navigation_context) override;
   void PageLoaded(
+      web::WebState* web_state,
       web::PageLoadCompletionStatus load_completion_status) override;
-  void InsterstitialDismissed() override;
-  void UrlHashChanged() override;
-  void HistoryStateChanged() override;
-  void DocumentSubmitted(const std::string& form_name,
-                         bool user_initiated) override;
-  void FormActivityRegistered(const std::string& form_name,
-                              const std::string& field_name,
-                              const std::string& type,
-                              const std::string& value,
-                              int key_code,
-                              bool input_missing) override;
-  void FaviconUrlUpdated(const std::vector<FaviconURL>& candidates) override;
-  void WebStateDestroyed() override;
-  void DidStartLoading() override;
-  void DidStopLoading() override;
+  void LoadProgressChanged(web::WebState* web_state, double progress) override;
+  void DidChangeBackForwardState(web::WebState* web_state) override;
+  void TitleWasSet(web::WebState* web_state) override;
+  void DidChangeVisibleSecurityState(web::WebState* web_state) override;
+  void FaviconUrlUpdated(web::WebState* web_state,
+                         const std::vector<FaviconURL>& candidates) override;
+  void WebFrameDidBecomeAvailable(WebState* web_state,
+                                  WebFrame* web_frame) override;
+  void WebFrameWillBecomeUnavailable(WebState* web_state,
+                                     WebFrame* web_frame) override;
+  void RenderProcessGone(web::WebState* web_state) override;
+  void WebStateDestroyed(web::WebState* web_state) override;
+  void DidStartLoading(web::WebState* web_state) override;
+  void DidStopLoading(web::WebState* web_state) override;
 
  private:
-  base::WeakNSProtocol<id<CRWWebStateObserver>> observer_;
+  __weak id<CRWWebStateObserver> observer_ = nil;
   DISALLOW_COPY_AND_ASSIGN(WebStateObserverBridge);
 };
 

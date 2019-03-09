@@ -9,16 +9,12 @@
 #include <memory>
 #include <set>
 
-#include "base/id_map.h"
+#include "base/containers/id_map.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "content/common/android/gin_java_bridge_errors.h"
 #include "content/public/renderer/render_frame_observer.h"
-
-namespace blink {
-class WebFrame;
-}
 
 namespace content {
 
@@ -38,8 +34,8 @@ class GinJavaBridgeDispatcher
   // when it is no more referenced from JS. As GinJavaBridgeObject reports
   // deletion of self to GinJavaBridgeDispatcher, we would not have stale
   // pointers here.
-  typedef IDMap<GinJavaBridgeObject, IDMapExternalPointer> ObjectMap;
-  typedef ObjectMap::KeyType ObjectID;
+  using ObjectMap = base::IDMap<GinJavaBridgeObject*>;
+  using ObjectID = ObjectMap::KeyType;
 
   explicit GinJavaBridgeDispatcher(RenderFrame* render_frame);
   ~GinJavaBridgeDispatcher() override;
@@ -65,7 +61,6 @@ class GinJavaBridgeDispatcher
   void OnAddNamedObject(const std::string& name,
                         ObjectID object_id);
   void OnRemoveNamedObject(const std::string& name);
-  void OnSetAllowObjectContentsInspection(bool allow);
 
   typedef std::map<std::string, ObjectID> NamedObjectMap;
   NamedObjectMap named_objects_;

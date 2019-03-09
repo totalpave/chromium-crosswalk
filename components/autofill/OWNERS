@@ -1,9 +1,9 @@
+dvadym@chromium.org
 estade@chromium.org
-isherman@chromium.org
-mathp@chromium.org
-vabr@chromium.org
+ftirelo@chromium.org
+mahmadi@chromium.org
+rogerm@chromium.org
+sebsg@chromium.org
+tmartino@chromium.org
 
-# Owners for password autofill/generation only.
-# TODO(gcasto): Change to per-file ownership after http://crbug.com/235756
-# is fixed.
-gcasto@chromium.org
+# COMPONENT: UI>Browser>Autofill

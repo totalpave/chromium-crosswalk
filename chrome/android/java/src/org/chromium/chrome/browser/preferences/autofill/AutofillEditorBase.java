@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.preferences.autofill;
 
+import android.annotation.SuppressLint;
 import android.app.Fragment;
 import android.content.Context;
 import android.os.Bundle;
@@ -13,21 +14,26 @@ import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.View.OnTouchListener;
 import android.view.ViewGroup;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemSelectedListener;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.Spinner;
 
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.payments.ui.EditorView;
-import org.chromium.chrome.browser.payments.ui.FadingEdgeScrollView;
-import org.chromium.chrome.browser.widget.DualControlLayout;
+import org.chromium.chrome.browser.preferences.MainPreferences;
+import org.chromium.chrome.browser.preferences.PreferenceUtils;
+import org.chromium.chrome.browser.widget.FadingEdgeScrollView;
+import org.chromium.chrome.browser.widget.prefeditor.EditorDialog;
 
 /** Base class for Autofill editors (e.g. credit cards and profiles). */
 public abstract class AutofillEditorBase
-        extends Fragment implements OnItemSelectedListener, TextWatcher {
+        extends Fragment implements OnItemSelectedListener, OnTouchListener, TextWatcher {
 
     /** GUID of the profile we are editing.  Empty if creating a new profile. */
     protected String mGUID;
@@ -46,10 +52,10 @@ public abstract class AutofillEditorBase
         mContext = container.getContext();
 
         // We know which profile to edit based on the GUID stuffed in
-        // our extras by AutofillPreferences.
+        // our extras by MainPreferences.
         Bundle extras = getArguments();
         if (extras != null) {
-            mGUID = extras.getString(AutofillPreferences.AUTOFILL_GUID);
+            mGUID = extras.getString(MainPreferences.AUTOFILL_GUID);
         }
         if (mGUID == null) {
             mGUID = "";
@@ -59,17 +65,22 @@ public abstract class AutofillEditorBase
         }
         getActivity().setTitle(getTitleResourceId(mIsNewEntry));
 
-        // Hide the top shadow on the ScrollView because the toolbar draws one.
-        FadingEdgeScrollView scrollView = (FadingEdgeScrollView) inflater.inflate(
-                R.layout.autofill_editor_base, container, false);
-        scrollView.setShadowVisibility(false, true);
+        View baseView = inflater.inflate(R.layout.autofill_editor_base, container, false);
 
+        // Hide the top shadow on the ScrollView because the toolbar draws one.
+        FadingEdgeScrollView scrollView =
+                (FadingEdgeScrollView) baseView.findViewById(R.id.scroll_view);
+        scrollView.setEdgeVisibility(
+                FadingEdgeScrollView.EdgeType.NONE, FadingEdgeScrollView.EdgeType.FADING);
+        scrollView.getViewTreeObserver().addOnScrollChangedListener(
+                PreferenceUtils.getShowShadowOnScrollListener(
+                        scrollView, baseView.findViewById(R.id.shadow)));
         // Inflate the editor and buttons into the "content" LinearLayout.
         LinearLayout contentLayout = (LinearLayout) scrollView.findViewById(R.id.content);
         inflater.inflate(getLayoutId(), contentLayout, true);
         inflater.inflate(R.layout.autofill_editor_base_buttons, contentLayout, true);
 
-        return scrollView;
+        return baseView;
     }
 
     @Override
@@ -79,17 +90,29 @@ public abstract class AutofillEditorBase
             getActivity().finish();
             return true;
         } else if (item.getItemId() == R.id.help_menu_id) {
-            EditorView.launchAutofillHelpPage(mContext);
+            EditorDialog.launchAutofillHelpPage(getActivity());
             return true;
         }
 
         return super.onOptionsItemSelected(item);
     }
 
+    // Process touch event on spinner views so we can clear the keyboard.
+    @Override
+    @SuppressLint("ClickableViewAccessibility")
+    public boolean onTouch(View v, MotionEvent event) {
+        if (v instanceof Spinner) {
+            InputMethodManager imm = (InputMethodManager) v.getContext().getSystemService(
+                    Context.INPUT_METHOD_SERVICE);
+            imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+        }
+        return false;
+    }
+
     @Override
     public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
         menu.clear();
-        inflater.inflate(R.menu.payments_editor_menu, menu);
+        inflater.inflate(R.menu.prefeditor_editor_menu, menu);
 
         MenuItem deleteItem = menu.findItem(R.id.delete_menu_id);
         if (deleteItem != null) deleteItem.setVisible(!mIsNewEntry && getIsDeletable());
@@ -102,9 +125,6 @@ public abstract class AutofillEditorBase
 
     /** Initializes the buttons within the layout. */
     protected void initializeButtons(View layout) {
-        DualControlLayout buttonBar = (DualControlLayout) layout.findViewById(R.id.button_bar);
-        buttonBar.setAlignment(DualControlLayout.ALIGN_END);
-
         Button button = (Button) layout.findViewById(R.id.button_secondary);
         button.setOnClickListener(new View.OnClickListener() {
                 @Override
@@ -117,8 +137,9 @@ public abstract class AutofillEditorBase
         button.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    saveEntry();
-                    getActivity().finish();
+                    if (saveEntry()) {
+                        getActivity().finish();
+                    }
                 }
             });
         button.setEnabled(false);
@@ -127,8 +148,8 @@ public abstract class AutofillEditorBase
     /** Returns the ID of the layout to inflate. */
     protected abstract int getLayoutId();
 
-    /** Called when the entry should be saved. */
-    protected abstract void saveEntry();
+    /** @return True if entry could be saved and activity can be finished. */
+    protected abstract boolean saveEntry();
 
     /** Called when the entry being edited should be deleted. */
     protected void deleteEntry() {

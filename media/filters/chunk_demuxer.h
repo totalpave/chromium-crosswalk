@@ -8,34 +8,52 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <deque>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
+#include "base/memory/memory_pressure_listener.h"
 #include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "media/base/byte_queue.h"
 #include "media/base/demuxer.h"
 #include "media/base/demuxer_stream.h"
 #include "media/base/media_tracks.h"
 #include "media/base/ranges.h"
 #include "media/base/stream_parser.h"
-#include "media/filters/media_source_state.h"
+#include "media/filters/source_buffer_parse_warnings.h"
+#include "media/filters/source_buffer_range_by_dts.h"
+#include "media/filters/source_buffer_range_by_pts.h"
+#include "media/filters/source_buffer_state.h"
 #include "media/filters/source_buffer_stream.h"
+
+class MEDIA_EXPORT SourceBufferStream;
 
 namespace media {
 
-class FFmpegURLProtocol;
+template <>
+void SourceBufferStream<SourceBufferRangeByPts>::OnStartOfCodedFrameGroup(
+    DecodeTimestamp coded_frame_group_start_dts,
+    base::TimeDelta coded_frame_group_start_pts);
+
+template <>
+void SourceBufferStream<SourceBufferRangeByDts>::OnStartOfCodedFrameGroup(
+    DecodeTimestamp coded_frame_group_start_dts,
+    base::TimeDelta coded_frame_group_start_pts);
 
 class MEDIA_EXPORT ChunkDemuxerStream : public DemuxerStream {
  public:
-  typedef std::deque<scoped_refptr<StreamParserBuffer> > BufferQueue;
+  using BufferQueue = base::circular_deque<scoped_refptr<StreamParserBuffer>>;
+
+  enum class RangeApi { kLegacyByDts, kNewByPts };
 
   ChunkDemuxerStream(Type type,
-                     bool splice_frames_enabled,
-                     MediaTrack::Id media_track_id);
+                     MediaTrack::Id media_track_id,
+                     RangeApi range_api);
   ~ChunkDemuxerStream() override;
 
   // ChunkDemuxerStream control methods.
@@ -67,7 +85,12 @@ class MEDIA_EXPORT ChunkDemuxerStream : public DemuxerStream {
   // the "Coded Frame Eviction Algorithm" in the Media Source Extensions Spec.
   // Returns false iff buffer is still full after running eviction.
   // https://w3c.github.io/media-source/#sourcebuffer-coded-frame-eviction
-  bool EvictCodedFrames(DecodeTimestamp media_time, size_t newDataSize);
+  bool EvictCodedFrames(base::TimeDelta media_time, size_t newDataSize);
+
+  void OnMemoryPressure(
+      DecodeTimestamp media_time,
+      base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level,
+      bool force_instant_gc);
 
   // Signal to the stream that duration has changed to |duration|.
   void OnSetDuration(base::TimeDelta duration);
@@ -87,18 +110,23 @@ class MEDIA_EXPORT ChunkDemuxerStream : public DemuxerStream {
   size_t GetBufferedSize() const;
 
   // Signal to the stream that buffers handed in through subsequent calls to
-  // Append() belong to a coded frame group that starts at |start_timestamp|.
-  void OnStartOfCodedFrameGroup(DecodeTimestamp start_timestamp);
+  // Append() belong to a coded frame group that starts at |start_dts| and
+  // |start_pts|.
+  void OnStartOfCodedFrameGroup(DecodeTimestamp start_dts,
+                                base::TimeDelta start_pts);
 
   // Called when midstream config updates occur.
+  // For audio and video, if the codec is allowed to change, the caller should
+  // set |allow_codec_change| to true.
   // Returns true if the new config is accepted.
   // Returns false if the new config should trigger an error.
   bool UpdateAudioConfig(const AudioDecoderConfig& config,
-                         const scoped_refptr<MediaLog>& media_log);
+                         bool allow_codec_change,
+                         MediaLog* media_log);
   bool UpdateVideoConfig(const VideoDecoderConfig& config,
-                         const scoped_refptr<MediaLog>& media_log);
-  void UpdateTextConfig(const TextTrackConfig& config,
-                        const scoped_refptr<MediaLog>& media_log);
+                         bool allow_codec_change,
+                         MediaLog* media_log);
+  void UpdateTextConfig(const TextTrackConfig& config, MediaLog* media_log);
 
   void MarkEndOfStream();
   void UnmarkEndOfStream();
@@ -110,7 +138,9 @@ class MEDIA_EXPORT ChunkDemuxerStream : public DemuxerStream {
   AudioDecoderConfig audio_decoder_config() override;
   VideoDecoderConfig video_decoder_config() override;
   bool SupportsConfigChanges() override;
-  VideoRotation video_rotation() override;
+
+  bool IsEnabled() const;
+  void SetEnabled(bool enabled, base::TimeDelta timestamp);
 
   // Returns the text track configuration.  It is an error to call this method
   // if type() != TEXT.
@@ -119,13 +149,23 @@ class MEDIA_EXPORT ChunkDemuxerStream : public DemuxerStream {
   // Sets the memory limit, in bytes, on the SourceBufferStream.
   void SetStreamMemoryLimit(size_t memory_limit);
 
-  bool supports_partial_append_window_trimming() const {
-    return partial_append_window_trimming_enabled_;
-  }
-
   void SetLiveness(Liveness liveness);
 
   MediaTrack::Id media_track_id() const { return media_track_id_; }
+
+  // Allows tests to verify invocations of Append().
+  using AppendObserverCB = base::RepeatingCallback<void(const BufferQueue*)>;
+  void set_append_observer_for_testing(AppendObserverCB append_observer_cb) {
+    append_observer_cb_ = std::move(append_observer_cb);
+  }
+
+  // Allows tests to verify invocations of OnStartOfCodedFrameGroup().
+  using GroupStartObserverCB =
+      base::RepeatingCallback<void(DecodeTimestamp, base::TimeDelta)>;
+  void set_group_start_observer_for_testing(
+      GroupStartObserverCB group_start_observer_cb) {
+    group_start_observer_cb_ = std::move(group_start_observer_cb);
+  }
 
  private:
   enum State {
@@ -136,24 +176,32 @@ class MEDIA_EXPORT ChunkDemuxerStream : public DemuxerStream {
   };
 
   // Assigns |state_| to |state|
-  void ChangeState_Locked(State state);
+  void ChangeState_Locked(State state) EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
-  void CompletePendingReadIfPossible_Locked();
+  void CompletePendingReadIfPossible_Locked() EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // Specifies the type of the stream.
-  Type type_;
+  const Type type_;
+  const RangeApi range_api_;
 
-  Liveness liveness_;
+  Liveness liveness_ GUARDED_BY(lock_);
 
-  std::unique_ptr<SourceBufferStream> stream_;
+  // Precisely one of these will be used by an instance, determined by
+  // |range_api_| set in ctor. See https://crbug.com/718641.
+  std::unique_ptr<SourceBufferStream<SourceBufferRangeByDts>> stream_dts_
+      GUARDED_BY(lock_);
+  std::unique_ptr<SourceBufferStream<SourceBufferRangeByPts>> stream_pts_
+      GUARDED_BY(lock_);
 
   const MediaTrack::Id media_track_id_;
 
+  AppendObserverCB append_observer_cb_;
+  GroupStartObserverCB group_start_observer_cb_;
+
   mutable base::Lock lock_;
-  State state_;
-  ReadCB read_cb_;
-  bool splice_frames_enabled_;
-  bool partial_append_window_trimming_enabled_;
+  State state_ GUARDED_BY(lock_);
+  ReadCB read_cb_ GUARDED_BY(lock_);
+  bool is_enabled_ GUARDED_BY(lock_);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(ChunkDemuxerStream);
 };
@@ -169,17 +217,15 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   };
 
   // |open_cb| Run when Initialize() is called to signal that the demuxer
-  //   is ready to receive media data via AppenData().
+  //   is ready to receive media data via AppendData().
+  // |progress_cb| Run each time data is appended.
   // |encrypted_media_init_data_cb| Run when the demuxer determines that an
   //   encryption key is needed to decrypt the content.
   // |media_log| Used to report content and engine debug messages.
-  // |splice_frames_enabled| Indicates that it's okay to generate splice frames
-  //   per the MSE specification.  Renderers must understand DecoderBuffer's
-  //   splice_timestamp() field.
   ChunkDemuxer(const base::Closure& open_cb,
+               const base::Closure& progress_cb,
                const EncryptedMediaInitDataCB& encrypted_media_init_data_cb,
-               const scoped_refptr<MediaLog>& media_log,
-               bool splice_frames_enabled);
+               MediaLog* media_log);
   ~ChunkDemuxer() override;
 
   // Demuxer implementation.
@@ -187,15 +233,14 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
 
   // |enable_text| Process inband text tracks in the normal way when true,
   //   otherwise ignore them.
-  void Initialize(DemuxerHost* host,
-                  const PipelineStatusCB& cb,
-                  bool enable_text_tracks) override;
+  void Initialize(DemuxerHost* host, const PipelineStatusCB& init_cb) override;
   void Stop() override;
   void Seek(base::TimeDelta time, const PipelineStatusCB& cb) override;
   base::Time GetTimelineOffset() const override;
-  DemuxerStream* GetStream(DemuxerStream::Type type) override;
+  std::vector<DemuxerStream*> GetAllStreams() override;
   base::TimeDelta GetStartTime() const override;
   int64_t GetMemoryUsage() const override;
+  void AbortPendingReads() override;
 
   // ChunkDemuxer reads are abortable. StartWaitingForSeek() and
   // CancelPendingSeek() always abort pending and future reads until the
@@ -204,20 +249,27 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   void StartWaitingForSeek(base::TimeDelta seek_time) override;
   void CancelPendingSeek(base::TimeDelta seek_time) override;
 
-  // Registers a new |id| to use for AppendData() calls. |type| indicates
-  // the MIME type for the data that we intend to append for this ID.
-  // kOk is returned if the demuxer has enough resources to support another ID
-  //    and supports the format indicated by |type|.
-  // kNotSupported is returned if |type| is not a supported format.
-  // kReachedIdLimit is returned if the demuxer cannot handle another ID right
-  //    now.
-  Status AddId(const std::string& id, const std::string& type,
-               std::vector<std::string>& codecs);
+  // Registers a new |id| to use for AppendData() calls. |content_type|
+  // indicates the MIME type's ContentType and |codecs| indicates the MIME
+  // type's "codecs" parameter string (if any) for the data that we intend to
+  // append for this ID.  kOk is returned if the demuxer has enough resources to
+  // support another ID and supports the format indicated by |content_type| and
+  // |codecs|.  kReachedIdLimit is returned if the demuxer cannot handle another
+  // ID right now.  kNotSupported is returned if |content_type| and |codecs| is
+  // not a supported format.
+  Status AddId(const std::string& id,
+               const std::string& content_type,
+               const std::string& codecs);
 
   // Notifies a caller via |tracks_updated_cb| that the set of media tracks
   // for a given |id| has changed.
   void SetTracksWatcher(const std::string& id,
                         const MediaTracksUpdatedCB& tracks_updated_cb);
+
+  // Notifies a caller via |parse_warning_cb| of a parse warning.
+  void SetParseWarningCallback(
+      const std::string& id,
+      const SourceBufferParseWarningCB& parse_warning_cb);
 
   // Removed an ID & associated resources that were previously added with
   // AddId().
@@ -229,6 +281,20 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   // Gets the highest buffered PTS for the specified |id|. If there is nothing
   // buffered, returns base::TimeDelta().
   base::TimeDelta GetHighestPresentationTimestamp(const std::string& id) const;
+
+  void OnEnabledAudioTracksChanged(const std::vector<MediaTrack::Id>& track_ids,
+                                   base::TimeDelta curr_time,
+                                   TrackChangeCB change_completed_cb) override;
+
+  void OnSelectedVideoTrackChanged(const std::vector<MediaTrack::Id>& track_ids,
+                                   base::TimeDelta curr_time,
+                                   TrackChangeCB change_completed_cb) override;
+
+  // Callback for reporting bytes appended to a SourceBuffer.
+  using BytesReceivedCB = base::RepeatingCallback<void(uint64_t)>;
+
+  // Register a BytesReceivedCB.
+  void AddBytesReceivedCallback(BytesReceivedCB bytes_received_cb);
 
   // Appends media data to the source buffer associated with |id|, applying
   // and possibly updating |*timestamp_offset| during coded frame processing.
@@ -257,6 +323,26 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   void Remove(const std::string& id, base::TimeDelta start,
               base::TimeDelta end);
 
+  // Returns whether or not the source buffer associated with |id| can change
+  // its parser type to one which parses |content_type| and |codecs|.
+  // |content_type| indicates the ContentType of the MIME type for the data that
+  // we intend to append for this |id|; |codecs| similarly indicates the MIME
+  // type's "codecs" parameter, if any.
+  bool CanChangeType(const std::string& id,
+                     const std::string& content_type,
+                     const std::string& codecs);
+
+  // For the source buffer associated with |id|, changes its parser type to one
+  // which parses |content_type| and |codecs|.  |content_type| indicates the
+  // ContentType of the MIME type for the data that we intend to append for this
+  // |id|; |codecs| similarly indicates the MIME type's "codecs" parameter, if
+  // any.  Caller must first ensure CanChangeType() returns true for the same
+  // parameters.  Caller must also ensure that ResetParserState() is done before
+  // calling this, to flush any pending frames.
+  void ChangeType(const std::string& id,
+                  const std::string& content_type,
+                  const std::string& codecs);
+
   // If the buffer is full, attempts to try to free up space, as specified in
   // the "Coded Frame Eviction Algorithm" in the Media Source Extensions Spec.
   // Returns false iff buffer is still full after running eviction.
@@ -264,6 +350,11 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   bool EvictCodedFrames(const std::string& id,
                         base::TimeDelta currentMediaTime,
                         size_t newDataSize);
+
+  void OnMemoryPressure(
+      base::TimeDelta currentMediaTime,
+      base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level,
+      bool force_instant_gc);
 
   // Returns the current presentation duration.
   double GetDuration();
@@ -276,6 +367,10 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   // Returns true if the source buffer associated with |id| is currently parsing
   // a media segment, or false otherwise.
   bool IsParsingMediaSegment(const std::string& id);
+
+  // Returns the 'Generate Timestamps Flag', as described in the MSE Byte Stream
+  // Format Registry, for the source buffer associated with |id|.
+  bool GetGenerateTimestampsFlag(const std::string& id);
 
   // Set the append mode to be applied to subsequent buffers appended to the
   // source buffer associated with |id|. If |sequence_mode| is true, caller
@@ -300,7 +395,7 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   // Sets the memory limit on each stream of a specific type.
   // |memory_limit| is the maximum number of bytes each stream of type |type|
   // is allowed to hold in its buffer.
-  void SetMemoryLimits(DemuxerStream::Type type, size_t memory_limit);
+  void SetMemoryLimitsForTest(DemuxerStream::Type type, size_t memory_limit);
 
   // Returns the ranges representing the buffered data in the demuxer.
   // TODO(wolenetz): Remove this method once MediaSourceDelegate no longer
@@ -310,13 +405,22 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
 
  private:
   enum State {
-    WAITING_FOR_INIT,
+    WAITING_FOR_INIT = 0,
     INITIALIZING,
     INITIALIZED,
     ENDED,
+
+    // Any State at or beyond PARSE_ERROR cannot be changed to a state before
+    // this. See ChangeState_Locked.
     PARSE_ERROR,
     SHUTDOWN,
   };
+
+  // Helper for vide and audio track changing.
+  void FindAndEnableProperTracks(const std::vector<MediaTrack::Id>& track_ids,
+                                 base::TimeDelta curr_time,
+                                 DemuxerStream::Type track_type,
+                                 TrackChangeCB change_completed_cb);
 
   void ChangeState_Locked(State new_state);
 
@@ -331,13 +435,16 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   // false if any can not.
   bool CanEndOfStream_Locked() const;
 
-  // MediaSourceState callbacks.
-  void OnSourceInitDone(const StreamParser::InitParameters& params);
+  // SourceBufferState callbacks.
+  void OnSourceInitDone(const std::string& source_id,
+                        const StreamParser::InitParameters& params);
 
-  // Creates a DemuxerStream for the specified |type|.
-  // Returns a new ChunkDemuxerStream instance if a stream of this type
-  // has not been created before. Returns NULL otherwise.
-  ChunkDemuxerStream* CreateDemuxerStream(DemuxerStream::Type type);
+  // Creates a DemuxerStream of the specified |type| for the SourceBufferState
+  // with the given |source_id|.
+  // Returns a pointer to a new ChunkDemuxerStream instance, which is owned by
+  // ChunkDemuxer.
+  ChunkDemuxerStream* CreateDemuxerStream(const std::string& source_id,
+                                          DemuxerStream::Type type);
 
   void OnNewTextTrack(ChunkDemuxerStream* text_stream,
                       const TextTrackConfig& config);
@@ -362,8 +469,7 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   // Start returning data on all DemuxerStreams.
   void StartReturningData();
 
-  // Aborts pending reads on all DemuxerStreams.
-  void AbortPendingReads();
+  void AbortPendingReads_Locked();
 
   // Completes any pending reads if it is possible to do so.
   void CompletePendingReadsIfPossible();
@@ -378,17 +484,23 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   // all objects in |source_state_map_|.
   void ShutdownAllStreams();
 
+  // Executes |init_cb_| with |status| and closes out the async trace.
+  void RunInitCB_Locked(PipelineStatus status);
+
+  // Executes |seek_cb_| with |status| and closes out the async trace.
+  void RunSeekCB_Locked(PipelineStatus status);
+
   mutable base::Lock lock_;
   State state_;
   bool cancel_next_seek_;
 
   DemuxerHost* host_;
   base::Closure open_cb_;
+  base::Closure progress_cb_;
   EncryptedMediaInitDataCB encrypted_media_init_data_cb_;
-  bool enable_text_;
 
   // MediaLog for reporting messages and properties to debug content and engine.
-  scoped_refptr<MediaLog> media_log_;
+  MediaLog* media_log_;
 
   PipelineStatusCB init_cb_;
   // Callback to execute upon seek completion.
@@ -397,12 +509,15 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   // http://crbug.com/308226
   PipelineStatusCB seek_cb_;
 
-  std::unique_ptr<ChunkDemuxerStream> audio_;
-  std::unique_ptr<ChunkDemuxerStream> video_;
+  using OwnedChunkDemuxerStreamVector =
+      std::vector<std::unique_ptr<ChunkDemuxerStream>>;
+  OwnedChunkDemuxerStreamVector audio_streams_;
+  OwnedChunkDemuxerStreamVector video_streams_;
+  OwnedChunkDemuxerStreamVector text_streams_;
 
-  // Counter to ensure that we do not transition too early to INITIALIZED.
-  // Incremented in AddId(), decremented in OnSourceInitDone().
-  int pending_source_init_done_count_;
+  // Keep track of which ids still remain uninitialized so that we transition
+  // into the INITIALIZED only after all ids/SourceBuffers got init segment.
+  std::set<std::string> pending_source_init_ids_;
 
   base::TimeDelta duration_;
 
@@ -416,22 +531,29 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
   base::Time timeline_offset_;
   DemuxerStream::Liveness liveness_;
 
-  typedef std::map<std::string, MediaSourceState*> MediaSourceStateMap;
-  MediaSourceStateMap source_state_map_;
+  std::map<std::string, std::unique_ptr<SourceBufferState>> source_state_map_;
 
-  // Used to ensure that (1) config data matches the type and codec provided in
-  // AddId(), (2) only 1 audio and 1 video sources are added, and (3) ids may be
-  // removed with RemoveID() but can not be re-added (yet).
-  std::string source_id_audio_;
-  std::string source_id_video_;
-
-  // Indicates that splice frame generation is enabled.
-  const bool splice_frames_enabled_;
+  std::map<std::string, std::vector<ChunkDemuxerStream*>> id_to_streams_map_;
+  // Used to hold alive the demuxer streams that were created for removed /
+  // released SourceBufferState objects. Demuxer clients might still have
+  // references to these streams, so we need to keep them alive. But they'll be
+  // in a shut down state, so reading from them will return EOS.
+  std::vector<std::unique_ptr<ChunkDemuxerStream>> removed_streams_;
 
   // Accumulate, by type, detected track counts across the SourceBuffers.
   int detected_audio_track_count_;
   int detected_video_track_count_;
   int detected_text_track_count_;
+
+  // Caches whether |media::kMseBufferByPts| feature was enabled at ChunkDemuxer
+  // construction time. This makes sure that all buffering for this ChunkDemuxer
+  // uses the same behavior. See https://crbug.com/718641.
+  const bool buffering_by_pts_;
+
+  // Callback for reporting the number of bytes appended to this ChunkDemuxer.
+  BytesReceivedCB bytes_received_cb_;
+
+  std::map<MediaTrack::Id, ChunkDemuxerStream*> track_id_to_demux_stream_map_;
 
   DISALLOW_COPY_AND_ASSIGN(ChunkDemuxer);
 };

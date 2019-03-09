@@ -26,8 +26,8 @@
 #include "net/base/net_errors.h"
 #include "net/base/network_delegate_impl.h"
 #include "net/base/request_priority.h"
-#include "net/base/sdch_manager.h"
 #include "net/cert/cert_verifier.h"
+#include "net/cert/ct_policy_enforcer.h"
 #include "net/cookies/cookie_monster.h"
 #include "net/disk_cache/disk_cache.h"
 #include "net/ftp/ftp_network_layer.h"
@@ -36,8 +36,9 @@
 #include "net/http/http_network_layer.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_request_headers.h"
-#include "net/proxy/proxy_service.h"
+#include "net/proxy_resolution/proxy_resolution_service.h"
 #include "net/ssl/ssl_config_service_defaults.h"
+#include "net/url_request/redirect_info.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_getter.h"
@@ -70,19 +71,14 @@ class TestURLRequestContext : public URLRequestContext {
     client_socket_factory_ = factory;
   }
 
-  ProxyDelegate* proxy_delegate() { return proxy_delegate_; }
-
-  void set_proxy_delegate(ProxyDelegate* proxy_delegate) {
-    proxy_delegate_ = proxy_delegate;
-  }
-
   void set_http_network_session_params(
-      std::unique_ptr<HttpNetworkSession::Params> params) {
-    http_network_session_params_ = std::move(params);
+      std::unique_ptr<HttpNetworkSession::Params> session_params) {
+    http_network_session_params_ = std::move(session_params);
   }
 
-  void SetSdchManager(std::unique_ptr<SdchManager> sdch_manager) {
-    context_storage_.set_sdch_manager(std::move(sdch_manager));
+  void set_http_network_session_context(
+      std::unique_ptr<HttpNetworkSession::Context> session_context) {
+    http_network_session_context_ = std::move(session_context);
   }
 
   void SetCTPolicyEnforcer(
@@ -90,18 +86,23 @@ class TestURLRequestContext : public URLRequestContext {
     context_storage_.set_ct_policy_enforcer(std::move(ct_policy_enforcer));
   }
 
+  void set_create_default_http_user_agent_settings(bool value) {
+    create_default_http_user_agent_settings_ = value;
+  }
+
  private:
   bool initialized_ = false;
 
-  // Optional parameters to override default values.  Note that values that
-  // point to other objects the TestURLRequestContext creates will be
-  // overwritten.
+  // Optional parameters to override default values.  Note that values in the
+  // HttpNetworkSession::Context that point to other objects the
+  // TestURLRequestContext creates will be overwritten.
   std::unique_ptr<HttpNetworkSession::Params> http_network_session_params_;
+  std::unique_ptr<HttpNetworkSession::Context> http_network_session_context_;
 
   // Not owned:
   ClientSocketFactory* client_socket_factory_ = nullptr;
 
-  ProxyDelegate* proxy_delegate_ = nullptr;
+  bool create_default_http_user_agent_settings_ = true;
 
  protected:
   URLRequestContextStorage context_storage_;
@@ -127,12 +128,16 @@ class TestURLRequestContextGetter : public URLRequestContextGetter {
   scoped_refptr<base::SingleThreadTaskRunner> GetNetworkTaskRunner()
       const override;
 
+  // see NotifyContextShuttingDown() in the base class.
+  void NotifyContextShuttingDown();
+
  protected:
   ~TestURLRequestContextGetter() override;
 
  private:
   const scoped_refptr<base::SingleThreadTaskRunner> network_task_runner_;
   std::unique_ptr<TestURLRequestContext> context_;
+  bool is_shut_down_ = false;
 };
 
 //-----------------------------------------------------------------------------
@@ -142,20 +147,25 @@ class TestDelegate : public URLRequest::Delegate {
   TestDelegate();
   ~TestDelegate() override;
 
+  // Helpers to create a RunLoop, set |on_<event>| from it, then Run() it.
+  void RunUntilComplete();
+  void RunUntilRedirect();
+  // Enables quitting the message loop in response to auth requests, as opposed
+  // to returning credentials or cancelling the request.
+  void RunUntilAuthRequired();
+
+  // Sets the closure to be run on completion, for tests which need more fine-
+  // grained control than RunUntilComplete().
+  void set_on_complete(base::OnceClosure on_complete) {
+    use_legacy_on_complete_ = false;
+    on_complete_ = std::move(on_complete);
+  }
+
   void set_cancel_in_received_redirect(bool val) { cancel_in_rr_ = val; }
   void set_cancel_in_response_started(bool val) { cancel_in_rs_ = val; }
   void set_cancel_in_received_data(bool val) { cancel_in_rd_ = val; }
   void set_cancel_in_received_data_pending(bool val) {
     cancel_in_rd_pending_ = val;
-  }
-
-  void set_quit_on_complete(bool val) { quit_on_complete_ = val; }
-  void set_quit_on_redirect(bool val) { quit_on_redirect_ = val; }
-  // Enables quitting the message loop in response to auth requests, as opposed
-  // to returning credentials or cancelling the request.
-  void set_quit_on_auth_required(bool val) { quit_on_auth_required_ = val; }
-  void set_quit_on_network_start(bool val) {
-    quit_on_before_network_start_ = val;
   }
 
   void set_allow_certificate_errors(bool val) {
@@ -169,13 +179,12 @@ class TestDelegate : public URLRequest::Delegate {
   const std::string& data_received() const { return data_received_; }
   int bytes_received() const { return static_cast<int>(data_received_.size()); }
   int response_started_count() const { return response_started_count_; }
+  int received_bytes_count() const { return received_bytes_count_; }
   int received_redirect_count() const { return received_redirect_count_; }
-  int received_before_network_start_count() const {
-    return received_before_network_start_count_;
-  }
   bool received_data_before_response() const {
     return received_data_before_response_;
   }
+  RedirectInfo redirect_info() { return redirect_info_; }
   bool request_failed() const { return request_failed_; }
   bool have_certificate_errors() const { return have_certificate_errors_; }
   bool certificate_errors_are_fatal() const {
@@ -183,16 +192,17 @@ class TestDelegate : public URLRequest::Delegate {
   }
   bool auth_required_called() const { return auth_required_; }
   bool have_full_request_headers() const { return have_full_request_headers_; }
+  bool response_completed() const { return response_completed_; }
   const HttpRequestHeaders& full_request_headers() const {
     return full_request_headers_;
   }
   void ClearFullRequestHeaders();
+  int request_status() const { return request_status_; }
 
   // URLRequest::Delegate:
   void OnReceivedRedirect(URLRequest* request,
                           const RedirectInfo& redirect_info,
                           bool* defer_redirect) override;
-  void OnBeforeNetworkStart(URLRequest* request, bool* defer) override;
   void OnAuthRequired(URLRequest* request,
                       AuthChallengeInfo* auth_info) override;
   // NOTE: |fatal| causes |certificate_errors_are_fatal_| to be set to true.
@@ -201,7 +211,7 @@ class TestDelegate : public URLRequest::Delegate {
   void OnSSLCertificateError(URLRequest* request,
                              const SSLInfo& ssl_info,
                              bool fatal) override;
-  void OnResponseStarted(URLRequest* request) override;
+  void OnResponseStarted(URLRequest* request, int net_error) override;
   void OnReadCompleted(URLRequest* request, int bytes_read) override;
 
  private:
@@ -210,33 +220,43 @@ class TestDelegate : public URLRequest::Delegate {
   virtual void OnResponseCompleted(URLRequest* request);
 
   // options for controlling behavior
-  bool cancel_in_rr_;
-  bool cancel_in_rs_;
-  bool cancel_in_rd_;
-  bool cancel_in_rd_pending_;
-  bool quit_on_complete_;
-  bool quit_on_redirect_;
-  bool quit_on_auth_required_;
-  bool quit_on_before_network_start_;
-  bool allow_certificate_errors_;
+  bool cancel_in_rr_ = false;
+  bool cancel_in_rs_ = false;
+  bool cancel_in_rd_ = false;
+  bool cancel_in_rd_pending_ = false;
+  bool allow_certificate_errors_ = false;
   AuthCredentials credentials_;
 
+  // True if legacy on-complete behaviour, using QuitCurrent*Deprecated(), is
+  // enabled. This is cleared if any of the Until*() APIs are used.
+  bool use_legacy_on_complete_ = true;
+
+  // Used to register RunLoop quit closures, to implement the Until*() closures.
+  base::OnceClosure on_complete_;
+  base::OnceClosure on_redirect_;
+  base::OnceClosure on_auth_required_;
+
   // tracks status of callbacks
-  int response_started_count_;
-  int received_bytes_count_;
-  int received_redirect_count_;
-  int received_before_network_start_count_;
-  bool received_data_before_response_;
-  bool request_failed_;
-  bool have_certificate_errors_;
-  bool certificate_errors_are_fatal_;
-  bool auth_required_;
+  int response_started_count_ = 0;
+  int received_bytes_count_ = 0;
+  int received_redirect_count_ = 0;
+  bool received_data_before_response_ = false;
+  bool request_failed_ = false;
+  bool have_certificate_errors_ = false;
+  bool certificate_errors_are_fatal_ = false;
+  bool auth_required_ = false;
   std::string data_received_;
-  bool have_full_request_headers_;
+  bool have_full_request_headers_ = false;
   HttpRequestHeaders full_request_headers_;
+  bool response_completed_ = false;
+
+  // tracks status of request
+  int request_status_ = ERR_IO_PENDING;
 
   // our read buffer
   scoped_refptr<IOBuffer> buf_;
+
+  RedirectInfo redirect_info_;
 };
 
 //-----------------------------------------------------------------------------
@@ -265,6 +285,12 @@ class TestNetworkDelegate : public NetworkDelegateImpl {
   void set_redirect_on_headers_received_url(
       GURL redirect_on_headers_received_url) {
     redirect_on_headers_received_url_ = redirect_on_headers_received_url;
+  }
+
+  // Adds a X-Network-Delegate header to the first OnHeadersReceived call, but
+  // not subsequent ones.
+  void set_add_header_to_first_response(bool add_header_to_first_response) {
+    add_header_to_first_response_ = add_header_to_first_response;
   }
 
   void set_allowed_unsafe_redirect_url(GURL allowed_unsafe_redirect_url) {
@@ -316,13 +342,17 @@ class TestNetworkDelegate : public NetworkDelegateImpl {
     will_be_intercepted_on_next_error_ = can_be_intercepted_on_error;
   }
 
+  void set_before_start_transaction_fails() {
+    before_start_transaction_fails_ = true;
+  }
+
  protected:
   // NetworkDelegate:
   int OnBeforeURLRequest(URLRequest* request,
-                         const CompletionCallback& callback,
+                         CompletionOnceCallback callback,
                          GURL* new_url) override;
   int OnBeforeStartTransaction(URLRequest* request,
-                               const CompletionCallback& callback,
+                               CompletionOnceCallback callback,
                                HttpRequestHeaders* headers) override;
   void OnBeforeSendHeaders(URLRequest* request,
                            const ProxyInfo& proxy_info,
@@ -332,32 +362,33 @@ class TestNetworkDelegate : public NetworkDelegateImpl {
                           const HttpRequestHeaders& headers) override;
   int OnHeadersReceived(
       URLRequest* request,
-      const CompletionCallback& callback,
+      CompletionOnceCallback callback,
       const HttpResponseHeaders* original_response_headers,
       scoped_refptr<HttpResponseHeaders>* override_response_headers,
       GURL* allowed_unsafe_redirect_url) override;
   void OnBeforeRedirect(URLRequest* request, const GURL& new_location) override;
-  void OnResponseStarted(URLRequest* request) override;
+  void OnResponseStarted(URLRequest* request, int net_error) override;
   void OnNetworkBytesReceived(URLRequest* request,
                               int64_t bytes_received) override;
   void OnNetworkBytesSent(URLRequest* request, int64_t bytes_sent) override;
-  void OnCompleted(URLRequest* request, bool started) override;
+  void OnCompleted(URLRequest* request, bool started, int net_error) override;
   void OnURLRequestDestroyed(URLRequest* request) override;
   void OnPACScriptError(int line_number, const base::string16& error) override;
   NetworkDelegate::AuthRequiredResponse OnAuthRequired(
       URLRequest* request,
       const AuthChallengeInfo& auth_info,
-      const AuthCallback& callback,
+      AuthCallback callback,
       AuthCredentials* credentials) override;
   bool OnCanGetCookies(const URLRequest& request,
-                       const CookieList& cookie_list) override;
+                       const CookieList& cookie_list,
+                       bool allowed_from_caller) override;
   bool OnCanSetCookie(const URLRequest& request,
-                      const std::string& cookie_line,
-                      CookieOptions* options) override;
+                      const net::CanonicalCookie& cookie,
+                      CookieOptions* options,
+                      bool allowed_from_caller) override;
   bool OnCanAccessFile(const URLRequest& request,
-                       const base::FilePath& path) const override;
-  bool OnAreExperimentalCookieFeaturesEnabled() const override;
-  bool OnAreStrictSecureCookiesEnabled() const override;
+                       const base::FilePath& original_path,
+                       const base::FilePath& absolute_path) const override;
   bool OnCancelURLRequestWithPolicyViolatingReferrerHeader(
       const URLRequest& request,
       const GURL& target_url,
@@ -407,6 +438,8 @@ class TestNetworkDelegate : public NetworkDelegateImpl {
   bool experimental_cookie_features_enabled_;           // false by default
   bool cancel_request_with_policy_violating_referrer_;  // false by default
   bool will_be_intercepted_on_next_error_;
+  bool before_start_transaction_fails_;
+  bool add_header_to_first_response_;
 };
 
 //-----------------------------------------------------------------------------

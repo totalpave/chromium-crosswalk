@@ -5,147 +5,108 @@
 #ifndef ASH_SHELF_SHELF_WINDOW_WATCHER_H_
 #define ASH_SHELF_SHELF_WINDOW_WATCHER_H_
 
-#include <stdint.h>
+#include <set>
 
-#include "ash/shelf/scoped_observer_with_duplicated_sources.h"
-#include "base/compiler_specific.h"
+#include "ash/shell_observer.h"
 #include "base/macros.h"
 #include "base/scoped_observer.h"
 #include "ui/aura/window_observer.h"
-#include "ui/display/display_observer.h"
 #include "ui/wm/public/activation_change_observer.h"
-
-namespace aura {
-
-class Window;
-
-namespace client {
-class ActivationClient;
-}
-
-}  // namespace aura
 
 namespace ash {
 
 class ShelfModel;
-class ShelfItemDelegateManager;
-class WmWindow;
 
-// ShelfWindowWatcher creates and handles a ShelfItem for windows that have
-// a ShelfItemDetails property in the default container.
-class ShelfWindowWatcher : public aura::client::ActivationChangeObserver,
-                           public aura::WindowObserver,
-                           public display::DisplayObserver {
+// ShelfWindowWatcher manages ShelfItems for dialogs in the default container
+// with valid ShelfItemType and ShelfID window properties (ie. task manager).
+// ShelfWindowWatcher also tracks the active shelf item via window activation.
+//
+// Some windows are experimentally given default properties in MultiProcessMash.
+// TODO(crbug.com/722496|887156): Resolve, KSV etc. tracking approach for Mash.
+class ShelfWindowWatcher : public ::wm::ActivationChangeObserver,
+                           public ShellObserver {
  public:
-  ShelfWindowWatcher(ShelfModel* model,
-                     ShelfItemDelegateManager* item_delegate_manager);
+  explicit ShelfWindowWatcher(ShelfModel* model);
   ~ShelfWindowWatcher() override;
 
+  static const char kDefaultShelfIdPrefix[];
+
  private:
-  class RootWindowObserver : public aura::WindowObserver {
+  // Observes for windows being added to a root window's default container.
+  class ContainerWindowObserver : public aura::WindowObserver {
    public:
-    explicit RootWindowObserver(ShelfWindowWatcher* window_watcher);
-    ~RootWindowObserver() override;
+    explicit ContainerWindowObserver(ShelfWindowWatcher* window_watcher);
+    ~ContainerWindowObserver() override;
 
    private:
-    // aura::WindowObserver overrides:
+    // aura::WindowObserver:
+    void OnWindowHierarchyChanged(const HierarchyChangeParams& params) override;
     void OnWindowDestroying(aura::Window* window) override;
 
-    // Owned by Shell.
     ShelfWindowWatcher* window_watcher_;
 
-    DISALLOW_COPY_AND_ASSIGN(RootWindowObserver);
+    DISALLOW_COPY_AND_ASSIGN(ContainerWindowObserver);
   };
 
-  // Used to track windows that are removed. See description of
-  // ShelfWindowWatcher::StartObservingRemovedWindow() for more details.
-  class RemovedWindowObserver : public aura::WindowObserver {
+  // Observes individual user windows to detect when they are closed or when
+  // their shelf item properties have changed.
+  class UserWindowObserver : public aura::WindowObserver {
    public:
-    explicit RemovedWindowObserver(ShelfWindowWatcher* window_watcher);
-    ~RemovedWindowObserver() override;
+    explicit UserWindowObserver(ShelfWindowWatcher* window_watcher);
+    ~UserWindowObserver() override;
 
    private:
-    // aura::WindowObserver overrides:
-    void OnWindowParentChanged(aura::Window* window,
-                               aura::Window* parent) override;
-    void OnWindowDestroyed(aura::Window* window) override;
+    // aura::WindowObserver:
+    void OnWindowPropertyChanged(aura::Window* window,
+                                 const void* key,
+                                 intptr_t old) override;
+    void OnWindowDestroying(aura::Window* window) override;
+    void OnWindowVisibilityChanged(aura::Window* window, bool visible) override;
+    void OnWindowTitleChanged(aura::Window* window) override;
 
-    // Owned by Shell.
     ShelfWindowWatcher* window_watcher_;
 
-    DISALLOW_COPY_AND_ASSIGN(RemovedWindowObserver);
+    DISALLOW_COPY_AND_ASSIGN(UserWindowObserver);
   };
 
-  // Creates a ShelfItem for |window| that has ShelfItemDetails.
+  // Creates a ShelfItem for |window|.
   void AddShelfItem(aura::Window* window);
 
   // Removes a ShelfItem for |window|.
   void RemoveShelfItem(aura::Window* window);
 
-  // Adds observer to default container and ActivationClient of
-  // |root_window_wm|.
-  void OnRootWindowAdded(WmWindow* root_window_wm);
+  // Cleans up observers on |container|.
+  void OnContainerWindowDestroying(aura::Window* container);
 
-  // Removes observer from ActivationClient of |root_window|.
-  void OnRootWindowRemoved(aura::Window* root_window);
+  // Adds a shelf item for new windows added to the default container that have
+  // valid ShelfItemType and ShelfID property values.
+  void OnUserWindowAdded(aura::Window* window);
 
-  // Updates the status of ShelfItem for |window|.
-  void UpdateShelfItemStatus(aura::Window* window, bool is_active);
+  // Adds, updates or removes the shelf item based on a property change.
+  void OnUserWindowPropertyChanged(aura::Window* window);
 
-  // Returns the index of ShelfItem associated with |window|.
-  int GetShelfItemIndexForWindow(aura::Window* window) const;
+  // Removes the shelf item when a window closes.
+  void OnUserWindowDestroying(aura::Window* window);
 
-  // Used when a window is removed. During the dragging a window may be removed
-  // and when the drag completes added back. When this happens we don't want to
-  // remove the shelf item. StartObservingRemovedWindow, if necessary, attaches
-  // an observer. When done, FinishObservingRemovedWindow() is invoked.
-  void StartObservingRemovedWindow(aura::Window* window);
+  // wm::ActivationChangeObserver:
+  void OnWindowActivated(ActivationReason reason,
+                         aura::Window* gained_active,
+                         aura::Window* lost_active) override;
 
-  // Stop observing |window| by RemovedWindowObserver and remove an item
-  // associated with |window|.
-  void FinishObservingRemovedWindow(aura::Window* window);
+  // ShellObserver:
+  void OnRootWindowAdded(aura::Window* root_window) override;
 
-  // aura::client::ActivationChangeObserver overrides:
-  void OnWindowActivated(
-      aura::client::ActivationChangeObserver::ActivationReason reason,
-      aura::Window* gained_active,
-      aura::Window* lost_active) override;
-
-  // aura::WindowObserver overrides:
-  void OnWindowAdded(aura::Window* window) override;
-  void OnWillRemoveWindow(aura::Window* window) override;
-  void OnWindowDestroying(aura::Window* window) override;
-  void OnWindowPropertyChanged(aura::Window* window,
-                               const void* key,
-                               intptr_t old) override;
-
-  // display::DisplayObserver overrides:
-  void OnDisplayAdded(const display::Display& display) override;
-  void OnDisplayRemoved(const display::Display& old_display) override;
-  void OnDisplayMetricsChanged(const display::Display& display,
-                               uint32_t metrics) override;
-
-  // Owned by Shell.
   ShelfModel* model_;
-  ShelfItemDelegateManager* item_delegate_manager_;
 
-  RootWindowObserver root_window_observer_;
+  ContainerWindowObserver container_window_observer_;
+  UserWindowObserver user_window_observer_;
 
-  RemovedWindowObserver removed_window_observer_;
+  ScopedObserver<aura::Window, ContainerWindowObserver>
+      observed_container_windows_;
+  ScopedObserver<aura::Window, UserWindowObserver> observed_user_windows_;
 
-  // Holds all observed windows.
-  ScopedObserver<aura::Window, aura::WindowObserver> observed_windows_;
-
-  // Holds all observed root windows.
-  ScopedObserver<aura::Window, aura::WindowObserver> observed_root_windows_;
-
-  // Holds removed windows that has an item from default container.
-  ScopedObserver<aura::Window, aura::WindowObserver> observed_removed_windows_;
-
-  // Holds all observed activation clients.
-  ScopedObserverWithDuplicatedSources<aura::client::ActivationClient,
-                                      aura::client::ActivationChangeObserver>
-      observed_activation_clients_;
+  // The set of windows with shelf items managed by this ShelfWindowWatcher.
+  std::set<aura::Window*> user_windows_with_items_;
 
   DISALLOW_COPY_AND_ASSIGN(ShelfWindowWatcher);
 };

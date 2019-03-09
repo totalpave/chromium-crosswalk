@@ -2,44 +2,37 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import <string>
+#ifndef IOS_WEB_SHELL_TEST_EARL_GREY_SHELL_MATCHERS_H_
+#define IOS_WEB_SHELL_TEST_EARL_GREY_SHELL_MATCHERS_H_
 
-#import <EarlGrey/EarlGrey.h>
+#import <Foundation/Foundation.h>
 
-namespace web {
+#include <string>
 
-// Shorthand for GREYMatchers::matcherForWebViewContainingText.
-id<GREYMatcher> webViewContainingText(const std::string& text);
+// ObjC matcher class for use in EG2 tests (Test and App process).
+// Shell_matchers_shorthand.h/mm is C++ and for use when writing EG1 tests.
+@protocol GREYMatcher;
 
-// Shorthand for GREYMatchers::matcherForAddressFieldEqualToText.
-id<GREYMatcher> addressFieldText(const std::string& text);
+@interface ShellMatchers : NSObject
 
-// Shorthand for GREYMatchers::matcherForBackButton.
-id<GREYMatcher> backButton();
+// Matcher for the WKWebView.
++ (id<GREYMatcher>)webView;
 
-// Shorthand for GREYMatchers::matcherForForwardButton.
-id<GREYMatcher> forwardButton();
-
-// Shorthand for GREYMatchers::matcherForAddressField.
-id<GREYMatcher> addressField();
-
-}  // namespace web
-
-@interface GREYMatchers (WebShellAdditions)
-
-// Matcher for WKWebView containing |text|.
-+ (id<GREYMatcher>)matcherForWebViewContainingText:(const std::string&)text;
+// Matcher for WKWebView's scroll view.
++ (id<GREYMatcher>)webViewScrollView;
 
 // Matcher for web shell address field text property equal to |text|.
-+ (id<GREYMatcher>)matcherForAddressFieldEqualToText:(const std::string&)text;
++ (id<GREYMatcher>)addressFieldWithText:(NSString*)text;
 
 // Matcher for back button in web shell.
-+ (id<GREYMatcher>)matcherForWebShellBackButton;
++ (id<GREYMatcher>)backButton;
 
 // Matcher for forward button in web shell.
-+ (id<GREYMatcher>)matcherForWebShellForwardButton;
++ (id<GREYMatcher>)forwardButton;
 
 // Matcher for address field in web shell.
-+ (id<GREYMatcher>)matcherForWebShellAddressField;
++ (id<GREYMatcher>)addressField;
 
 @end
+
+#endif  // IOS_WEB_SHELL_TEST_EARL_GREY_SHELL_MATCHERS_H_

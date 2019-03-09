@@ -17,6 +17,7 @@
 
 #include "base/files/file.h"
 #include "base/logging.h"
+#include "base/mac/availability.h"
 #include "base/macros.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/stringprintf.h"
@@ -24,6 +25,7 @@
 #include "chrome/utility/safe_browsing/mac/hfs.h"
 #include "chrome/utility/safe_browsing/mac/read_stream.h"
 #include "chrome/utility/safe_browsing/mac/udif.h"
+#include "sandbox/mac/seatbelt.h"
 
 namespace {
 
@@ -87,11 +89,16 @@ int SafeDMG::Main(int argc, const char* argv[]) {
   if (argc == 3 && !PrepareUnpack(argv[2]))
     return EXIT_FAILURE;
 
-  if (!EnableSandbox())
-    return EXIT_FAILURE;
+  if (__builtin_available(macOS 10.10, *)) {
+    if (!EnableSandbox())
+      return EXIT_FAILURE;
 
-  if (!ParseDMG())
+    if (!ParseDMG())
+      return EXIT_FAILURE;
+  } else {
+    LOG(ERROR) << "Requires 10.10 or higher";
     return EXIT_FAILURE;
+  }
 
   return EXIT_SUCCESS;
 }
@@ -148,14 +155,11 @@ bool SafeDMG::EnableSandbox() {
   }
 
   char* sbox_error;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  if (sandbox_init(sbox_profile.c_str(), 0, &sbox_error) != 0) {
+  if (sandbox::Seatbelt::Init(sbox_profile.c_str(), 0, &sbox_error) != 0) {
     LOG(ERROR) << "Failed to initialize sandbox: " << sbox_error;
-    sandbox_free_error(sbox_error);
+    sandbox::Seatbelt::FreeError(sbox_error);
     return false;
   }
-#pragma clang diagnostic pop
 
   return true;
 }

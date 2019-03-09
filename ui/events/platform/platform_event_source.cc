@@ -6,30 +6,50 @@
 
 #include <algorithm>
 
-#include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
+#include "base/lazy_instance.h"
+#include "base/threading/thread_local.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
 #include "ui/events/platform/platform_event_observer.h"
 #include "ui/events/platform/scoped_event_dispatcher.h"
 
 namespace ui {
 
-// static
-PlatformEventSource* PlatformEventSource::instance_ = NULL;
+namespace {
+
+// PlatformEventSource singleton is thread local so that different instances
+// can be used on different threads (e.g. browser thread should be able to
+// access PlatformEventSource owned by the UI Service's thread).
+base::LazyInstance<base::ThreadLocalPointer<PlatformEventSource>>::Leaky
+    lazy_tls_ptr = LAZY_INSTANCE_INITIALIZER;
+
+}  // namespace
+
+bool PlatformEventSource::ignore_native_platform_events_ = false;
 
 PlatformEventSource::PlatformEventSource()
     : overridden_dispatcher_(NULL),
       overridden_dispatcher_restored_(false) {
-  CHECK(!instance_) << "Only one platform event source can be created.";
-  instance_ = this;
+  CHECK(!lazy_tls_ptr.Pointer()->Get())
+      << "Only one platform event source can be created.";
+  lazy_tls_ptr.Pointer()->Set(this);
 }
 
 PlatformEventSource::~PlatformEventSource() {
-  CHECK_EQ(this, instance_);
-  instance_ = NULL;
+  CHECK_EQ(this, lazy_tls_ptr.Pointer()->Get());
+  lazy_tls_ptr.Pointer()->Set(nullptr);
 }
 
-PlatformEventSource* PlatformEventSource::GetInstance() { return instance_; }
+PlatformEventSource* PlatformEventSource::GetInstance() {
+  return lazy_tls_ptr.Pointer()->Get();
+}
+
+bool PlatformEventSource::ShouldIgnoreNativePlatformEvents() {
+  return ignore_native_platform_events_;
+}
+
+void PlatformEventSource::SetIgnoreNativePlatformEvents(bool ignore_events) {
+  ignore_native_platform_events_ = ignore_events;
+}
 
 void PlatformEventSource::AddPlatformEventDispatcher(
     PlatformEventDispatcher* dispatcher) {
@@ -48,8 +68,8 @@ std::unique_ptr<ScopedEventDispatcher> PlatformEventSource::OverrideDispatcher(
     PlatformEventDispatcher* dispatcher) {
   CHECK(dispatcher);
   overridden_dispatcher_restored_ = false;
-  return base::WrapUnique(
-      new ScopedEventDispatcher(&overridden_dispatcher_, dispatcher));
+  return std::make_unique<ScopedEventDispatcher>(&overridden_dispatcher_,
+                                                 dispatcher);
 }
 
 void PlatformEventSource::StopCurrentEventStream() {
@@ -69,24 +89,22 @@ void PlatformEventSource::RemovePlatformEventObserver(
 uint32_t PlatformEventSource::DispatchEvent(PlatformEvent platform_event) {
   uint32_t action = POST_DISPATCH_PERFORM_DEFAULT;
 
-  FOR_EACH_OBSERVER(PlatformEventObserver, observers_,
-                    WillProcessEvent(platform_event));
+  for (PlatformEventObserver& observer : observers_)
+    observer.WillProcessEvent(platform_event);
   // Give the overridden dispatcher a chance to dispatch the event first.
   if (overridden_dispatcher_)
     action = overridden_dispatcher_->DispatchEvent(platform_event);
 
-  if ((action & POST_DISPATCH_PERFORM_DEFAULT) &&
-      dispatchers_.might_have_observers()) {
-    base::ObserverList<PlatformEventDispatcher>::Iterator iter(&dispatchers_);
-    while (PlatformEventDispatcher* dispatcher = iter.GetNext()) {
-      if (dispatcher->CanDispatchEvent(platform_event))
-        action = dispatcher->DispatchEvent(platform_event);
+  if (action & POST_DISPATCH_PERFORM_DEFAULT) {
+    for (PlatformEventDispatcher& dispatcher : dispatchers_) {
+      if (dispatcher.CanDispatchEvent(platform_event))
+        action = dispatcher.DispatchEvent(platform_event);
       if (action & POST_DISPATCH_STOP_PROPAGATION)
         break;
     }
   }
-  FOR_EACH_OBSERVER(PlatformEventObserver, observers_,
-                    DidProcessEvent(platform_event));
+  for (PlatformEventObserver& observer : observers_)
+    observer.DidProcessEvent(platform_event);
 
   // If an overridden dispatcher has been destroyed, then the platform
   // event-source should halt dispatching the current stream of events, and wait

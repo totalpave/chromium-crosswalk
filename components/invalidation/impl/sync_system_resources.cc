@@ -4,8 +4,10 @@
 
 #include "components/invalidation/impl/sync_system_resources.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -14,7 +16,6 @@
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -25,6 +26,7 @@
 #include "google/cacheinvalidation/deps/callback.h"
 #include "google/cacheinvalidation/include/types.h"
 #include "jingle/notifier/listener/push_client.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace syncer {
 
@@ -93,7 +95,7 @@ void SyncInvalidationScheduler::Stop() {
   is_stopped_ = true;
   is_started_ = false;
   weak_factory_.InvalidateWeakPtrs();
-  STLDeleteElements(&posted_tasks_);
+  posted_tasks_.clear();
 }
 
 void SyncInvalidationScheduler::Schedule(invalidation::TimeDelta delay,
@@ -106,10 +108,11 @@ void SyncInvalidationScheduler::Schedule(invalidation::TimeDelta delay,
     return;
   }
 
-  posted_tasks_.insert(task);
+  posted_tasks_.insert(base::WrapUnique(task));
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&SyncInvalidationScheduler::RunPostedTask,
-                            weak_factory_.GetWeakPtr(), task),
+      FROM_HERE,
+      base::BindOnce(&SyncInvalidationScheduler::RunPostedTask,
+                     weak_factory_.GetWeakPtr(), task),
       delay);
 }
 
@@ -130,8 +133,12 @@ void SyncInvalidationScheduler::SetSystemResources(
 void SyncInvalidationScheduler::RunPostedTask(invalidation::Closure* task) {
   CHECK(IsRunningOnThread());
   task->Run();
-  posted_tasks_.erase(task);
-  delete task;
+  auto it =
+      std::find_if(posted_tasks_.begin(), posted_tasks_.end(),
+                   [task](const std::unique_ptr<invalidation::Closure>& ptr) {
+                     return ptr.get() == task;
+                   });
+  posted_tasks_.erase(it);
 }
 
 SyncNetworkChannel::SyncNetworkChannel()
@@ -139,7 +146,6 @@ SyncNetworkChannel::SyncNetworkChannel()
       received_messages_count_(0) {}
 
 SyncNetworkChannel::~SyncNetworkChannel() {
-  STLDeleteElements(&network_status_receivers_);
 }
 
 void SyncNetworkChannel::SetMessageReceiver(
@@ -150,7 +156,8 @@ void SyncNetworkChannel::SetMessageReceiver(
 void SyncNetworkChannel::AddNetworkStatusReceiver(
     invalidation::NetworkStatusCallback* network_status_receiver) {
   network_status_receiver->Run(last_network_status_);
-  network_status_receivers_.push_back(network_status_receiver);
+  network_status_receivers_.push_back(
+      base::WrapUnique(network_status_receiver));
 }
 
 void SyncNetworkChannel::SetSystemResources(
@@ -170,31 +177,34 @@ std::unique_ptr<SyncNetworkChannel> SyncNetworkChannel::CreatePushClientChannel(
     const notifier::NotifierOptions& notifier_options) {
   std::unique_ptr<notifier::PushClient> push_client(
       notifier::PushClient::CreateDefaultOnIOThread(notifier_options));
-  return base::WrapUnique(new PushClientChannel(std::move(push_client)));
+  return std::make_unique<PushClientChannel>(std::move(push_client));
 }
 
 std::unique_ptr<SyncNetworkChannel> SyncNetworkChannel::CreateGCMNetworkChannel(
-    scoped_refptr<net::URLRequestContextGetter> request_context_getter,
+    std::unique_ptr<network::SharedURLLoaderFactoryInfo>
+        url_loader_factory_info,
+    network::NetworkConnectionTracker* network_connection_tracker,
     std::unique_ptr<GCMNetworkChannelDelegate> delegate) {
-  return base::WrapUnique(
-      new GCMNetworkChannel(request_context_getter, std::move(delegate)));
+  DCHECK(url_loader_factory_info);
+  return std::make_unique<GCMNetworkChannel>(
+      network::SharedURLLoaderFactory::Create(
+          std::move(url_loader_factory_info)),
+      network_connection_tracker, std::move(delegate));
 }
 
 void SyncNetworkChannel::NotifyNetworkStatusChange(bool online) {
   // Remember network state for future NetworkStatusReceivers.
   last_network_status_ = online;
   // Notify NetworkStatusReceivers in cacheinvalidation.
-  for (NetworkStatusReceiverList::const_iterator it =
-           network_status_receivers_.begin();
-       it != network_status_receivers_.end(); ++it) {
-    (*it)->Run(online);
+  for (const auto& receiver : network_status_receivers_) {
+    receiver->Run(online);
   }
 }
 
 void SyncNetworkChannel::NotifyChannelStateChange(
     InvalidatorState invalidator_state) {
-  FOR_EACH_OBSERVER(Observer, observers_,
-                    OnNetworkChannelStateChanged(invalidator_state));
+  for (auto& observer : observers_)
+    observer.OnNetworkChannelStateChanged(invalidator_state);
 }
 
 bool SyncNetworkChannel::DeliverIncomingMessage(const std::string& message) {
@@ -230,7 +240,7 @@ void SyncStorage::WriteKey(const std::string& key, const std::string& value,
   cached_state_ = value;
   // According to the cache invalidation API folks, we can do this as
   // long as we make sure to clear the persistent state that we start
-  // up the cache invalidation client with.  However, we musn't do it
+  // up the cache invalidation client with.  However, we mustn't do it
   // right away, as we may be called under a lock that the callback
   // uses.
   scheduler_->Schedule(
@@ -284,9 +294,10 @@ SyncSystemResources::SyncSystemResources(
       logger_(new SyncLogger()),
       internal_scheduler_(new SyncInvalidationScheduler()),
       listener_scheduler_(new SyncInvalidationScheduler()),
-      storage_(new SyncStorage(state_writer, internal_scheduler_.get())),
-      sync_network_channel_(sync_network_channel) {
-}
+      storage_(state_writer
+                   ? new SyncStorage(state_writer, internal_scheduler_.get())
+                   : nullptr),
+      sync_network_channel_(sync_network_channel) {}
 
 SyncSystemResources::~SyncSystemResources() {
   Stop();
@@ -320,7 +331,7 @@ SyncLogger* SyncSystemResources::logger() {
 }
 
 SyncStorage* SyncSystemResources::storage() {
-  return storage_.get();
+  return storage_ ? storage_.get() : nullptr;
 }
 
 SyncNetworkChannel* SyncSystemResources::network() {

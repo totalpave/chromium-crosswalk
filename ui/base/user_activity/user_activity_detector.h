@@ -18,7 +18,7 @@ namespace ui {
 class UserActivityObserver;
 
 // Watches for input events and notifies observers that the user is active.
-class UI_BASE_EXPORT UserActivityDetector : public ui::PlatformEventObserver {
+class UI_BASE_EXPORT UserActivityDetector : public PlatformEventObserver {
  public:
   // Minimum amount of time between notifications to observers.
   static const int kNotifyIntervalMs;
@@ -45,7 +45,11 @@ class UI_BASE_EXPORT UserActivityDetector : public ui::PlatformEventObserver {
   // Called when displays are about to be turned on or off.
   void OnDisplayPowerChanging();
 
-  // ui::PlatformEventObserver:
+  // Handles reports of user activity originating from outside of
+  // PlatformEventSource (e.g. the window server).
+  void HandleExternalUserActivity();
+
+  // PlatformEventObserver:
   void WillProcessEvent(const PlatformEvent& platform_event) override {}
   void DidProcessEvent(const PlatformEvent& platform_event) override;
 
@@ -63,7 +67,7 @@ class UI_BASE_EXPORT UserActivityDetector : public ui::PlatformEventObserver {
   // since the last notification.
   void HandleActivity(const ui::Event* event);
 
-  base::ObserverList<UserActivityObserver> observers_;
+  base::ObserverList<UserActivityObserver>::Unchecked observers_;
 
   // Last time at which user activity was observed.
   base::TimeTicks last_activity_time_;

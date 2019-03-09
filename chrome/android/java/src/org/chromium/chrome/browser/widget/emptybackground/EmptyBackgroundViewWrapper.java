@@ -17,8 +17,8 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.EmptyTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.EmptyTabModelSelectorObserver;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager.TabCreator;
+import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
@@ -64,7 +64,7 @@ public class EmptyBackgroundViewWrapper {
         mOverviewModeBehavior = overviewModeBehavior;
         mTabModelObserver = new EmptyTabModelObserver() {
             @Override
-            public void didAddTab(Tab tab, TabLaunchType type) {
+            public void didAddTab(Tab tab, @TabLaunchType int type) {
                 updateEmptyContainerState();
             }
 
@@ -84,7 +84,7 @@ public class EmptyBackgroundViewWrapper {
             }
 
             @Override
-            public void allTabsPendingClosure(List<Integer> tabIds) {
+            public void allTabsPendingClosure(List<Tab> tabs) {
                 updateEmptyContainerState();
             }
 
@@ -141,9 +141,7 @@ public class EmptyBackgroundViewWrapper {
 
     private void updateEmptyContainerState() {
         boolean showEmptyBackground = shouldShowEmptyContainer();
-        if (showEmptyBackground) {
-            inflateViewIfNecessary();
-        }
+        if (showEmptyBackground) inflateViewIfNecessary();
 
         if (mBackgroundView != null) {
             mBackgroundView.setEmptyContainerState(showEmptyBackground);
@@ -153,9 +151,8 @@ public class EmptyBackgroundViewWrapper {
 
     private boolean shouldShowEmptyContainer() {
         TabModel model = mTabModelSelector.getModel(false);
-        if (model == null) {
-            return false;
-        }
+        if (model == null) return false;
+
         boolean isIncognitoEmpty = mTabModelSelector.getModel(true).getCount() == 0;
         boolean incognitoSelected = mTabModelSelector.isIncognitoSelected();
 

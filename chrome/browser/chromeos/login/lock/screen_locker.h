@@ -6,56 +6,76 @@
 #define CHROME_BROWSER_CHROMEOS_LOGIN_LOCK_SCREEN_LOCKER_H_
 
 #include <memory>
+#include <set>
 #include <string>
 
+#include "ash/public/interfaces/login_user_info.mojom.h"
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/optional.h"
 #include "base/sequenced_task_runner_helpers.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "chrome/browser/chromeos/login/help_app_launcher.h"
-#include "chrome/browser/chromeos/login/lock/screen_locker_delegate.h"
 #include "chrome/browser/chromeos/login/ui/login_display.h"
 #include "chromeos/login/auth/auth_status_consumer.h"
 #include "chromeos/login/auth/user_context.h"
 #include "components/user_manager/user.h"
+#include "mojo/public/cpp/bindings/binding.h"
+#include "services/device/public/mojom/fingerprint.mojom.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
-
-namespace content {
-class WebUI;
-}
-
-namespace gfx {
-class Image;
-}
 
 namespace chromeos {
 
 class Authenticator;
 class ExtendedAuthenticator;
 class AuthFailure;
-class ScreenlockIconProvider;
+class ViewsScreenLocker;
 
-namespace test {
-class ScreenLockerTester;
-class ScreenLockerViewsTester;
-class WebUIScreenLockerTester;
-}  // namespace test
-
-// ScreenLocker creates a ScreenLockerDelegate which will display the lock UI.
-// As well, it takes care of authenticating the user and managing a global
-// instance of itself which will be deleted when the system is unlocked.
-class ScreenLocker : public AuthStatusConsumer {
+// ScreenLocker displays the lock UI and takes care of authenticating the user
+// and managing a global instance of itself which will be deleted when the
+// system is unlocked.
+class ScreenLocker : public AuthStatusConsumer,
+                     public device::mojom::FingerprintObserver {
  public:
+  // Delegate used to send internal state changes back to the UI.
+  class Delegate {
+   public:
+    Delegate();
+    virtual ~Delegate();
+
+    // Show the given error message.
+    virtual void ShowErrorMessage(int error_msg_id,
+                                  HelpAppLauncher::HelpTopic help_topic_id) = 0;
+
+    // Close any displayed error messages.
+    virtual void ClearErrors() = 0;
+
+    // Called by ScreenLocker to notify that ash lock animation finishes.
+    virtual void OnAshLockAnimationFinished() = 0;
+
+    // Called when fingerprint state has changed.
+    virtual void SetFingerprintState(const AccountId& account_id,
+                                     ash::mojom::FingerprintState state) = 0;
+
+    // Called after a fingerprint authentication attempt.
+    virtual void NotifyFingerprintAuthResult(const AccountId& account_id,
+                                             bool success) = 0;
+   private:
+    DISALLOW_COPY_AND_ASSIGN(Delegate);
+  };
+
+  using AuthenticateCallback = base::OnceCallback<void(bool auth_success)>;
+
   explicit ScreenLocker(const user_manager::UserList& users);
 
   // Returns the default instance if it has been created.
-  static ScreenLocker* default_screen_locker() {
-    return screen_locker_;
-  }
+  static ScreenLocker* default_screen_locker() { return screen_locker_; }
 
+  // Returns true if the lock UI has been confirmed as displayed.
   bool locked() const { return locked_; }
 
   // Initialize and show the screen locker.
@@ -69,12 +89,16 @@ class ScreenLocker : public AuthStatusConsumer {
   // unlock the device.
   void OnPasswordAuthSuccess(const UserContext& user_context);
 
-  // Does actual unlocking once authentication is successful and all blocking
-  // animations are done.
-  void UnlockOnLoginSuccess();
+  // Enables or disables authentication for the user with |account_id|. Notifies
+  // lock screen UI. |auth_reenabled_time| is used to display informaton in the
+  // UI.
+  void SetAuthEnabledForUser(const AccountId& account_id,
+                             bool is_enabled,
+                             base::Optional<base::Time> auth_reenabled_time);
 
   // Authenticates the user with given |user_context|.
-  void Authenticate(const UserContext& user_context);
+  void Authenticate(const UserContext& user_context,
+                    AuthenticateCallback callback);
 
   // Close message bubble to clear error messages.
   void ClearErrors();
@@ -92,8 +116,8 @@ class ScreenLocker : public AuthStatusConsumer {
                         HelpAppLauncher::HelpTopic help_topic_id,
                         bool sign_out_only);
 
-  // Returns the screen locker's delegate.
-  ScreenLockerDelegate* delegate() const { return delegate_.get(); }
+  // Returns delegate that can be used to talk to the view-layer.
+  Delegate* delegate() { return delegate_; }
 
   // Returns the users to authenticate.
   const user_manager::UserList& users() const { return users_; }
@@ -102,18 +126,14 @@ class ScreenLocker : public AuthStatusConsumer {
   // the same login events that ScreenLocker does.
   void SetLoginStatusConsumer(chromeos::AuthStatusConsumer* consumer);
 
-  // Returns WebUI associated with screen locker implementation or NULL if
-  // there isn't one.
-  content::WebUI* GetAssociatedWebUI();
-
   // Initialize or uninitialize the ScreenLocker class. It listens to
   // NOTIFICATION_SESSION_STARTED so that the screen locker accepts lock
   // requests only after a user has logged in.
   static void InitClass();
   static void ShutDownClass();
 
-  // Handles a request from the session manager to lock the screen.
-  static void HandleLockScreenRequest();
+  // Handles a request from the session manager to show the lock screen.
+  static void HandleShowLockScreenRequest();
 
   // Show the screen locker.
   static void Show();
@@ -121,24 +141,44 @@ class ScreenLocker : public AuthStatusConsumer {
   // Hide the screen locker.
   static void Hide();
 
-  // Returns the tester
-  static test::ScreenLockerTester* GetTester();
+  void RefreshPinAndFingerprintTimeout();
+
+  // Saves sync password hash and salt to user profile prefs based on
+  // |user_context|.
+  void SaveSyncPasswordHash(const UserContext& user_context);
+
+  // Ruturns true if authentication is enabled on the lock screen for the given
+  // user.
+  bool IsAuthEnabledForUser(const AccountId& account_id);
+
+  // Change the authenticators; should only be used by tests.
+  void SetAuthenticatorsForTesting(
+      scoped_refptr<Authenticator> authenticator,
+      scoped_refptr<ExtendedAuthenticator> extended_authenticator);
+
+  // device::mojom::FingerprintObserver:
+  void OnRestarted() override;
+  void OnEnrollScanDone(device::mojom::ScanResult scan_result,
+                        bool is_complete,
+                        int32_t percent_complete) override;
+  void OnAuthScanDone(
+      device::mojom::ScanResult scan_result,
+      const base::flat_map<std::string, std::vector<std::string>>& matches)
+      override;
+  void OnSessionFailed() override;
 
  private:
   friend class base::DeleteHelper<ScreenLocker>;
-  friend class test::ScreenLockerTester;
-  friend class test::ScreenLockerViewsTester;
-  friend class test::WebUIScreenLockerTester;
-  friend class ScreenLockerDelegate;
+  friend class ViewsScreenLocker;
 
-  struct AuthenticationParametersCapture {
-    UserContext user_context;
-  };
+  // Track whether the user used pin or password to unlock the lock screen.
+  // Values corrospond to UMA histograms, do not modify, or add or delete other
+  // than directly before AUTH_COUNT.
+  enum UnlockType { AUTH_PASSWORD = 0, AUTH_PIN, AUTH_FINGERPRINT, AUTH_COUNT };
 
   ~ScreenLocker() override;
 
-  // Sets the authenticator.
-  void SetAuthenticator(Authenticator* authenticator);
+  void OnFingerprintAuthFailure(const user_manager::User& user);
 
   // Called when the screen lock is ready.
   void ScreenLockReady();
@@ -152,11 +192,34 @@ class ScreenLocker : public AuthStatusConsumer {
   // Looks up user in unlock user list.
   const user_manager::User* FindUnlockUser(const AccountId& account_id);
 
-  // ScreenLockerDelegate instance in use.
-  std::unique_ptr<ScreenLockerDelegate> delegate_;
+  // Callback to be invoked for ash start lock request. |locked| is true when
+  // ash is fully locked and post lock animation finishes. Otherwise, the start
+  // lock request is failed.
+  void OnStartLockCallback(bool locked);
+
+  void OnPinAttemptDone(const UserContext& user_context, bool success);
+
+  // Called to continue authentication against cryptohome after the pin login
+  // check has completed.
+  void ContinueAuthenticate(const UserContext& user_context);
+
+  // Periodically called to see if PIN and fingerprint are still available for
+  // use. PIN and fingerprint are disabled after a certain period of time (e.g.
+  // 24 hours).
+  void MaybeDisablePinAndFingerprintFromTimeout(const std::string& source,
+                                                const AccountId& account_id);
+
+  void OnPinCanAuthenticate(const AccountId& account_id, bool can_authenticate);
+
+  // Delegate used to talk to the view.
+  Delegate* delegate_ = nullptr;
 
   // Users that can unlock the device.
   user_manager::UserList users_;
+
+  // Set of users that have authentication disabled on lock screen. Has to be
+  // subset of |users_|.
+  std::set<AccountId> users_with_disabled_auth_;
 
   // Used to authenticate the user to unlock.
   scoped_refptr<Authenticator> authenticator_;
@@ -167,32 +230,42 @@ class ScreenLocker : public AuthStatusConsumer {
   // True if the screen is locked, or false otherwise.  This changes
   // from false to true, but will never change from true to
   // false. Instead, ScreenLocker object gets deleted when unlocked.
-  bool locked_;
+  bool locked_ = false;
 
   // Reference to the single instance of the screen locker object.
   // This is used to make sure there is only one screen locker instance.
   static ScreenLocker* screen_locker_;
 
   // The time when the screen locker object is created.
-  base::Time start_time_;
+  base::Time start_time_ = base::Time::Now();
   // The time when the authentication is started.
   base::Time authentication_start_time_;
 
   // Delegate to forward all login status events to.
   // Tests can use this to receive login status events.
-  AuthStatusConsumer* auth_status_consumer_;
+  AuthStatusConsumer* auth_status_consumer_ = nullptr;
 
   // Number of bad login attempts in a row.
-  int incorrect_passwords_count_;
+  int incorrect_passwords_count_ = 0;
 
-  // Copy of parameters passed to last call of OnLoginSuccess for usage in
-  // UnlockOnLoginSuccess().
-  std::unique_ptr<AuthenticationParametersCapture> authentication_capture_;
+  // Type of the last unlock attempt.
+  UnlockType unlock_attempt_type_ = AUTH_PASSWORD;
 
-  // Provider for button icon set by the screenlockPrivate API.
-  std::unique_ptr<ScreenlockIconProvider> screenlock_icon_provider_;
+  // Callback to run, if any, when authentication is done.
+  AuthenticateCallback on_auth_complete_;
 
   scoped_refptr<input_method::InputMethodManager::State> saved_ime_state_;
+
+  device::mojom::FingerprintPtr fp_service_;
+  mojo::Binding<device::mojom::FingerprintObserver>
+      fingerprint_observer_binding_;
+
+  // ViewsScreenLocker instance in use.
+  std::unique_ptr<ViewsScreenLocker> views_screen_locker_;
+
+  // Password is required every 24 hours in order to use fingerprint unlock.
+  // This is used to update fingerprint state when password is required.
+  base::OneShotTimer update_fingerprint_state_timer_;
 
   base::WeakPtrFactory<ScreenLocker> weak_factory_;
 

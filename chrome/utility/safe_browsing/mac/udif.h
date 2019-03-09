@@ -16,14 +16,12 @@
 
 #include "base/mac/scoped_cftyperef.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 
 namespace safe_browsing {
 namespace dmg {
 
 class ReadStream;
 class UDIFBlock;
-struct UDIFBlockChunk;
 
 // UDIFParser parses a Universal Disk Image Format file, allowing access to the
 // name, types, and data of the partitions held within the file. There is no
@@ -53,6 +51,9 @@ class UDIFParser {
   // If this returns false, it is not legal to call any other methods.
   bool Parse();
 
+  // Returns the blob of DMG signature data.
+  const std::vector<uint8_t>& GetCodeSignature();
+
   // Returns the number of partitions in this UDIF image.
   size_t GetNumberOfPartitions();
 
@@ -76,15 +77,12 @@ class UDIFParser {
   // Parses the blkx plist trailer structure.
   bool ParseBlkx();
 
-  // Reads the data pointed to by the block |chunk|, decompressing it as
-  // necessary, into the out-buffer |decompressed_data|.
-  bool ReadBlockChunk(const UDIFBlockChunk* chunk,
-                      std::vector<uint8_t>* decompressed_data);
-
   ReadStream* const stream_;  // The stream backing the UDIF image. Weak.
   std::vector<std::string> partition_names_;  // The names of all partitions.
-  ScopedVector<const UDIFBlock> blocks_;  // All blocks in the UDIF image.
+  // All blocks in the UDIF image.
+  std::vector<std::unique_ptr<const UDIFBlock>> blocks_;
   uint16_t block_size_;  // The image's block size, in bytes.
+  std::vector<uint8_t> signature_blob_;  // DMG signature.
 
   DISALLOW_COPY_AND_ASSIGN(UDIFParser);
 };

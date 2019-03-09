@@ -15,7 +15,7 @@
 #include "base/time/time.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
 #include "components/policy/core/common/remote_commands/test_remote_command_job.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -36,7 +36,7 @@ em::RemoteCommand GenerateCommandProto(RemoteCommandJob::UniqueIDType unique_id,
   em::RemoteCommand command_proto;
   command_proto.set_type(
       enterprise_management::RemoteCommand_Type_COMMAND_ECHO_TEST);
-  command_proto.set_unique_id(unique_id);
+  command_proto.set_command_id(unique_id);
   command_proto.set_age_of_command(age_of_command.InMilliseconds());
   if (!payload.empty())
     command_proto.set_payload(payload);
@@ -89,7 +89,7 @@ class RemoteCommandsQueueTest : public testing::Test {
   RemoteCommandsQueue queue_;
   StrictMock<MockRemoteCommandsQueueObserver> observer_;
   base::TimeTicks test_start_time_;
-  base::TickClock* clock_;
+  const base::TickClock* clock_;
 
  private:
   void VerifyCommandIssuedTime(RemoteCommandJob* job,
@@ -107,11 +107,9 @@ RemoteCommandsQueueTest::RemoteCommandsQueueTest()
 }
 
 void RemoteCommandsQueueTest::SetUp() {
-  std::unique_ptr<base::TickClock> clock(task_runner_->GetMockTickClock());
-  test_start_time_ = clock->NowTicks();
-
-  clock_ = clock.get();
-  queue_.SetClockForTesting(std::move(clock));
+  clock_ = task_runner_->GetMockTickClock();
+  test_start_time_ = clock_->NowTicks();
+  queue_.SetClockForTesting(clock_);
   queue_.AddObserver(&observer_);
 }
 
@@ -218,16 +216,16 @@ TEST_F(RemoteCommandsQueueTest, SingleFailedCommand) {
 }
 
 TEST_F(RemoteCommandsQueueTest, SingleTerminatedCommand) {
-  // Initialize a job expected to fail after 200 seconds, from a protobuf with
+  // Initialize a job expected to fail after 600 seconds, from a protobuf with
   // |kUniqueID|, |kPayload| and |test_start_time_| as command issued time.
   std::unique_ptr<RemoteCommandJob> job(
-      new TestRemoteCommandJob(false, base::TimeDelta::FromSeconds(200)));
+      new TestRemoteCommandJob(false, base::TimeDelta::FromSeconds(600)));
   InitializeJob(job.get(), kUniqueID, test_start_time_, kPayload);
 
   AddJobAndVerifyRunningAfter(std::move(job),
-                              base::TimeDelta::FromSeconds(179));
+                              base::TimeDelta::FromSeconds(599));
 
-  // After 181 seconds, the job is expected to be terminated (3 minutes is the
+  // After 601 seconds, the job is expected to be terminated (10 minutes is the
   // timeout duration).
   EXPECT_CALL(observer_, OnJobFinished(Property(&RemoteCommandJob::status,
                                                 RemoteCommandJob::TERMINATED)));

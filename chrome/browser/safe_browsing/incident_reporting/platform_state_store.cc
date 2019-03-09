@@ -46,8 +46,7 @@ void KeysAndDigestsToProtobuf(
   for (base::DictionaryValue::Iterator iter(keys_and_digests); !iter.IsAtEnd();
        iter.Advance()) {
     uint32_t digest = 0;
-    if (iter.value().GetType() != base::Value::TYPE_STRING ||
-        !iter.value().GetAsString(&digest_value) ||
+    if (!iter.value().is_string() || !iter.value().GetAsString(&digest_value) ||
         !base::StringToUint(digest_value, &digest)) {
       NOTREACHED();
       continue;
@@ -92,12 +91,12 @@ void IncidentsSentToProtobuf(
 void RestoreOfTypeFromProtobuf(
     const RepeatedPtrField<StateStoreData::Incidents::KeyDigestMapFieldEntry>&
         key_digest_pairs,
-    base::DictionaryValue* type_dict) {
+    base::Value* type_dict) {
   for (const auto& key_digest : key_digest_pairs) {
     if (!key_digest.has_key() || !key_digest.has_digest())
       continue;
-    type_dict->SetStringWithoutPathExpansion(
-        key_digest.key(), base::UintToString(key_digest.digest()));
+    type_dict->SetKey(key_digest.key(),
+                      base::Value(base::NumberToString(key_digest.digest())));
   }
 }
 
@@ -105,18 +104,18 @@ void RestoreOfTypeFromProtobuf(
 void RestoreFromProtobuf(
     const RepeatedPtrField<StateStoreData::TypeIncidentsMapFieldEntry>&
         type_incidents_pairs,
-    base::DictionaryValue* value_dict) {
+    base::Value* value_dict) {
   for (const auto& type_incidents : type_incidents_pairs) {
     if (!type_incidents.has_type() || !type_incidents.has_incidents() ||
         type_incidents.incidents().key_to_digest_size() == 0) {
       continue;
     }
-    std::string type_string(base::IntToString(type_incidents.type()));
-    base::DictionaryValue* type_dict = nullptr;
-    if (!value_dict->GetDictionaryWithoutPathExpansion(type_string,
-                                                       &type_dict)) {
-      type_dict = new base::DictionaryValue();
-      value_dict->SetWithoutPathExpansion(type_string, type_dict);
+    std::string type_string(base::NumberToString(type_incidents.type()));
+    base::Value* type_dict =
+        value_dict->FindKeyOfType(type_string, base::Value::Type::DICTIONARY);
+    if (!type_dict) {
+      type_dict = value_dict->SetKey(
+          type_string, base::Value(base::Value::Type::DICTIONARY));
     }
     RestoreOfTypeFromProtobuf(type_incidents.incidents().key_to_digest(),
                               type_dict);
@@ -165,7 +164,7 @@ void Store(Profile* profile, const base::DictionaryValue* incidents_sent) {
 #if defined(USE_PLATFORM_STATE_STORE)
   std::string data;
   SerializeIncidentsSent(incidents_sent, &data);
-  UMA_HISTOGRAM_COUNTS("SBIRS.PSSDataStoreSize", data.size());
+  UMA_HISTOGRAM_COUNTS_1M("SBIRS.PSSDataStoreSize", data.size());
   WriteStoreData(profile, data);
 #endif
 }

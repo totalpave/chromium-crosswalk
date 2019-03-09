@@ -34,7 +34,7 @@ TEST_F(ChromeComponentExtensionResourceManagerTest,
 
   // Get the extension test data path.
   base::FilePath test_path;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_path));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_path));
   test_path = test_path.AppendASCII("extensions").AppendASCII("file_manager");
 
   // Load the manifest data.
@@ -46,7 +46,7 @@ TEST_F(ChromeComponentExtensionResourceManagerTest,
   // Build a path inside Chrome's resources directory where a component
   // extension might be installed.
   base::FilePath resources_path;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_RESOURCES, &resources_path));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_RESOURCES, &resources_path));
   resources_path = resources_path.AppendASCII("file_manager");
 
   // Create a simulated component extension.
@@ -65,10 +65,11 @@ TEST_F(ChromeComponentExtensionResourceManagerTest,
 
 #if defined(OS_CHROMEOS)
   // The resource is a component resource.
-  int resource_id = 0;
+  ComponentExtensionResourceInfo resource_info;
   ASSERT_TRUE(resource_manager->IsComponentExtensionResource(
-      extension->path(), resource.relative_path(), &resource_id));
-  ASSERT_EQ(IDR_FILE_MANAGER_ICON_16, resource_id);
+      extension->path(), resource.relative_path(), &resource_info));
+  ASSERT_EQ(IDR_FILE_MANAGER_ICON_16, resource_info.resource_id);
+  EXPECT_FALSE(resource_info.gzipped);
 #endif
 }
 

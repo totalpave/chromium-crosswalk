@@ -37,15 +37,25 @@ class WebContents;
 // FullscreenWithinTab Note:
 // All fullscreen widgets are displayed within the tab contents area, and
 // FullscreenController will expand the browser window so that the tab contents
-// area fills the entire screen. However, special behavior applies when a tab is
-// being screen-captured. First, the browser window will not be
-// fullscreened. This allows the user to retain control of their desktop to work
-// in other browser tabs or applications while the fullscreen view is displayed
-// on a remote screen. Second, FullscreenController will auto-resize fullscreen
-// widgets to that of the capture video resolution when they are hidden (e.g.,
-// when a user has switched to another tab). This is both a performance and
-// quality improvement since scaling and letterboxing steps can be skipped in
-// the capture pipeline.
+// area fills the entire screen.
+// However, special behavior applies when a tab is screen-captured or the
+// content fullscreen feature is active.
+//
+// Screen-captured:
+// First, the browser window will not be fullscreened. This allows the user to
+// retain control of their desktop to work in other browser tabs or applications
+// while the fullscreen view is displayed on a remote screen. Second,
+// FullscreenController will auto-resize fullscreen widgets to that of the
+// capture video resolution when they are hidden (e.g., when a user has
+// switched to another tab). This is both a performance and quality improvement
+// since scaling and letterboxing steps can be skipped in the capture pipeline.
+//
+// Content-fullscreen (for macOS only):
+// First, the browser window will not be fullscreened. Second, the WebContents's
+// view will not be displayed in the browser window but rather in a
+// separate window, SeparateFullscreenWindow, which will be fullscreened and
+// moved to a new space. This enables the user to have both the browser window
+// and the fullscreen content displayed separately at the same time.
 
 // This class implements fullscreen behaviour.
 class FullscreenController : public ExclusiveAccessControllerBase {
@@ -93,6 +103,10 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   bool IsFullscreenForTabOrPending(
       const content::WebContents* web_contents) const;
 
+  // Returns true if |web_contents| is in fullscreen mode as a screen-captured
+  // tab. See 'FullscreenWithinTab Note'.
+  bool IsFullscreenWithinTab(const content::WebContents* web_contents) const;
+
   // True if fullscreen was entered because of tab fullscreen (was not
   // previously in user-initiated fullscreen).
   bool IsFullscreenCausedByTab() const;
@@ -114,6 +128,7 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   // Platform Fullscreen ///////////////////////////////////////////////////////
 
   // Overrde from ExclusiveAccessControllerBase.
+  void OnTabDeactivated(content::WebContents* web_contents) override;
   void OnTabDetachedFromView(content::WebContents* web_contents) override;
   void OnTabClosing(content::WebContents* web_contents) override;
   bool HandleUserPressedEscape() override;
@@ -123,8 +138,15 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   void ExitExclusiveAccessIfNecessary() override;
   // Callbacks /////////////////////////////////////////////////////////////////
 
+  // Called by Browser::WindowFullscreenStateWillChange.
+  void WindowFullscreenStateWillChange();
+
   // Called by Browser::WindowFullscreenStateChanged.
   void WindowFullscreenStateChanged();
+
+  void set_is_tab_fullscreen_for_testing(bool is_tab_fullscreen) {
+    is_tab_fullscreen_for_testing_ = is_tab_fullscreen;
+  }
 
  private:
   friend class FullscreenControllerTest;
@@ -152,13 +174,10 @@ class FullscreenController : public ExclusiveAccessControllerBase {
 
   void SetPrivilegedFullscreenForTesting(bool is_privileged);
   // Returns true if |web_contents| was toggled into/out of fullscreen mode as a
-  // screen-captured tab. See 'FullscreenWithinTab Note'.
-  bool MaybeToggleFullscreenForCapturedTab(content::WebContents* web_contents,
-                                           bool enter_fullscreen);
-  // Returns true if |web_contents| is in fullscreen mode as a screen-captured
-  // tab. See 'FullscreenWithinTab Note'.
-  bool IsFullscreenForCapturedTab(const content::WebContents* web_contents)
-      const;
+  // screen-captured tab or as a content-fullscreen tab.
+  // See 'FullscreenWithinTab Note'.
+  bool MaybeToggleFullscreenWithinTab(content::WebContents* web_contents,
+                                      bool enter_fullscreen);
 
   // Helper methods that should be used in a TAB context.
   GURL GetRequestingOrigin() const;
@@ -186,13 +205,16 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   // True if this controller has toggled into tab OR browser fullscreen.
   bool toggled_into_fullscreen_;
 
-  // Used to verify that calls we expect to reenter by calling
-  // WindowFullscreenStateChanged do so.
-  bool reentrant_window_state_change_call_check_;
+  // Set in OnTabDeactivated(). Used to see if we're in the middle of
+  // deactivation of a tab.
+  content::WebContents* deactivated_contents_;
 
   // Used in testing to confirm proper behavior for specific, privileged
   // fullscreen cases.
   bool is_privileged_fullscreen_for_testing_;
+
+  // Used in testing to set the state to tab fullscreen.
+  bool is_tab_fullscreen_for_testing_;
 
   base::WeakPtrFactory<FullscreenController> ptr_factory_;
 

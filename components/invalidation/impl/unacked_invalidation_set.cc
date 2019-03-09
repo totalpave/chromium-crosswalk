@@ -4,6 +4,8 @@
 
 #include "components/invalidation/impl/unacked_invalidation_set.h"
 
+#include <utility>
+
 #include "base/strings/string_number_conversions.h"
 #include "components/invalidation/public/ack_handle.h"
 #include "components/invalidation/public/object_id_invalidation_map.h"
@@ -59,8 +61,7 @@ void UnackedInvalidationSet::ExportInvalidations(
     base::WeakPtr<AckHandler> ack_handler,
     scoped_refptr<base::SingleThreadTaskRunner> ack_handler_task_runner,
     ObjectIdInvalidationMap* out) const {
-  for (SingleObjectInvalidationSet::const_iterator it = invalidations_.begin();
-       it != invalidations_.end(); ++it) {
+  for (auto it = invalidations_.begin(); it != invalidations_.end(); ++it) {
     // Copy the invalidation and set the copy's ack_handler.
     Invalidation inv(*it);
     inv.SetAckHandler(ack_handler, ack_handler_task_runner);
@@ -84,8 +85,7 @@ void UnackedInvalidationSet::SetHandlerIsUnregistered() {
 // Removes the matching ack handle from the list.
 void UnackedInvalidationSet::Acknowledge(const AckHandle& handle) {
   bool handle_found = false;
-  for (SingleObjectInvalidationSet::const_iterator it = invalidations_.begin();
-       it != invalidations_.end(); ++it) {
+  for (auto it = invalidations_.begin(); it != invalidations_.end(); ++it) {
     if (it->ack_handle().Equals(handle)) {
       invalidations_.erase(*it);
       handle_found = true;
@@ -159,15 +159,14 @@ bool UnackedInvalidationSet::DeserializeSetIntoMap(
 
 std::unique_ptr<base::DictionaryValue> UnackedInvalidationSet::ToValue() const {
   std::unique_ptr<base::DictionaryValue> value(new base::DictionaryValue);
-  value->SetString(kSourceKey, base::IntToString(object_id_.source()));
+  value->SetString(kSourceKey, base::NumberToString(object_id_.source()));
   value->SetString(kNameKey, object_id_.name());
 
   std::unique_ptr<base::ListValue> list_value(new base::ListValue);
-  for (InvalidationsSet::const_iterator it = invalidations_.begin();
-       it != invalidations_.end(); ++it) {
+  for (auto it = invalidations_.begin(); it != invalidations_.end(); ++it) {
     list_value->Append(it->ToValue());
   }
-  value->Set(kInvalidationListKey, list_value.release());
+  value->Set(kInvalidationListKey, std::move(list_value));
 
   return value;
 }
@@ -190,7 +189,7 @@ bool UnackedInvalidationSet::ResetFromValue(
     return false;
   }
   object_id_ = invalidation::ObjectId(source, name);
-  const base::ListValue* invalidation_list = NULL;
+  const base::ListValue* invalidation_list = nullptr;
   if (!value.GetList(kInvalidationListKey, &invalidation_list)
       || !ResetListFromValue(*invalidation_list)) {
     // Earlier versions of this class did not set this field, so we don't treat
@@ -214,7 +213,7 @@ bool UnackedInvalidationSet::ResetListFromValue(
       DLOG(WARNING) << "Failed to parse invalidation at index " << i;
       return false;
     }
-    invalidations_.insert(*invalidation.get());
+    invalidations_.insert(*invalidation);
   }
   return true;
 }

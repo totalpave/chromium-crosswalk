@@ -20,8 +20,8 @@ namespace remoting {
 namespace {
 
 // Holds a reference to the task runner used by the module.
-base::LazyInstance<scoped_refptr<AutoThreadTaskRunner> > g_module_task_runner =
-    LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<scoped_refptr<AutoThreadTaskRunner>>::DestructorAtExit
+    g_module_task_runner = LAZY_INSTANCE_INITIALIZER;
 
 // Lowers the process integrity level such that it does not exceed |max_level|.
 // |max_level| is expected to be one of SECURITY_MANDATORY_XXX constants.
@@ -81,7 +81,7 @@ ChromotingModule::ChromotingModule(
     : classes_(classes),
       classes_end_(classes_end) {
   // Don't do anything if COM initialization failed.
-  if (!com_initializer_.succeeded())
+  if (!com_initializer_.Succeeded())
     return;
 
   ATL::_AtlComModule.ExecuteObjectMain(true);
@@ -89,7 +89,7 @@ ChromotingModule::ChromotingModule(
 
 ChromotingModule::~ChromotingModule() {
   // Don't do anything if COM initialization failed.
-  if (!com_initializer_.succeeded())
+  if (!com_initializer_.Succeeded())
     return;
 
   Term();
@@ -103,7 +103,7 @@ scoped_refptr<AutoThreadTaskRunner> ChromotingModule::task_runner() {
 
 bool ChromotingModule::Run() {
   // Don't do anything if COM initialization failed.
-  if (!com_initializer_.succeeded())
+  if (!com_initializer_.Succeeded())
     return false;
 
   // Register class objects.

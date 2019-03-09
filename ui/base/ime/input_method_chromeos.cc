@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
@@ -16,35 +17,54 @@
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/sys_info.h"
 #include "base/third_party/icu/icu_utf.h"
+#include "chromeos/system/devicemode.h"
 #include "ui/base/ime/chromeos/ime_keyboard.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
 #include "ui/base/ime/composition_text.h"
 #include "ui/base/ime/ime_bridge.h"
 #include "ui/base/ime/ime_engine_handler_interface.h"
+#include "ui/base/ime/input_method_delegate.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/events/event.h"
-#include "ui/events/keycodes/dom/dom_code.h"
-#include "ui/events/keycodes/dom/dom_key.h"
 #include "ui/gfx/geometry/rect.h"
 
-namespace {
-ui::IMEEngineHandlerInterface* GetEngine() {
-  return ui::IMEBridge::Get()->GetCurrentEngineHandler();
-}
-}  // namespace
-
 namespace ui {
+namespace {
+
+void RunAckCallbackFromPostImeCallback(
+    InputMethodChromeOS::AckCallback callback,
+    bool handled,
+    bool stopped_propagation) {
+  if (callback)
+    std::move(callback).Run(handled);
+}
+
+void RunImeCallbackIfValid(
+    internal::InputMethodDelegate::DispatchKeyEventPostIMECallback callback,
+    bool handled,
+    bool stopped_propagation) {
+  if (!callback)
+    return;
+  std::move(callback).Run(handled, stopped_propagation);
+}
+
+internal::InputMethodDelegate::DispatchKeyEventPostIMECallback
+CreateResultCallbackFromAckCallback(InputMethodChromeOS::AckCallback callback) {
+  return base::BindOnce(&RunAckCallbackFromPostImeCallback,
+                        std::move(callback));
+}
+
+}  // namespace
 
 // InputMethodChromeOS implementation -----------------------------------------
 InputMethodChromeOS::InputMethodChromeOS(
     internal::InputMethodDelegate* delegate)
-    : composing_text_(false),
+    : InputMethodBase(delegate),
+      composing_text_(false),
       composition_changed_(false),
       handling_key_event_(false),
       weak_ptr_factory_(this) {
-  SetDelegate(delegate);
   ui::IMEBridge::Get()->SetInputContextHandler(this);
 
   UpdateContextFocusState();
@@ -55,52 +75,67 @@ InputMethodChromeOS::~InputMethodChromeOS() {
   // We are dead, so we need to ask the client to stop relying on us.
   OnInputMethodChanged();
 
-  if (ui::IMEBridge::Get())
-    ui::IMEBridge::Get()->SetInputContextHandler(NULL);
-}
-
-bool InputMethodChromeOS::OnUntranslatedIMEMessage(
-    const base::NativeEvent& event,
-    NativeEventResult* result) {
-  return false;
-}
-
-void InputMethodChromeOS::ProcessKeyEventDone(ui::KeyEvent* event,
-                                              bool is_handled) {
-  DCHECK(event);
-  if (event->type() == ET_KEY_PRESSED) {
-    if (is_handled) {
-      // IME event has a priority to be handled, so that character composer
-      // should be reset.
-      character_composer_.Reset();
-    } else {
-      // If IME does not handle key event, passes keyevent to character composer
-      // to be able to compose complex characters.
-      is_handled = ExecuteCharacterComposer(*event);
-    }
+  if (ui::IMEBridge::Get() &&
+      ui::IMEBridge::Get()->GetInputContextHandler() == this) {
+    ui::IMEBridge::Get()->SetInputContextHandler(nullptr);
   }
-
-  if (event->type() == ET_KEY_PRESSED || event->type() == ET_KEY_RELEASED)
-    ProcessKeyEventPostIME(event, is_handled);
-
-  handling_key_event_ = false;
 }
 
-void InputMethodChromeOS::DispatchKeyEvent(ui::KeyEvent* event) {
+ui::EventDispatchDetails InputMethodChromeOS::DispatchKeyEvent(
+    ui::KeyEvent* event,
+    AckCallback ack_callback) {
+  ResultCallback result_callback =
+      CreateResultCallbackFromAckCallback(std::move(ack_callback));
+
   DCHECK(event->IsKeyEvent());
   DCHECK(!(event->flags() & ui::EF_IS_SYNTHESIZED));
 
-  // For linux_chromeos, the ime keyboard cannot track the caps lock state by
-  // itself, so need to call SetCapsLockEnabled() method to reflect the caps
-  // lock state by the key event.
-  if (!base::SysInfo::IsRunningOnChromeOS()) {
-    chromeos::input_method::InputMethodManager* manager =
-        chromeos::input_method::InputMethodManager::Get();
-    if (manager) {
-      chromeos::input_method::ImeKeyboard* keyboard = manager->GetImeKeyboard();
-      if (keyboard && event->type() == ui::ET_KEY_PRESSED) {
-        keyboard->SetCapsLockEnabled((event->key_code() == ui::VKEY_CAPITAL) ?
-            !keyboard->CapsLockIsEnabled() : event->IsCapsLockOn());
+  // For OS_CHROMEOS build of Chrome running on Linux, the IME keyboard cannot
+  // track the Caps Lock state by itself, so need to call SetCapsLockEnabled()
+  // method to reflect the Caps Lock state by the key event.
+  chromeos::input_method::InputMethodManager* manager =
+      chromeos::input_method::InputMethodManager::Get();
+  if (manager) {
+    chromeos::input_method::ImeKeyboard* keyboard = manager->GetImeKeyboard();
+    if (keyboard && event->type() == ET_KEY_PRESSED &&
+        event->key_code() != ui::VKEY_CAPITAL &&
+        keyboard->CapsLockIsEnabled() != event->IsCapsLockOn()) {
+      // Synchronize the keyboard state with event's state if they do not
+      // match. Do not synchronize for Caps Lock key because it is already
+      // handled in event rewriter.
+      keyboard->SetCapsLockEnabled(event->IsCapsLockOn());
+    }
+
+    // For JP106 language input keys, makes sure they can be passed to the app
+    // so that the VDI web apps can be supported. See https://crbug.com/816341.
+    // VKEY_CONVERT: Henkan key
+    // VKEY_NONCONVERT: Muhenkan key
+    // VKEY_DBE_SBCSCHAR/VKEY_DBE_DBCSCHAR: ZenkakuHankaku key
+    chromeos::input_method::InputMethodManager::State* state =
+        manager->GetActiveIMEState().get();
+    if (event->type() == ET_KEY_PRESSED && state) {
+      bool language_input_key = true;
+      switch (event->key_code()) {
+        case ui::VKEY_CONVERT:
+          state->ChangeInputMethodToJpIme();
+          break;
+        case ui::VKEY_NONCONVERT:
+          state->ChangeInputMethodToJpKeyboard();
+          break;
+        case ui::VKEY_DBE_SBCSCHAR:
+        case ui::VKEY_DBE_DBCSCHAR:
+          state->ToggleInputMethodForJpIme();
+          break;
+        default:
+          language_input_key = false;
+          break;
+      }
+      if (language_input_key) {
+        // Dispatches the event to app/blink.
+        // TODO(shuchen): Eventually, the language input keys should be handed
+        // over to the IME extension to process. And IMF can handle if the IME
+        // extension didn't handle.
+        return DispatchKeyEventPostIME(event, std::move(result_callback));
       }
     }
   }
@@ -115,27 +150,65 @@ void InputMethodChromeOS::DispatchKeyEvent(ui::KeyEvent* event) {
       if (ExecuteCharacterComposer(*event)) {
         // Treating as PostIME event if character composer handles key event and
         // generates some IME event,
-        ProcessKeyEventPostIME(event, true);
-        return;
+        return ProcessKeyEventPostIME(event, std::move(result_callback), false,
+                                      /* handled */ true,
+                                      /* stopped_propagation */ true);
       }
-      ProcessUnfilteredKeyPressEvent(event);
-    } else {
-      ignore_result(DispatchKeyEventPostIME(event));
+      return ProcessUnfilteredKeyPressEvent(event, std::move(result_callback));
     }
-    return;
+    return DispatchKeyEventPostIME(event, std::move(result_callback));
   }
 
   handling_key_event_ = true;
   if (GetEngine()->IsInterestedInKeyEvent()) {
     ui::IMEEngineHandlerInterface::KeyEventDoneCallback callback =
-        base::Bind(&InputMethodChromeOS::ProcessKeyEventDone,
-                   weak_ptr_factory_.GetWeakPtr(),
-                   // Pass the ownership of the new copied event.
-                   base::Owned(new ui::KeyEvent(*event)));
-    GetEngine()->ProcessKeyEvent(*event, callback);
-  } else {
-    ProcessKeyEventDone(event, false);
+        base::BindOnce(&InputMethodChromeOS::KeyEventDoneCallback,
+                       weak_ptr_factory_.GetWeakPtr(),
+                       // Pass the ownership of the new copied event.
+                       base::Owned(new ui::KeyEvent(*event)),
+                       std::move(result_callback));
+    GetEngine()->ProcessKeyEvent(*event, std::move(callback));
+    return ui::EventDispatchDetails();
   }
+  return ProcessKeyEventDone(event, std::move(result_callback), false);
+}
+
+void InputMethodChromeOS::KeyEventDoneCallback(ui::KeyEvent* event,
+                                               ResultCallback result_callback,
+                                               bool is_handled) {
+  ignore_result(
+      ProcessKeyEventDone(event, std::move(result_callback), is_handled));
+}
+
+ui::EventDispatchDetails InputMethodChromeOS::ProcessKeyEventDone(
+    ui::KeyEvent* event,
+    ResultCallback result_callback,
+    bool is_handled) {
+  DCHECK(event);
+  if (event->type() == ET_KEY_PRESSED) {
+    if (is_handled) {
+      // IME event has a priority to be handled, so that character composer
+      // should be reset.
+      character_composer_.Reset();
+    } else {
+      // If IME does not handle key event, passes keyevent to character composer
+      // to be able to compose complex characters.
+      is_handled = ExecuteCharacterComposer(*event);
+    }
+  }
+  ui::EventDispatchDetails details;
+  if (event->type() == ET_KEY_PRESSED || event->type() == ET_KEY_RELEASED) {
+    details =
+        ProcessKeyEventPostIME(event, std::move(result_callback), false,
+                               is_handled, /* stopped_propagation */ false);
+  }
+  handling_key_event_ = false;
+  return details;
+}
+
+ui::EventDispatchDetails InputMethodChromeOS::DispatchKeyEvent(
+    ui::KeyEvent* event) {
+  return DispatchKeyEvent(event, AckCallback());
 }
 
 void InputMethodChromeOS::OnTextInputTypeChanged(
@@ -152,15 +225,18 @@ void InputMethodChromeOS::OnTextInputTypeChanged(
     // The focus in to or out from password field should also notify engine.
     engine->FocusOut();
     ui::IMEEngineHandlerInterface::InputContext context(
-        GetTextInputType(), GetTextInputMode(), GetTextInputFlags());
+        GetTextInputType(), GetTextInputMode(), GetTextInputFlags(),
+        GetClientFocusReason(), GetClientShouldDoLearning());
     engine->FocusIn(context);
   }
+
+  OnCaretBoundsChanged(client);
 
   InputMethodBase::OnTextInputTypeChanged(client);
 }
 
 void InputMethodChromeOS::OnCaretBoundsChanged(const TextInputClient* client) {
-  if (!IsInputFieldFocused() || !IsTextInputClientFocused(client))
+  if (IsTextInputTypeNone() || !IsTextInputClientFocused(client))
     return;
 
   NotifyTextInputCaretBoundsChanged(client);
@@ -197,7 +273,7 @@ void InputMethodChromeOS::OnCaretBoundsChanged(const TextInputClient* client) {
   base::string16 surrounding_text;
   if (!client->GetTextRange(&text_range) ||
       !client->GetTextFromRange(text_range, &surrounding_text) ||
-      !client->GetSelectionRange(&selection_range)) {
+      !client->GetEditableSelectionRange(&selection_range)) {
     previous_surrounding_text_.clear();
     previous_selection_range_ = gfx::Range::InvalidRange();
     return;
@@ -233,18 +309,20 @@ void InputMethodChromeOS::CancelComposition(const TextInputClient* client) {
     ResetContext();
 }
 
-void InputMethodChromeOS::OnInputLocaleChanged() {
-  // Not supported.
-}
-
-std::string InputMethodChromeOS::GetInputLocale() {
-  // Not supported.
-  return "";
-}
-
 bool InputMethodChromeOS::IsCandidatePopupOpen() const {
   // TODO(yukishiino): Implement this method.
   return false;
+}
+
+InputMethodKeyboardController*
+InputMethodChromeOS::GetInputMethodKeyboardController() {
+  chromeos::input_method::InputMethodManager* manager =
+      chromeos::input_method::InputMethodManager::Get();
+  if (manager) {
+    if (auto* controller = manager->GetInputMethodKeyboardController())
+      return controller;
+  }
+  return InputMethodBase::GetInputMethodKeyboardController();
 }
 
 void InputMethodChromeOS::OnWillChangeFocusedClient(
@@ -266,9 +344,12 @@ void InputMethodChromeOS::OnDidChangeFocusedClient(
 
   if (GetEngine()) {
     ui::IMEEngineHandlerInterface::InputContext context(
-        GetTextInputType(), GetTextInputMode(), GetTextInputFlags());
+        GetTextInputType(), GetTextInputMode(), GetTextInputFlags(),
+        GetClientFocusReason(), GetClientShouldDoLearning());
     GetEngine()->FocusIn(context);
   }
+
+  OnCaretBoundsChanged(GetTextInputClient());
 }
 
 void InputMethodChromeOS::ConfirmCompositionText() {
@@ -283,7 +364,7 @@ void InputMethodChromeOS::ResetContext() {
   if (!IsNonPasswordInputFieldFocused() || !GetTextInputClient())
     return;
 
-  composition_.Clear();
+  composition_ = CompositionText();
   result_text_.clear();
   composing_text_ = false;
   composition_changed_ = false;
@@ -310,75 +391,125 @@ void InputMethodChromeOS::UpdateContextFocusState() {
     candidate_window->FocusStateChanged(IsNonPasswordInputFieldFocused());
 
   ui::IMEEngineHandlerInterface::InputContext context(
-      GetTextInputType(), GetTextInputMode(), GetTextInputFlags());
+      GetTextInputType(), GetTextInputMode(), GetTextInputFlags(),
+      GetClientFocusReason(), GetClientShouldDoLearning());
   ui::IMEBridge::Get()->SetCurrentInputContext(context);
-
-  if (!IsTextInputTypeNone())
-    OnCaretBoundsChanged(GetTextInputClient());
 }
 
-void InputMethodChromeOS::ProcessKeyEventPostIME(ui::KeyEvent* event,
-                                                 bool handled) {
+ui::EventDispatchDetails InputMethodChromeOS::ProcessKeyEventPostIME(
+    ui::KeyEvent* event,
+    ResultCallback result_callback,
+    bool skip_process_filtered,
+    bool handled,
+    bool stopped_propagation) {
   TextInputClient* client = GetTextInputClient();
   if (!client) {
     // As ibus works asynchronously, there is a chance that the focused client
     // loses focus before this method gets called.
-    ignore_result(DispatchKeyEventPostIME(event));
-    return;
+    return DispatchKeyEventPostIME(event, std::move(result_callback));
   }
 
-  if (event->type() == ET_KEY_PRESSED && handled) {
-    ProcessFilteredKeyPressEvent(event);
-    if (event->stopped_propagation()) {
-      ResetContext();
-      return;
-    }
-  }
+  ui::EventDispatchDetails dispatch_details;
+  if (event->type() == ET_KEY_PRESSED && handled && !skip_process_filtered)
+    return ProcessFilteredKeyPressEvent(event, std::move(result_callback));
 
   // In case the focus was changed by the key event. The |context_| should have
   // been reset when the focused window changed.
-  if (client != GetTextInputClient())
-    return;
-
+  if (client != GetTextInputClient()) {
+    RunImeCallbackIfValid(std::move(result_callback), /* handled */ false,
+                          /* stopped_propagation*/ false);
+    return dispatch_details;
+  }
   if (HasInputMethodResult())
     ProcessInputMethodResult(event, handled);
 
   // In case the focus was changed when sending input method results to the
   // focused window.
-  if (client != GetTextInputClient())
-    return;
+  if (client != GetTextInputClient()) {
+    RunImeCallbackIfValid(std::move(result_callback), /* handled */ false,
+                          /* stopped_propagation */ false);
+    return dispatch_details;
+  }
 
-  if (handled)
-    return;  // IME handled the key event. do not forward.
+  if (handled) {
+    RunImeCallbackIfValid(std::move(result_callback),
+                          /* handled */ true, stopped_propagation);
+    return dispatch_details;  // IME handled the key event. do not forward.
+  }
 
   if (event->type() == ET_KEY_PRESSED)
-    ProcessUnfilteredKeyPressEvent(event);
-  else if (event->type() == ET_KEY_RELEASED)
-    ignore_result(DispatchKeyEventPostIME(event));
+    return ProcessUnfilteredKeyPressEvent(event, std::move(result_callback));
+
+  if (event->type() == ET_KEY_RELEASED)
+    return DispatchKeyEventPostIME(event, std::move(result_callback));
+  return dispatch_details;
 }
 
-void InputMethodChromeOS::ProcessFilteredKeyPressEvent(ui::KeyEvent* event) {
-  if (NeedInsertChar()) {
-    ignore_result(DispatchKeyEventPostIME(event));
-    return;
-  }
+ui::EventDispatchDetails InputMethodChromeOS::ProcessFilteredKeyPressEvent(
+    ui::KeyEvent* event,
+    ResultCallback result_callback) {
+  auto callback = base::Bind(
+      &InputMethodChromeOS::PostProcessFilteredKeyPressEvent,
+      weak_ptr_factory_.GetWeakPtr(), base::Owned(new ui::KeyEvent(*event)),
+      GetTextInputClient(), Passed(&result_callback));
+
+  if (NeedInsertChar())
+    return DispatchKeyEventPostIME(event, std::move(callback));
+
   ui::KeyEvent fabricated_event(ET_KEY_PRESSED,
                                 VKEY_PROCESSKEY,
-                                ui::DomCode::NONE,
+                                event->code(),
                                 event->flags(),
-                                ui::DomKey::NONE,
+                                event->GetDomKey(),
                                 event->time_stamp());
-  ignore_result(DispatchKeyEventPostIME(&fabricated_event));
+  ui::EventDispatchDetails dispatch_details =
+      DispatchKeyEventPostIME(&fabricated_event, std::move(callback));
   if (fabricated_event.stopped_propagation())
     event->StopPropagation();
+  return dispatch_details;
 }
 
-void InputMethodChromeOS::ProcessUnfilteredKeyPressEvent(
-    ui::KeyEvent* event) {
-  const TextInputClient* prev_client = GetTextInputClient();
-  ignore_result(DispatchKeyEventPostIME(event));
-  if (event->stopped_propagation()) {
+void InputMethodChromeOS::PostProcessFilteredKeyPressEvent(
+    ui::KeyEvent* event,
+    TextInputClient* prev_client,
+    ResultCallback result_callback,
+    bool handled,
+    bool stopped_propagation) {
+  // In case the focus was changed by the key event.
+  if (GetTextInputClient() != prev_client)
+    return;
+
+  if (stopped_propagation) {
     ResetContext();
+    RunImeCallbackIfValid(std::move(result_callback), handled,
+                          /* stopped_propagation */ true);
+    return;
+  }
+  ignore_result(ProcessKeyEventPostIME(event, std::move(result_callback), true,
+                                       true, false));
+}
+
+ui::EventDispatchDetails InputMethodChromeOS::ProcessUnfilteredKeyPressEvent(
+    ui::KeyEvent* event,
+    ResultCallback result_callback) {
+  return DispatchKeyEventPostIME(
+      event,
+      base::BindOnce(&InputMethodChromeOS::PostProcessUnfilteredKeyPressEvent,
+                     weak_ptr_factory_.GetWeakPtr(),
+                     base::Owned(new ui::KeyEvent(*event)),
+                     GetTextInputClient(), std::move(result_callback)));
+}
+
+void InputMethodChromeOS::PostProcessUnfilteredKeyPressEvent(
+    ui::KeyEvent* event,
+    TextInputClient* prev_client,
+    ResultCallback result_callback,
+    bool handled,
+    bool stopped_propagation) {
+  if (stopped_propagation) {
+    ResetContext();
+    RunImeCallbackIfValid(std::move(result_callback), handled,
+                          /* stopped_propagation */ true);
     return;
   }
 
@@ -390,8 +521,11 @@ void InputMethodChromeOS::ProcessUnfilteredKeyPressEvent(
   //    page.
   // We should return here not to send the Tab key event to RWHV.
   TextInputClient* client = GetTextInputClient();
-  if (!client || client != prev_client)
+  if (!client || client != prev_client) {
+    RunImeCallbackIfValid(std::move(result_callback), /* handled */ false,
+                          /* stopped_propagation */ false);
     return;
+  }
 
   // If a key event was not filtered by |context_| and |character_composer_|,
   // then it means the key event didn't generate any result text. So we need
@@ -399,6 +533,9 @@ void InputMethodChromeOS::ProcessUnfilteredKeyPressEvent(
   uint16_t ch = event->GetCharacter();
   if (ch)
     client->InsertChar(*event);
+
+  RunImeCallbackIfValid(std::move(result_callback), handled,
+                        stopped_propagation);
 }
 
 void InputMethodChromeOS::ProcessInputMethodResult(ui::KeyEvent* event,
@@ -410,7 +547,7 @@ void InputMethodChromeOS::ProcessInputMethodResult(ui::KeyEvent* event,
     if (handled && NeedInsertChar()) {
       for (base::string16::const_iterator i = result_text_.begin();
            i != result_text_.end(); ++i) {
-        ui::KeyEvent ch_event(*event);
+        KeyEvent ch_event(ET_KEY_PRESSED, VKEY_UNKNOWN, EF_NONE);
         ch_event.set_character(*i);
         client->InsertChar(ch_event);
       }
@@ -458,6 +595,11 @@ void InputMethodChromeOS::CommitText(const std::string& text) {
   const base::string16 utf16_text = base::UTF8ToUTF16(text);
   if (utf16_text.empty())
     return;
+
+  if (!CanComposeInline()) {
+    // Hides the candidate window for preedit text.
+    UpdateCompositionText(CompositionText(), 0, false);
+  }
 
   // Append the text to the buffer, because commit signal might be fired
   // multiple times when processing a key event.
@@ -513,7 +655,7 @@ void InputMethodChromeOS::UpdateCompositionText(const CompositionText& text,
       GetTextInputClient()->SetCompositionText(composition_);
     SendFakeProcessKeyEvent(false);
     composition_changed_ = false;
-    composition_.Clear();
+    composition_ = CompositionText();
   }
 }
 
@@ -523,7 +665,7 @@ void InputMethodChromeOS::HidePreeditText() {
 
   // Intentionally leaves |composing_text_| unchanged.
   composition_changed_ = true;
-  composition_.Clear();
+  composition_ = CompositionText();
 
   if (!handling_key_event_) {
     TextInputClient* client = GetTextInputClient();
@@ -567,7 +709,7 @@ void InputMethodChromeOS::ExtractCompositionText(
     const CompositionText& text,
     uint32_t cursor_position,
     CompositionText* out_composition) const {
-  out_composition->Clear();
+  *out_composition = CompositionText();
   out_composition->text = text.text;
 
   if (out_composition->text.empty())
@@ -592,17 +734,19 @@ void InputMethodChromeOS::ExtractCompositionText(
 
   out_composition->selection = gfx::Range(cursor_offset);
 
-  const CompositionUnderlines text_underlines = text.underlines;
-  if (!text_underlines.empty()) {
-    for (size_t i = 0; i < text_underlines.size(); ++i) {
-      const uint32_t start = text_underlines[i].start_offset;
-      const uint32_t end = text_underlines[i].end_offset;
+  const ImeTextSpans text_ime_text_spans = text.ime_text_spans;
+  if (!text_ime_text_spans.empty()) {
+    for (size_t i = 0; i < text_ime_text_spans.size(); ++i) {
+      const uint32_t start = text_ime_text_spans[i].start_offset;
+      const uint32_t end = text_ime_text_spans[i].end_offset;
       if (start >= end)
         continue;
-      CompositionUnderline underline(
-          char16_offsets[start], char16_offsets[end], text_underlines[i].color,
-          text_underlines[i].thick, text_underlines[i].background_color);
-      out_composition->underlines.push_back(underline);
+      ImeTextSpan ime_text_span(ui::ImeTextSpan::Type::kComposition,
+                                char16_offsets[start], char16_offsets[end],
+                                text_ime_text_spans[i].thickness,
+                                text_ime_text_spans[i].background_color);
+      ime_text_span.underline_color = text_ime_text_spans[i].underline_color;
+      out_composition->ime_text_spans.push_back(ime_text_span);
     }
   }
 
@@ -610,29 +754,29 @@ void InputMethodChromeOS::ExtractCompositionText(
   if (text.selection.start() < text.selection.end()) {
     const uint32_t start = text.selection.start();
     const uint32_t end = text.selection.end();
-    CompositionUnderline underline(char16_offsets[start],
-                                   char16_offsets[end],
-                                   SK_ColorBLACK,
-                                   true /* thick */,
-                                   SK_ColorTRANSPARENT);
-    out_composition->underlines.push_back(underline);
+    ImeTextSpan ime_text_span(ui::ImeTextSpan::Type::kComposition,
+                              char16_offsets[start], char16_offsets[end],
+                              ui::ImeTextSpan::Thickness::kThick,
+                              SK_ColorTRANSPARENT);
+    out_composition->ime_text_spans.push_back(ime_text_span);
 
-    // If the cursor is at start or end of this underline, then we treat
+    // If the cursor is at start or end of this ime_text_span, then we treat
     // it as the selection range as well, but make sure to set the cursor
     // position to the selection end.
-    if (underline.start_offset == cursor_offset) {
-      out_composition->selection.set_start(underline.end_offset);
+    if (ime_text_span.start_offset == cursor_offset) {
+      out_composition->selection.set_start(ime_text_span.end_offset);
       out_composition->selection.set_end(cursor_offset);
-    } else if (underline.end_offset == cursor_offset) {
-      out_composition->selection.set_start(underline.start_offset);
+    } else if (ime_text_span.end_offset == cursor_offset) {
+      out_composition->selection.set_start(ime_text_span.start_offset);
       out_composition->selection.set_end(cursor_offset);
     }
   }
 
-  // Use a black thin underline by default.
-  if (out_composition->underlines.empty()) {
-    out_composition->underlines.push_back(CompositionUnderline(
-        0, length, SK_ColorBLACK, false /* thick */, SK_ColorTRANSPARENT));
+  // Use a thin underline with text color by default.
+  if (out_composition->ime_text_spans.empty()) {
+    out_composition->ime_text_spans.push_back(
+        ImeTextSpan(ui::ImeTextSpan::Type::kComposition, 0, length,
+                    ui::ImeTextSpan::Thickness::kThin, SK_ColorTRANSPARENT));
   }
 }
 
@@ -643,6 +787,11 @@ bool InputMethodChromeOS::IsNonPasswordInputFieldFocused() {
 
 bool InputMethodChromeOS::IsInputFieldFocused() {
   return GetTextInputType() != TEXT_INPUT_TYPE_NONE;
+}
+
+TextInputClient::FocusReason InputMethodChromeOS::GetClientFocusReason() const {
+  TextInputClient* client = GetTextInputClient();
+  return client ? client->GetFocusReason() : TextInputClient::FOCUS_REASON_NONE;
 }
 
 }  // namespace ui

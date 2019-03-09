@@ -9,15 +9,15 @@
 
 namespace gl {
 
-class GLContext;
-
 class GLSurfaceTestSupport {
  public:
   static void InitializeOneOff();
+  static void InitializeNoExtensionsOneOff();
   static void InitializeOneOffImplementation(GLImplementation impl,
-                                             bool fallback_to_osmesa);
+                                             bool fallback_to_swiftshader);
   static void InitializeOneOffWithMockBindings();
-  static void InitializeDynamicMockBindings(GLContext* context);
+  static void InitializeOneOffWithStubBindings();
+  static void ShutdownGL();
 };
 
 }  // namespace gl

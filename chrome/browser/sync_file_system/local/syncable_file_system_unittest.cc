@@ -12,18 +12,16 @@
 #include "chrome/browser/sync_file_system/local/local_file_sync_context.h"
 #include "chrome/browser/sync_file_system/local/sync_file_system_backend.h"
 #include "chrome/browser/sync_file_system/syncable_file_system_util.h"
-#include "content/public/test/async_file_test_helper.h"
-#include "content/public/test/sandbox_file_system_test_helper.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "storage/browser/fileapi/file_system_context.h"
 #include "storage/browser/fileapi/file_system_operation_context.h"
 #include "storage/browser/fileapi/isolated_context.h"
 #include "storage/browser/quota/quota_manager.h"
+#include "storage/browser/test/async_file_test_helper.h"
+#include "storage/browser/test/sandbox_file_system_test_helper.h"
 #include "storage/common/fileapi/file_system_types.h"
-#include "storage/common/quota/quota_types.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/leveldatabase/src/helpers/memenv/memenv.h"
-#include "third_party/leveldatabase/src/include/leveldb/env.h"
+#include "third_party/leveldatabase/leveldb_chrome.h"
 
 using content::SandboxFileSystemTestHelper;
 using storage::FileSystemContext;
@@ -31,14 +29,13 @@ using storage::FileSystemOperationContext;
 using storage::FileSystemURL;
 using storage::FileSystemURLSet;
 using storage::QuotaManager;
-using storage::QuotaStatusCode;
 
 namespace sync_file_system {
 
 class SyncableFileSystemTest : public testing::Test {
  public:
   SyncableFileSystemTest()
-      : in_memory_env_(leveldb::NewMemEnv(leveldb::Env::Default())),
+      : in_memory_env_(leveldb_chrome::NewMemEnv("SyncableFileSystemTest")),
         file_system_(GURL("http://example.com/"),
                      in_memory_env_.get(),
                      base::ThreadTaskRunnerHandle::Get().get(),
@@ -50,8 +47,7 @@ class SyncableFileSystemTest : public testing::Test {
     file_system_.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
 
     sync_context_ =
-        new LocalFileSyncContext(data_dir_.path(),
-                                 in_memory_env_.get(),
+        new LocalFileSyncContext(data_dir_.GetPath(), in_memory_env_.get(),
                                  base::ThreadTaskRunnerHandle::Get().get(),
                                  base::ThreadTaskRunnerHandle::Get().get());
     ASSERT_EQ(
@@ -131,7 +127,7 @@ TEST_F(SyncableFileSystemTest, SyncableLocalSandboxCombined) {
   const int64_t kQuota = 12345 * 1024;
   QuotaManager::kSyncableStorageDefaultHostQuota = kQuota;
   int64_t usage, quota;
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system_.GetUsageAndQuota(&usage, &quota));
 
   // Returned quota must be what we overrode. Usage must be greater than 0
@@ -148,7 +144,7 @@ TEST_F(SyncableFileSystemTest, SyncableLocalSandboxCombined) {
             file_system_.TruncateFile(URL("dir/foo"), kFileSizeToExtend));
 
   int64_t new_usage;
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system_.GetUsageAndQuota(&new_usage, &quota));
   EXPECT_EQ(kFileSizeToExtend, new_usage - usage);
 
@@ -159,7 +155,7 @@ TEST_F(SyncableFileSystemTest, SyncableLocalSandboxCombined) {
             file_system_.TruncateFile(URL("dir/foo"), kFileSizeToExtend + 1));
 
   usage = new_usage;
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system_.GetUsageAndQuota(&new_usage, &quota));
   EXPECT_EQ(usage, new_usage);
 
@@ -168,7 +164,7 @@ TEST_F(SyncableFileSystemTest, SyncableLocalSandboxCombined) {
             file_system_.DeleteFileSystem());
 
   // Now the usage must be zero.
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system_.GetUsageAndQuota(&usage, &quota));
   EXPECT_EQ(0, usage);
 
@@ -202,9 +198,9 @@ TEST_F(SyncableFileSystemTest, ChangeTrackerSimple) {
   file_system_.GetChangedURLsInTracker(&urls);
 
   EXPECT_EQ(3U, urls.size());
-  EXPECT_TRUE(ContainsKey(urls, URL(kPath0)));
-  EXPECT_TRUE(ContainsKey(urls, URL(kPath1)));
-  EXPECT_TRUE(ContainsKey(urls, URL(kPath2)));
+  EXPECT_TRUE(base::ContainsKey(urls, URL(kPath0)));
+  EXPECT_TRUE(base::ContainsKey(urls, URL(kPath1)));
+  EXPECT_TRUE(base::ContainsKey(urls, URL(kPath2)));
 
   VerifyAndClearChange(URL(kPath0),
                        FileChange(FileChange::FILE_CHANGE_ADD_OR_UPDATE,
@@ -236,9 +232,9 @@ TEST_F(SyncableFileSystemTest, ChangeTrackerSimple) {
 
   // kPath0 and its all chidren (kPath1 and kPath2) must have been deleted.
   EXPECT_EQ(3U, urls.size());
-  EXPECT_TRUE(ContainsKey(urls, URL(kPath0)));
-  EXPECT_TRUE(ContainsKey(urls, URL(kPath1)));
-  EXPECT_TRUE(ContainsKey(urls, URL(kPath2)));
+  EXPECT_TRUE(base::ContainsKey(urls, URL(kPath0)));
+  EXPECT_TRUE(base::ContainsKey(urls, URL(kPath1)));
+  EXPECT_TRUE(base::ContainsKey(urls, URL(kPath2)));
 
   VerifyAndClearChange(URL(kPath0),
                        FileChange(FileChange::FILE_CHANGE_DELETE,

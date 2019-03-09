@@ -4,22 +4,46 @@
 
 #include "ash/accelerators/accelerator_commands.h"
 
-#include "ash/common/wm/mru_window_tracker.h"
-#include "ash/common/wm/window_state.h"
-#include "ash/common/wm/wm_event.h"
-#include "ash/common/wm_shell.h"
-#include "ash/common/wm_window.h"
-#include "ash/display/display_manager.h"
-#include "ash/display/display_util.h"
 #include "ash/shell.h"
-#include "ash/shell_delegate.h"
+#include "ash/wm/mru_window_tracker.h"
 #include "ash/wm/screen_pinning_controller.h"
-#include "ash/wm/window_state_aura.h"
+#include "ash/wm/window_state.h"
 #include "ash/wm/window_util.h"
+#include "ash/wm/wm_event.h"
 #include "base/metrics/user_metrics.h"
+#include "chromeos/constants/chromeos_switches.h"
+#include "ui/display/display.h"
+#include "ui/display/display_switches.h"
+#include "ui/display/manager/display_manager.h"
+#include "ui/display/manager/managed_display_info.h"
+#include "ui/display/screen.h"
+#include "ui/gfx/geometry/point.h"
 
 namespace ash {
 namespace accelerators {
+
+bool ZoomDisplay(bool up) {
+  if (up)
+    base::RecordAction(base::UserMetricsAction("Accel_Scale_Ui_Up"));
+  else
+    base::RecordAction(base::UserMetricsAction("Accel_Scale_Ui_Down"));
+
+  display::DisplayManager* display_manager = Shell::Get()->display_manager();
+
+  gfx::Point point = display::Screen::GetScreen()->GetCursorScreenPoint();
+  display::Display display =
+      display::Screen::GetScreen()->GetDisplayNearestPoint(point);
+  return display_manager->ZoomDisplay(display.id(), up);
+}
+
+void ResetDisplayZoom() {
+  base::RecordAction(base::UserMetricsAction("Accel_Scale_Ui_Reset"));
+  display::DisplayManager* display_manager = Shell::Get()->display_manager();
+  gfx::Point point = display::Screen::GetScreen()->GetCursorScreenPoint();
+  display::Display display =
+      display::Screen::GetScreen()->GetDisplayNearestPoint(point);
+  display_manager->ResetDisplayZoom(display.id());
+}
 
 bool ToggleMinimized() {
   aura::Window* window = wm::GetActiveWindow();
@@ -27,9 +51,9 @@ bool ToggleMinimized() {
   // the launcher when there is no active window.
   if (!window) {
     MruWindowTracker::WindowList mru_windows(
-        WmShell::Get()->mru_window_tracker()->BuildMruWindowList());
+        Shell::Get()->mru_window_tracker()->BuildMruWindowList());
     if (!mru_windows.empty())
-      mru_windows.front()->GetWindowState()->Activate();
+      wm::GetWindowState(mru_windows.front())->Activate();
     return true;
   }
   wm::WindowState* window_state = wm::GetWindowState(window);
@@ -40,80 +64,35 @@ bool ToggleMinimized() {
 }
 
 void ToggleMaximized() {
-  wm::WindowState* window_state = wm::GetActiveWindowState();
-  if (!window_state)
+  aura::Window* active_window = wm::GetActiveWindow();
+  if (!active_window)
     return;
   base::RecordAction(base::UserMetricsAction("Accel_Toggle_Maximized"));
   wm::WMEvent event(wm::WM_EVENT_TOGGLE_MAXIMIZE);
-  window_state->OnWMEvent(&event);
+  wm::GetWindowState(active_window)->OnWMEvent(&event);
 }
 
 void ToggleFullscreen() {
+  aura::Window* active_window = wm::GetActiveWindow();
+  if (!active_window)
+    return;
+  const wm::WMEvent event(wm::WM_EVENT_TOGGLE_FULLSCREEN);
+  wm::GetWindowState(active_window)->OnWMEvent(&event);
+}
+
+bool CanUnpinWindow() {
+  // WindowStateType::TRUSTED_PINNED does not allow the user to press a key to
+  // exit pinned mode.
   wm::WindowState* window_state = wm::GetActiveWindowState();
-  if (window_state) {
-    const wm::WMEvent event(wm::WM_EVENT_TOGGLE_FULLSCREEN);
-    window_state->OnWMEvent(&event);
-  }
+  return window_state &&
+         window_state->GetStateType() == mojom::WindowStateType::PINNED;
 }
 
-void ToggleTouchHudProjection() {
-  base::RecordAction(base::UserMetricsAction("Accel_Touch_Hud_Clear"));
-  bool enabled = Shell::GetInstance()->is_touch_hud_projection_enabled();
-  Shell::GetInstance()->SetTouchHudProjectionEnabled(!enabled);
-}
-
-bool IsInternalDisplayZoomEnabled() {
-  DisplayManager* display_manager = Shell::GetInstance()->display_manager();
-  return display_manager->IsDisplayUIScalingEnabled() ||
-         display_manager->IsInUnifiedMode();
-}
-
-bool ZoomInternalDisplay(bool up) {
-  if (up)
-    base::RecordAction(base::UserMetricsAction("Accel_Scale_Ui_Up"));
-  else
-    base::RecordAction(base::UserMetricsAction("Accel_Scale_Ui_Down"));
-
-  DisplayManager* display_manager = Shell::GetInstance()->display_manager();
-
-  int64_t display_id = display_manager->IsInUnifiedMode()
-                           ? DisplayManager::kUnifiedDisplayId
-                           : display_manager->GetDisplayIdForUIScaling();
-  const DisplayInfo& display_info = display_manager->GetDisplayInfo(display_id);
-  DisplayMode mode;
-
-  if (display_manager->IsInUnifiedMode()) {
-    if (!GetDisplayModeForNextResolution(display_info, up, &mode))
-      return false;
-  } else {
-    if (!GetDisplayModeForNextUIScale(display_info, up, &mode))
-      return false;
-  }
-  return display_manager->SetDisplayMode(display_id, mode);
-}
-
-void ResetInternalDisplayZoom() {
-  base::RecordAction(base::UserMetricsAction("Accel_Scale_Ui_Reset"));
-  DisplayManager* display_manager = Shell::GetInstance()->display_manager();
-
-  if (display_manager->IsInUnifiedMode()) {
-    const DisplayInfo& display_info =
-        display_manager->GetDisplayInfo(DisplayManager::kUnifiedDisplayId);
-    const std::vector<DisplayMode>& modes = display_info.display_modes();
-    auto iter =
-        std::find_if(modes.begin(), modes.end(),
-                     [](const DisplayMode& mode) { return mode.native; });
-    display_manager->SetDisplayMode(DisplayManager::kUnifiedDisplayId, *iter);
-  } else {
-    SetDisplayUIScale(display_manager->GetDisplayIdForUIScaling(), 1.0f);
-  }
-}
-
-void Unpin() {
-  WmWindow* pinned_window =
-      Shell::GetInstance()->screen_pinning_controller()->pinned_window();
+void UnpinWindow() {
+  aura::Window* pinned_window =
+      Shell::Get()->screen_pinning_controller()->pinned_window();
   if (pinned_window)
-    pinned_window->GetWindowState()->Restore();
+    wm::GetWindowState(pinned_window)->Restore();
 }
 
 }  // namespace accelerators

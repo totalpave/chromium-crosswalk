@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_FRAME_ASH_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_FRAME_ASH_H_
 
-#include <memory>
-
 #include "base/macros.h"
 #include "chrome/browser/ui/views/frame/native_browser_frame.h"
 #include "ui/views/widget/native_widget_aura.h"
@@ -14,23 +12,18 @@
 class BrowserFrame;
 class BrowserView;
 
-////////////////////////////////////////////////////////////////////////////////
-//  BrowserFrameAsh
-//
-//  BrowserFrameAsh is a NativeWidgetAura subclass that provides the window
-//  frame for the Chrome browser window.
-//
+// BrowserFrameAsh provides the frame for Chrome browser windows on Chrome OS
+// under classic ash.
 class BrowserFrameAsh : public views::NativeWidgetAura,
                         public NativeBrowserFrame {
  public:
-  static const char kWindowName[];
-
   BrowserFrameAsh(BrowserFrame* browser_frame, BrowserView* browser_view);
 
-  BrowserView* browser_view() const { return browser_view_; }
-
  protected:
+  ~BrowserFrameAsh() override;
+
   // Overridden from views::NativeWidgetAura:
+  void OnWidgetInitDone() override;
   void OnWindowTargetVisibilityChanged(bool visible) override;
 
   // Overridden from NativeBrowserFrame:
@@ -41,12 +34,12 @@ class BrowserFrameAsh : public views::NativeWidgetAura,
   bool ShouldSaveWindowPlacement() const override;
   void GetWindowPlacement(gfx::Rect* bounds,
                           ui::WindowShowState* show_state) const override;
-
-  ~BrowserFrameAsh() override;
+  content::KeyboardEventProcessingResult PreHandleKeyboardEvent(
+      const content::NativeWebKeyboardEvent& event) override;
+  bool HandleKeyboardEvent(
+      const content::NativeWebKeyboardEvent& event) override;
 
  private:
-  class WindowPropertyWatcher;
-
   // Set the window into the auto managed mode.
   void SetWindowAutoManaged();
 

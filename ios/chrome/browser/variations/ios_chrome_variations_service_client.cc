@@ -9,7 +9,7 @@
 #include "components/version_info/version_info.h"
 #include "ios/chrome/browser/application_context.h"
 #include "ios/chrome/common/channel_info.h"
-#include "ios/web/public/web_thread.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace {
 
@@ -18,7 +18,7 @@ namespace {
 base::Version GetVersionForSimulation() {
   // TODO(asvitkine): Get the version that will be used on restart instead of
   // the current version.
-  return base::Version(version_info::GetVersionNumber());
+  return version_info::GetVersion();
 }
 
 }  // namespace
@@ -27,22 +27,14 @@ IOSChromeVariationsServiceClient::IOSChromeVariationsServiceClient() {}
 
 IOSChromeVariationsServiceClient::~IOSChromeVariationsServiceClient() {}
 
-std::string IOSChromeVariationsServiceClient::GetApplicationLocale() {
-  return GetApplicationContext()->GetApplicationLocale();
-}
-
-base::SequencedWorkerPool* IOSChromeVariationsServiceClient::GetBlockingPool() {
-  return web::WebThread::GetBlockingPool();
-}
-
 base::Callback<base::Version()>
 IOSChromeVariationsServiceClient::GetVersionForSimulationCallback() {
   return base::Bind(&GetVersionForSimulation);
 }
 
-net::URLRequestContextGetter*
-IOSChromeVariationsServiceClient::GetURLRequestContext() {
-  return GetApplicationContext()->GetSystemURLRequestContext();
+scoped_refptr<network::SharedURLLoaderFactory>
+IOSChromeVariationsServiceClient::GetURLLoaderFactory() {
+  return GetApplicationContext()->GetSharedURLLoaderFactory();
 }
 
 network_time::NetworkTimeTracker*
@@ -58,5 +50,3 @@ bool IOSChromeVariationsServiceClient::OverridesRestrictParameter(
     std::string* parameter) {
   return false;
 }
-
-void IOSChromeVariationsServiceClient::OnInitialStartup() {}

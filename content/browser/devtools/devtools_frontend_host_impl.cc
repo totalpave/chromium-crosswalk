@@ -5,76 +5,88 @@
 #include "content/browser/devtools/devtools_frontend_host_impl.h"
 
 #include <stddef.h>
+#include <memory>
+#include <string>
 
+#include "build/build_config.h"
 #include "content/browser/bad_message.h"
-#include "content/common/devtools_messages.h"
-#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_client.h"
-#include "grit/devtools_resources_map.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+
+#if !defined(OS_FUCHSIA)
+#include "content/browser/devtools/grit/devtools_resources_map.h"  // nogncheck
+#endif
 
 namespace content {
 
 namespace {
-const char kCompatibilityScript[] = "devtools.js";
+const char kCompatibilityScript[] = "devtools_compatibility.js";
+const char kCompatibilityScriptSourceURL[] =
+    "\n//# "
+    "sourceURL=chrome-devtools://devtools/bundled/devtools_compatibility.js";
 }
 
 // static
-DevToolsFrontendHost* DevToolsFrontendHost::Create(
-    RenderFrameHost* frontend_main_frame,
+std::unique_ptr<DevToolsFrontendHost> DevToolsFrontendHost::Create(
+    RenderFrameHost* frame_host,
     const HandleMessageCallback& handle_message_callback) {
-  return new DevToolsFrontendHostImpl(frontend_main_frame,
-                                      handle_message_callback);
+  DCHECK(!frame_host->GetParent());
+  return std::make_unique<DevToolsFrontendHostImpl>(frame_host,
+                                                    handle_message_callback);
+}
+
+// static
+void DevToolsFrontendHost::SetupExtensionsAPI(
+    RenderFrameHost* frame_host,
+    const std::string& extension_api) {
+  DCHECK(frame_host->GetParent());
+  blink::mojom::DevToolsFrontendAssociatedPtr frontend;
+  frame_host->GetRemoteAssociatedInterfaces()->GetInterface(&frontend);
+  frontend->SetupDevToolsExtensionAPI(extension_api);
 }
 
 // static
 base::StringPiece DevToolsFrontendHost::GetFrontendResource(
     const std::string& path) {
+#if !defined(OS_FUCHSIA)
   for (size_t i = 0; i < kDevtoolsResourcesSize; ++i) {
     if (path == kDevtoolsResources[i].name) {
       return GetContentClient()->GetDataResource(
           kDevtoolsResources[i].value, ui::SCALE_FACTOR_NONE);
     }
   }
+#endif  // defined(OS_FUCHSIA)
   return std::string();
 }
 
 DevToolsFrontendHostImpl::DevToolsFrontendHostImpl(
-    RenderFrameHost* frontend_main_frame,
+    RenderFrameHost* frame_host,
     const HandleMessageCallback& handle_message_callback)
-    : WebContentsObserver(
-          WebContents::FromRenderFrameHost(frontend_main_frame)),
-      handle_message_callback_(handle_message_callback) {
-  frontend_main_frame->Send(new DevToolsMsg_SetupDevToolsClient(
-      frontend_main_frame->GetRoutingID(),
-      DevToolsFrontendHost::GetFrontendResource(
-          kCompatibilityScript).as_string()));
+    : web_contents_(WebContents::FromRenderFrameHost(frame_host)),
+      handle_message_callback_(handle_message_callback),
+      binding_(this) {
+  blink::mojom::DevToolsFrontendAssociatedPtr frontend;
+  frame_host->GetRemoteAssociatedInterfaces()->GetInterface(&frontend);
+  std::string api_script =
+      content::DevToolsFrontendHost::GetFrontendResource(kCompatibilityScript)
+          .as_string() +
+      kCompatibilityScriptSourceURL;
+  blink::mojom::DevToolsFrontendHostAssociatedPtrInfo host;
+  binding_.Bind(mojo::MakeRequest(&host));
+  frontend->SetupDevToolsFrontend(api_script, std::move(host));
 }
 
 DevToolsFrontendHostImpl::~DevToolsFrontendHostImpl() {
 }
 
 void DevToolsFrontendHostImpl::BadMessageRecieved() {
-  bad_message::ReceivedBadMessage(web_contents()->GetRenderProcessHost(),
+  bad_message::ReceivedBadMessage(web_contents_->GetMainFrame()->GetProcess(),
                                   bad_message::DFH_BAD_EMBEDDER_MESSAGE);
 }
 
-bool DevToolsFrontendHostImpl::OnMessageReceived(
-    const IPC::Message& message,
-    RenderFrameHost* render_frame_host) {
-  if (render_frame_host != web_contents()->GetMainFrame())
-    return false;
-  bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(DevToolsFrontendHostImpl, message)
-    IPC_MESSAGE_HANDLER(DevToolsHostMsg_DispatchOnEmbedder,
-                        OnDispatchOnEmbedder)
-    IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-  return handled;
-}
-
-void DevToolsFrontendHostImpl::OnDispatchOnEmbedder(
+void DevToolsFrontendHostImpl::DispatchEmbedderMessage(
     const std::string& message) {
   handle_message_callback_.Run(message);
 }

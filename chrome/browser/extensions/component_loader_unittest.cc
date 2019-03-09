@@ -8,6 +8,7 @@
 
 #include <string>
 
+#include "ash/public/cpp/ash_pref_names.h"
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
@@ -15,11 +16,10 @@
 #include "chrome/browser/extensions/test_extension_service.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry_simple.h"
-#include "components/syncable_prefs/testing_pref_service_syncable.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/constants.h"
@@ -51,7 +51,7 @@ class MockExtensionService : public TestExtensionService {
   }
 
   void UnloadExtension(const std::string& extension_id,
-                       UnloadedExtensionInfo::Reason reason) override {
+                       UnloadedExtensionReason reason) override {
     ASSERT_TRUE(registry_->enabled_extensions().Contains(extension_id));
     // Remove the extension with the matching id.
     registry_->RemoveEnabled(extension_id);
@@ -59,7 +59,7 @@ class MockExtensionService : public TestExtensionService {
   }
 
   void RemoveComponentExtension(const std::string& extension_id) override {
-    UnloadExtension(extension_id, UnloadedExtensionInfo::REASON_DISABLE);
+    UnloadExtension(extension_id, UnloadedExtensionReason::DISABLE);
   }
 
   bool is_ready() override { return ready_; }
@@ -105,7 +105,7 @@ class ComponentLoaderTest : public testing::Test {
     // Register the local state prefs.
 #if defined(OS_CHROMEOS)
     local_state_.registry()->RegisterBooleanPref(
-        prefs::kAccessibilitySpokenFeedbackEnabled, false);
+        ash::prefs::kAccessibilitySpokenFeedbackEnabled, false);
 #endif
   }
 
@@ -113,7 +113,7 @@ class ComponentLoaderTest : public testing::Test {
   content::TestBrowserThreadBundle thread_bundle_;
   TestingProfile profile_;
   MockExtensionService extension_service_;
-  syncable_prefs::TestingPrefServiceSyncable prefs_;
+  sync_preferences::TestingPrefServiceSyncable prefs_;
   TestingPrefServiceSimple local_state_;
   ComponentLoader component_loader_;
 
@@ -125,7 +125,7 @@ class ComponentLoaderTest : public testing::Test {
 
   base::FilePath GetBasePath() {
     base::FilePath test_data_dir;
-    PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
+    base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
     return test_data_dir.AppendASCII("extensions");
   }
 };
@@ -134,47 +134,46 @@ TEST_F(ComponentLoaderTest, ParseManifest) {
   std::unique_ptr<base::DictionaryValue> manifest;
 
   // Test invalid JSON.
-  manifest.reset(
-      component_loader_.ParseManifest("{ 'test': 3 } invalid"));
-  EXPECT_FALSE(manifest.get());
+  manifest = component_loader_.ParseManifest("{ 'test': 3 } invalid");
+  EXPECT_FALSE(manifest);
 
   // Test manifests that are valid JSON, but don't have an object literal
   // at the root. ParseManifest() should always return NULL.
 
-  manifest.reset(component_loader_.ParseManifest(std::string()));
-  EXPECT_FALSE(manifest.get());
+  manifest = component_loader_.ParseManifest(std::string());
+  EXPECT_FALSE(manifest);
 
-  manifest.reset(component_loader_.ParseManifest("[{ \"foo\": 3 }]"));
-  EXPECT_FALSE(manifest.get());
+  manifest = component_loader_.ParseManifest("[{ \"foo\": 3 }]");
+  EXPECT_FALSE(manifest);
 
-  manifest.reset(component_loader_.ParseManifest("\"Test\""));
-  EXPECT_FALSE(manifest.get());
+  manifest = component_loader_.ParseManifest("\"Test\"");
+  EXPECT_FALSE(manifest);
 
-  manifest.reset(component_loader_.ParseManifest("42"));
-  EXPECT_FALSE(manifest.get());
+  manifest = component_loader_.ParseManifest("42");
+  EXPECT_FALSE(manifest);
 
-  manifest.reset(component_loader_.ParseManifest("true"));
-  EXPECT_FALSE(manifest.get());
+  manifest = component_loader_.ParseManifest("true");
+  EXPECT_FALSE(manifest);
 
-  manifest.reset(component_loader_.ParseManifest("false"));
-  EXPECT_FALSE(manifest.get());
+  manifest = component_loader_.ParseManifest("false");
+  EXPECT_FALSE(manifest);
 
-  manifest.reset(component_loader_.ParseManifest("null"));
-  EXPECT_FALSE(manifest.get());
+  manifest = component_loader_.ParseManifest("null");
+  EXPECT_FALSE(manifest);
 
   // Test parsing valid JSON.
 
   int value = 0;
-  manifest.reset(component_loader_.ParseManifest(
-      "{ \"test\": { \"one\": 1 }, \"two\": 2 }"));
-  ASSERT_TRUE(manifest.get());
+  manifest = component_loader_.ParseManifest(
+      "{ \"test\": { \"one\": 1 }, \"two\": 2 }");
+  ASSERT_TRUE(manifest);
   EXPECT_TRUE(manifest->GetInteger("test.one", &value));
   EXPECT_EQ(1, value);
   ASSERT_TRUE(manifest->GetInteger("two", &value));
   EXPECT_EQ(2, value);
 
   std::string string_value;
-  manifest.reset(component_loader_.ParseManifest(manifest_contents_));
+  manifest = component_loader_.ParseManifest(manifest_contents_);
   ASSERT_TRUE(manifest->GetString("background.page", &string_value));
   EXPECT_EQ("backgroundpage.html", string_value);
 }
@@ -254,19 +253,17 @@ TEST_F(ComponentLoaderTest, AddOrReplace) {
   size_t const default_count = component_loader_.registered_extensions_count();
   base::FilePath known_extension = GetBasePath()
       .AppendASCII("override_component_extension");
-  base::FilePath unknow_extension = extension_path_;
+  base::FilePath unknown_extension = extension_path_;
   base::FilePath invalid_extension = GetBasePath()
       .AppendASCII("this_path_does_not_exist");
 
   // Replace a default component extension.
   component_loader_.AddOrReplace(known_extension);
-  EXPECT_EQ(default_count,
-            component_loader_.registered_extensions_count());
+  EXPECT_EQ(default_count, component_loader_.registered_extensions_count());
 
   // Add a new component extension.
-  component_loader_.AddOrReplace(unknow_extension);
-  EXPECT_EQ(default_count + 1,
-            component_loader_.registered_extensions_count());
+  component_loader_.AddOrReplace(unknown_extension);
+  EXPECT_EQ(default_count + 1, component_loader_.registered_extensions_count());
 
   extension_service_.set_ready(true);
   component_loader_.LoadAll();

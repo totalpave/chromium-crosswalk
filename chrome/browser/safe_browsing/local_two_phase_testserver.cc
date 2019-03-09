@@ -16,16 +16,14 @@ namespace safe_browsing {
 
 LocalTwoPhaseTestServer::LocalTwoPhaseTestServer()
     : net::LocalTestServer(net::SpawnedTestServer::TYPE_HTTP,
-                           net::SpawnedTestServer::kLocalhost,
-                           base::FilePath()) {
-}
+                           base::FilePath()) {}
 
 LocalTwoPhaseTestServer::~LocalTwoPhaseTestServer() {}
 
 bool LocalTwoPhaseTestServer::GetTestServerPath(
     base::FilePath* testserver_path) const {
   base::FilePath testserver_dir;
-  if (!PathService::Get(chrome::DIR_TEST_DATA, &testserver_dir)) {
+  if (!base::PathService::Get(chrome::DIR_TEST_DATA, &testserver_dir)) {
     LOG(ERROR) << "Failed to get DIR_TEST_DATA";
     return false;
   }

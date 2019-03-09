@@ -10,46 +10,54 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "ui/wm/core/wm_core_export.h"
 #include "ui/wm/public/activation_change_observer.h"
-#include "ui/wm/wm_export.h"
 
 namespace aura {
+class Env;
 class Window;
-namespace client {
-class ActivationClient;
 }
-}
-namespace gfx {
-class Rect;
+
+namespace ui {
+class Shadow;
 }
 
 namespace wm {
 
-class Shadow;
+class ActivationClient;
+class ShadowControllerDelegate;
 
 // ShadowController observes changes to windows and creates and updates drop
 // shadows as needed. ShadowController itself is light weight and per
 // ActivationClient. ShadowController delegates to its implementation class,
 // which observes all window creation.
-class WM_EXPORT ShadowController :
-    public aura::client::ActivationChangeObserver {
+class WM_CORE_EXPORT ShadowController : public ActivationChangeObserver {
  public:
   // Returns the shadow for the |window|, or NULL if no shadow exists.
-  static Shadow* GetShadowForWindow(aura::Window* window);
+  static ui::Shadow* GetShadowForWindow(aura::Window* window);
 
-  explicit ShadowController(aura::client::ActivationClient* activation_client);
+  ShadowController(ActivationClient* activation_client,
+                   std::unique_ptr<ShadowControllerDelegate> delegate,
+                   aura::Env* env = nullptr);
   ~ShadowController() override;
 
-  // aura::client::ActivationChangeObserver overrides:
-  void OnWindowActivated(
-      aura::client::ActivationChangeObserver::ActivationReason reason,
-      aura::Window* gained_active,
-      aura::Window* lost_active) override;
+  bool IsShadowVisibleForWindow(aura::Window* window);
+
+  // Updates the shadow for |window|. Does nothing if |window| is not observed
+  // by the shadow controller impl. This function should be called if the shadow
+  // needs to be modified outside of normal window changes (eg. window
+  // activation, window property change).
+  void UpdateShadowForWindow(aura::Window* window);
+
+  // ActivationChangeObserver overrides:
+  void OnWindowActivated(ActivationChangeObserver::ActivationReason reason,
+                         aura::Window* gained_active,
+                         aura::Window* lost_active) override;
 
  private:
   class Impl;
 
-  aura::client::ActivationClient* activation_client_;
+  ActivationClient* activation_client_;
 
   scoped_refptr<Impl> impl_;
 

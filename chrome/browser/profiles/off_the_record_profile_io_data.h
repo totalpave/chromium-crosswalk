@@ -6,9 +6,9 @@
 #define CHROME_BROWSER_PROFILES_OFF_THE_RECORD_PROFILE_IO_DATA_H_
 
 #include <memory>
+#include <string>
 
 #include "base/callback.h"
-#include "base/containers/hash_tables.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -21,12 +21,8 @@ class Profile;
 
 namespace net {
 class CookieStore;
-class FtpTransactionFactory;
-class HttpNetworkSession;
-class HttpTransactionFactory;
-class SdchManager;
-class SdchOwner;
 class URLRequestContext;
+class URLRequestContextBuilder;
 }  // namespace net
 
 // OffTheRecordProfile owns a OffTheRecordProfileIOData::Handle, which holds a
@@ -56,8 +52,6 @@ class OffTheRecordProfileIOData : public ProfileIOData {
         content::ProtocolHandlerMap* protocol_handlers,
         content::URLRequestInterceptorScopedVector request_interceptors) const;
     scoped_refptr<ChromeURLRequestContextGetter>
-        GetExtensionsRequestContextGetter() const;
-    scoped_refptr<ChromeURLRequestContextGetter>
         GetIsolatedAppRequestContextGetter(
             const base::FilePath& partition_path,
             bool in_memory) const;
@@ -68,9 +62,6 @@ class OffTheRecordProfileIOData : public ProfileIOData {
             content::ProtocolHandlerMap* protocol_handlers,
             content::URLRequestInterceptorScopedVector
                 request_interceptors) const;
-
-    // Returns the DevToolsNetworkControllerHandle attached to ProfileIOData.
-    DevToolsNetworkControllerHandle* GetDevToolsNetworkControllerHandle() const;
 
    private:
     typedef std::map<StoragePartitionDescriptor,
@@ -94,8 +85,6 @@ class OffTheRecordProfileIOData : public ProfileIOData {
     // ProfileIOData instance is deleted.
     mutable scoped_refptr<ChromeURLRequestContextGetter>
         main_request_context_getter_;
-    mutable scoped_refptr<ChromeURLRequestContextGetter>
-        extensions_request_context_getter_;
     mutable ChromeURLRequestContextGetterMap
         app_request_context_getter_map_;
     OffTheRecordProfileIOData* const io_data_;
@@ -108,57 +97,29 @@ class OffTheRecordProfileIOData : public ProfileIOData {
   };
 
  private:
-  friend class base::RefCountedThreadSafe<OffTheRecordProfileIOData>;
-
   explicit OffTheRecordProfileIOData(Profile::ProfileType profile_type);
   ~OffTheRecordProfileIOData() override;
 
-  void InitializeInternal(
-      std::unique_ptr<ChromeNetworkDelegate> chrome_network_delegate,
-      ProfileParams* profile_params,
-      content::ProtocolHandlerMap* protocol_handlers,
-      content::URLRequestInterceptorScopedVector request_interceptors)
-      const override;
-  void InitializeExtensionsRequestContext(
+  void InitializeInternal(net::URLRequestContextBuilder* builder,
+                          ProfileParams* profile_params,
+                          content::ProtocolHandlerMap* protocol_handlers,
+                          content::URLRequestInterceptorScopedVector
+                              request_interceptors) const override;
+  void OnMainRequestContextCreated(
       ProfileParams* profile_params) const override;
-  net::URLRequestContext* InitializeAppRequestContext(
-      net::URLRequestContext* main_context,
-      const StoragePartitionDescriptor& partition_descriptor,
-      std::unique_ptr<ProtocolHandlerRegistry::JobInterceptorFactory>
-          protocol_handler_interceptor,
-      content::ProtocolHandlerMap* protocol_handlers,
-      content::URLRequestInterceptorScopedVector request_interceptors)
-      const override;
+  void InitializeExtensionsCookieStore(
+      ProfileParams* profile_params) const override;
   net::URLRequestContext* InitializeMediaRequestContext(
       net::URLRequestContext* original_context,
-      const StoragePartitionDescriptor& partition_descriptor) const override;
-  net::URLRequestContext* AcquireMediaRequestContext() const override;
-  net::URLRequestContext* AcquireIsolatedAppRequestContext(
-      net::URLRequestContext* main_context,
       const StoragePartitionDescriptor& partition_descriptor,
-      std::unique_ptr<ProtocolHandlerRegistry::JobInterceptorFactory>
-          protocol_handler_interceptor,
-      content::ProtocolHandlerMap* protocol_handlers,
-      content::URLRequestInterceptorScopedVector request_interceptors)
-      const override;
+      const char* name) const override;
+  net::URLRequestContext* AcquireMediaRequestContext() const override;
   net::URLRequestContext* AcquireIsolatedMediaRequestContext(
       net::URLRequestContext* app_context,
       const StoragePartitionDescriptor& partition_descriptor) const override;
+  net::CookieStore* GetExtensionsCookieStore() const override;
 
-  mutable std::unique_ptr<ChromeNetworkDelegate> network_delegate_;
-
-  mutable std::unique_ptr<net::HttpNetworkSession> http_network_session_;
-  mutable std::unique_ptr<net::HttpTransactionFactory> main_http_factory_;
-  mutable std::unique_ptr<net::FtpTransactionFactory> ftp_factory_;
-
-  mutable std::unique_ptr<net::CookieStore> main_cookie_store_;
   mutable std::unique_ptr<net::CookieStore> extensions_cookie_store_;
-
-  mutable std::unique_ptr<net::URLRequestJobFactory> main_job_factory_;
-  mutable std::unique_ptr<net::URLRequestJobFactory> extensions_job_factory_;
-
-  mutable std::unique_ptr<net::SdchManager> sdch_manager_;
-  mutable std::unique_ptr<net::SdchOwner> sdch_policy_;
 
   DISALLOW_COPY_AND_ASSIGN(OffTheRecordProfileIOData);
 };

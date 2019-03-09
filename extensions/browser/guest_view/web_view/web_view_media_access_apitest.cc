@@ -2,12 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/command_line.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/guest_view/web_view/web_view_apitest.h"
 #include "extensions/test/extension_test_message_listener.h"
+#include "media/base/media_switches.h"
 
 namespace {
 
@@ -25,15 +27,15 @@ class MockWebContentsDelegate : public content::WebContentsDelegate {
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
-      const content::MediaResponseCallback& callback) override {
+      content::MediaResponseCallback callback) override {
     requested_ = true;
     if (request_message_loop_runner_.get())
       request_message_loop_runner_->Quit();
   }
 
-  bool CheckMediaAccessPermission(content::WebContents* web_contents,
+  bool CheckMediaAccessPermission(content::RenderFrameHost* render_frame_host,
                                   const GURL& security_origin,
-                                  content::MediaStreamType type) override {
+                                  blink::MediaStreamType type) override {
     checked_ = true;
     if (check_message_loop_runner_.get())
       check_message_loop_runner_->Quit();
@@ -81,92 +83,129 @@ class WebViewMediaAccessAPITest : public WebViewAPITest {
     ASSERT_TRUE(test_run_listener.WaitUntilSatisfied());
   }
 
-  // content::BrowserTestBase implementation
-  void SetUpOnMainThread() override {
-    WebViewAPITest::SetUpOnMainThread();
-    StartTestServer();
-  }
-
-  void TearDownOnMainThread() override {
-    WebViewAPITest::TearDownOnMainThread();
-    StopTestServer();
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    // Enable fake devices to make sure there is at least one device in the
+    // system. Otherwise, this test would fail on machines without physical
+    // media devices since getUserMedia fails early in those cases.
+    WebViewAPITest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(switches::kUseFakeDeviceForMediaStream);
   }
 };
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest, TestAllow) {
-  LaunchApp("web_view/media_access/allow");
+  std::string app_location = "web_view/media_access/allow";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   std::unique_ptr<MockWebContentsDelegate> mock(new MockWebContentsDelegate());
   embedder_web_contents_->SetDelegate(mock.get());
 
   RunTest("testAllow");
 
   mock->WaitForRequestMediaPermission();
+  StopTestServer();
 }
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest, TestAllowAndThenDeny) {
-  LaunchApp("web_view/media_access/allow");
+  std::string app_location = "web_view/media_access/allow";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   std::unique_ptr<MockWebContentsDelegate> mock(new MockWebContentsDelegate());
   embedder_web_contents_->SetDelegate(mock.get());
 
   RunTest("testAllowAndThenDeny");
 
   mock->WaitForRequestMediaPermission();
+  StopTestServer();
 }
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest, TestAllowAsync) {
-  LaunchApp("web_view/media_access/allow");
+  std::string app_location = "web_view/media_access/allow";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   std::unique_ptr<MockWebContentsDelegate> mock(new MockWebContentsDelegate());
   embedder_web_contents_->SetDelegate(mock.get());
 
   RunTest("testAllowAsync");
 
   mock->WaitForRequestMediaPermission();
+  StopTestServer();
 }
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest, TestAllowTwice) {
-  LaunchApp("web_view/media_access/allow");
+  std::string app_location = "web_view/media_access/allow";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   std::unique_ptr<MockWebContentsDelegate> mock(new MockWebContentsDelegate());
   embedder_web_contents_->SetDelegate(mock.get());
 
   RunTest("testAllowTwice");
 
   mock->WaitForRequestMediaPermission();
+  StopTestServer();
 }
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest, TestCheck) {
-  LaunchApp("web_view/media_access/check");
+  std::string app_location = "web_view/media_access/check";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   std::unique_ptr<MockWebContentsDelegate> mock(new MockWebContentsDelegate());
   embedder_web_contents_->SetDelegate(mock.get());
 
   RunTest("testCheck");
 
   mock->WaitForCheckMediaPermission();
+  StopTestServer();
 }
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest, TestDeny) {
-  LaunchApp("web_view/media_access/deny");
+  std::string app_location = "web_view/media_access/deny";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   RunTest("testDeny");
+  StopTestServer();
 }
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest, TestDenyThenAllowThrows) {
-  LaunchApp("web_view/media_access/deny");
+  std::string app_location = "web_view/media_access/deny";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   RunTest("testDenyThenAllowThrows");
+  StopTestServer();
 }
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest, TestDenyWithPreventDefault) {
-  LaunchApp("web_view/media_access/deny");
+  std::string app_location = "web_view/media_access/deny";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   RunTest("testDenyWithPreventDefault");
+  StopTestServer();
 }
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest, TestNoListenersImplyDeny) {
-  LaunchApp("web_view/media_access/deny");
+  std::string app_location = "web_view/media_access/deny";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   RunTest("testNoListenersImplyDeny");
+  StopTestServer();
 }
 
 IN_PROC_BROWSER_TEST_F(WebViewMediaAccessAPITest,
                        TestNoPreventDefaultImpliesDeny) {
-  LaunchApp("web_view/media_access/deny");
+  std::string app_location = "web_view/media_access/deny";
+  StartTestServer(app_location);
+  LaunchApp(app_location);
+
   RunTest("testNoPreventDefaultImpliesDeny");
+  StopTestServer();
 }
 
 }  // namespace extensions

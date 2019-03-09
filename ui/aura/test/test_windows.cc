@@ -8,12 +8,26 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "ui/aura/client/aura_constants.h"
+#include "ui/aura/env.h"
 #include "ui/aura/window.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/rect.h"
 
 namespace aura {
 namespace test {
+namespace {
+
+static Env* g_env = nullptr;
+
+}  // namespace
+
+void SetEnvForTestWindows(Env* env) {
+  g_env = env;
+}
+
+Env* GetEnvForTestWindows() {
+  return g_env ? g_env : Env::GetInstance();
+}
 
 Window* CreateTestWindowWithId(int id, Window* parent) {
   return CreateTestWindowWithDelegate(NULL, id, gfx::Rect(), parent);
@@ -36,21 +50,24 @@ Window* CreateTestWindowWithDelegate(WindowDelegate* delegate,
                                      const gfx::Rect& bounds,
                                      Window* parent) {
   return CreateTestWindowWithDelegateAndType(
-      delegate, ui::wm::WINDOW_TYPE_NORMAL, id, bounds, parent);
+      delegate, client::WINDOW_TYPE_NORMAL, id, bounds, parent, true);
 }
 
 Window* CreateTestWindowWithDelegateAndType(WindowDelegate* delegate,
-                                            ui::wm::WindowType type,
+                                            client::WindowType type,
                                             int id,
                                             const gfx::Rect& bounds,
-                                            Window* parent) {
-  Window* window = new Window(delegate);
+                                            Window* parent,
+                                            bool show_on_creation) {
+  Window* window = new Window(delegate, type, GetEnvForTestWindows());
   window->set_id(id);
-  window->SetType(type);
   window->Init(ui::LAYER_TEXTURED);
-  window->SetProperty(aura::client::kCanMaximizeKey, true);
+  window->SetProperty(aura::client::kResizeBehaviorKey,
+                      ws::mojom::kResizeBehaviorCanResize |
+                          ws::mojom::kResizeBehaviorCanMaximize);
   window->SetBounds(bounds);
-  window->Show();
+  if (show_on_creation)
+    window->Show();
   if (parent)
     parent->AddChild(window);
   return window;
@@ -78,8 +95,8 @@ bool LayerIsAbove(Window* upper, Window* lower) {
 
 std::string ChildWindowIDsAsString(aura::Window* parent) {
   std::string result;
-  for (Window::Windows::const_iterator i = parent->children().begin();
-       i != parent->children().end(); ++i) {
+  for (auto i = parent->children().begin(); i != parent->children().end();
+       ++i) {
     if (!result.empty())
       result += " ";
     result += base::IntToString((*i)->id());

@@ -4,76 +4,83 @@
 
 package org.chromium.chrome.browser.offlinepages;
 
-import android.content.Context;
 import android.os.Bundle;
+import android.text.format.DateUtils;
 
-import com.google.android.gms.gcm.GcmNetworkManager;
-import com.google.android.gms.gcm.OneoffTask;
-import com.google.android.gms.gcm.Task;
-
-import org.chromium.chrome.browser.ChromeBackgroundService;
+import org.chromium.base.ContextUtils;
+import org.chromium.components.background_task_scheduler.BackgroundTaskSchedulerFactory;
+import org.chromium.components.background_task_scheduler.TaskIds;
+import org.chromium.components.background_task_scheduler.TaskInfo;
 
 /**
- * The background scheduler class is for setting GCM Network Manager tasks.
+ * Class responsible for scheduling and canceling offline page related background tasks.
  */
 public class BackgroundScheduler {
-    private static final long ONE_WEEK_IN_SECONDS = 60 * 60 * 24 * 7;
-    private static final long NO_DELAY = 0;
+    static final long NO_DELAY = 0;
     private static final boolean OVERWRITE = true;
 
-    /**
-     * For the given Triggering conditions, start a new GCM Network Manager request.
-     */
-    public static void schedule(Context context, TriggerConditions triggerConditions) {
-        schedule(context, triggerConditions, NO_DELAY, OVERWRITE);
+    private static class LazyHolder {
+        static final BackgroundScheduler INSTANCE = new BackgroundScheduler();
+    }
+
+    /** Provides an instance of BackgroundScheduler for given context and current API level. */
+    public static BackgroundScheduler getInstance() {
+        return LazyHolder.INSTANCE;
+    }
+
+    /** Cancels a background tasks. */
+    public void cancel() {
+        BackgroundTaskSchedulerFactory.getScheduler().cancel(
+                ContextUtils.getApplicationContext(), TaskIds.OFFLINE_PAGES_BACKGROUND_JOB_ID);
+    }
+
+    /** Schedules a background task for provided triggering conditions. */
+    public void schedule(TriggerConditions triggerConditions) {
+        scheduleImpl(triggerConditions, NO_DELAY, DateUtils.WEEK_IN_MILLIS, OVERWRITE);
     }
 
     /**
      * If there is no currently scheduled task, then start a GCM Network Manager request
-     * for the given Triggering conditions but delayed to run after {@code delayStartSecs}.
+     * for the given Triggering conditions but delayed to run after {@code delayStartSeconds}.
      * Typically, the Request Coordinator will overwrite this task after task processing
      * and/or queue updates. This is a backup task in case processing is killed by the
      * system.
      */
-    public static void backupSchedule(
-            Context context, TriggerConditions triggerConditions, long delayStartSecs) {
-        schedule(context, triggerConditions, delayStartSecs, !OVERWRITE);
+    public void scheduleBackup(TriggerConditions triggerConditions, long delayStartMs) {
+        scheduleImpl(triggerConditions, delayStartMs, DateUtils.WEEK_IN_MILLIS, !OVERWRITE);
     }
 
     /**
-     * Cancel any outstanding GCM Network Manager requests.
+     * Method for rescheduling a background task for offline pages in the event of OS upgrade or
+     * GooglePlayServices upgrade.
+     * We use the least restrictive trigger conditions.  A wakeup will cause the queue to be
+     * checked, and the trigger conditions will be replaced by the current trigger conditions
+     * needed.
      */
-    public static void unschedule(Context context) {
-        // Get the GCM Network Scheduler.
-        GcmNetworkManager gcmNetworkManager = GcmNetworkManager.getInstance(context);
-        gcmNetworkManager.cancelTask(OfflinePageUtils.TASK_TAG, ChromeBackgroundService.class);
+    public void reschedule() {
+        TriggerConditions triggerConditions = new TriggerConditions(false, 0, false);
+        scheduleBackup(triggerConditions, DateUtils.MINUTE_IN_MILLIS * 5);
     }
 
-    /**
-     * For the given Triggering conditions, start a new GCM Network Manager request allowed
-     * to run after {@code delayStartSecs} seconds.
-     */
-    private static void schedule(Context context, TriggerConditions triggerConditions,
-            long delayStartSecs, boolean overwrite) {
-        // Get the GCM Network Scheduler.
-        GcmNetworkManager gcmNetworkManager = GcmNetworkManager.getInstance(context);
-
+    protected void scheduleImpl(TriggerConditions triggerConditions, long delayStartMs,
+            long executionDeadlineMs, boolean overwrite) {
         Bundle taskExtras = new Bundle();
         TaskExtrasPacker.packTimeInBundle(taskExtras);
         TaskExtrasPacker.packTriggerConditionsInBundle(taskExtras, triggerConditions);
 
-        Task task = new OneoffTask.Builder()
-                            .setService(ChromeBackgroundService.class)
-                            .setExecutionWindow(delayStartSecs, ONE_WEEK_IN_SECONDS)
-                            .setTag(OfflinePageUtils.TASK_TAG)
-                            .setUpdateCurrent(overwrite)
-                            .setRequiredNetwork(triggerConditions.requireUnmeteredNetwork()
-                                            ? Task.NETWORK_STATE_UNMETERED
-                                            : Task.NETWORK_STATE_CONNECTED)
-                            .setRequiresCharging(triggerConditions.requirePowerConnected())
-                            .setExtras(taskExtras)
-                            .build();
+        TaskInfo taskInfo =
+                TaskInfo.createOneOffTask(TaskIds.OFFLINE_PAGES_BACKGROUND_JOB_ID,
+                                OfflineBackgroundTask.class, delayStartMs, executionDeadlineMs)
+                        .setRequiredNetworkType(triggerConditions.requireUnmeteredNetwork()
+                                        ? TaskInfo.NetworkType.UNMETERED
+                                        : TaskInfo.NetworkType.ANY)
+                        .setUpdateCurrent(overwrite)
+                        .setIsPersisted(true)
+                        .setExtras(taskExtras)
+                        .setRequiresCharging(triggerConditions.requirePowerConnected())
+                        .build();
 
-        gcmNetworkManager.schedule(task);
+        BackgroundTaskSchedulerFactory.getScheduler().schedule(
+                ContextUtils.getApplicationContext(), taskInfo);
     }
 }

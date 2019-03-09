@@ -8,12 +8,11 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/compiler_specific.h"
-#include "base/message_loop/message_loop.h"
-#include "base/stl_util.h"
 #include "extensions/browser/updater/request_queue.h"
 
 namespace extensions {
@@ -23,9 +22,7 @@ RequestQueue<T>::RequestQueue(
     const net::BackoffEntry::Policy* const backoff_policy,
     const base::Closure& start_request_callback)
     : backoff_policy_(backoff_policy),
-      start_request_callback_(start_request_callback),
-      timer_(false, false) {
-}
+      start_request_callback_(start_request_callback) {}
 
 template <typename T>
 RequestQueue<T>::~RequestQueue() {
@@ -112,8 +109,8 @@ void RequestQueue<T>::StartNextRequest() {
   std::pop_heap(
       pending_requests_.begin(), pending_requests_.end(), CompareRequests);
 
-  active_backoff_entry_.reset(pending_requests_.back().backoff_entry.release());
-  active_request_.reset(pending_requests_.back().request.release());
+  active_backoff_entry_ = std::move(pending_requests_.back().backoff_entry);
+  active_request_ = std::move(pending_requests_.back().request);
 
   pending_requests_.pop_back();
 

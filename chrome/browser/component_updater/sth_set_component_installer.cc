@@ -12,23 +12,38 @@
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
+#include "base/memory/ref_counted.h"
+#include "base/no_destructor.h"
 #include "base/path_service.h"
+#include "base/sequenced_task_runner.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/post_task.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "base/values.h"
 #include "base/version.h"
-#include "chrome/browser/net/sth_distributor_provider.h"
+#include "chrome/browser/after_startup_task_utils.h"
+#include "components/certificate_transparency/sth_observer.h"
 #include "components/component_updater/component_updater_paths.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/network_service_instance.h"
 #include "crypto/sha2.h"
 #include "net/cert/ct_log_response_parser.h"
 #include "net/cert/signed_tree_head.h"
-#include "net/cert/sth_distributor.h"
-#include "net/cert/sth_observer.h"
+#include "services/network/network_service.h"
+#include "services/service_manager/public/cpp/service.h"
 
 using component_updater::ComponentUpdateService;
 
 namespace {
 const base::FilePath::CharType kSTHsDirName[] = FILE_PATH_LITERAL("sths");
+
+network::mojom::NetworkService* g_network_service_for_testing = nullptr;
+
+base::FilePath& GetInstallDir() {
+  static base::NoDestructor<base::FilePath> install_dir;
+  return *install_dir;
+}
 
 base::FilePath GetInstalledPath(const base::FilePath& base) {
   return base.Append(FILE_PATH_LITERAL("_platform_specific"))
@@ -36,82 +51,14 @@ base::FilePath GetInstalledPath(const base::FilePath& base) {
       .Append(kSTHsDirName);
 }
 
-}  // namespace
-
-namespace component_updater {
-
-// The SHA256 of the SubjectPublicKeyInfo used to sign the extension.
-// The extension id is: ojjgnpkioondelmggbekfhllhdaimnho
-const uint8_t kPublicKeySHA256[32] = {
-    0xe9, 0x96, 0xdf, 0xa8, 0xee, 0xd3, 0x4b, 0xc6, 0x61, 0x4a, 0x57,
-    0xbb, 0x73, 0x08, 0xcd, 0x7e, 0x51, 0x9b, 0xcc, 0x69, 0x08, 0x41,
-    0xe1, 0x96, 0x9f, 0x7c, 0xb1, 0x73, 0xef, 0x16, 0x80, 0x0a};
-
-const char kSTHSetFetcherManifestName[] = "Signed Tree Heads";
-
-STHSetComponentInstallerTraits::STHSetComponentInstallerTraits(
-    net::ct::STHObserver* sth_observer)
-    : sth_observer_(sth_observer), weak_ptr_factory_(this) {}
-
-STHSetComponentInstallerTraits::~STHSetComponentInstallerTraits() {}
-
-bool STHSetComponentInstallerTraits::CanAutoUpdate() const {
-  return true;
-}
-
-// Public data is delivered via this component, no need for encryption.
-bool STHSetComponentInstallerTraits::RequiresNetworkEncryption() const {
-  return false;
-}
-
-bool STHSetComponentInstallerTraits::OnCustomInstall(
-    const base::DictionaryValue& manifest,
-    const base::FilePath& install_dir) {
-  return true;  // Nothing custom here.
-}
-
-void STHSetComponentInstallerTraits::ComponentReady(
-    const base::Version& version,
-    const base::FilePath& install_dir,
-    std::unique_ptr<base::DictionaryValue> manifest) {
-  const base::Closure load_sths_closure = base::Bind(
-      &STHSetComponentInstallerTraits::LoadSTHsFromDisk,
-      weak_ptr_factory_.GetWeakPtr(), GetInstalledPath(install_dir), version);
-
-  content::BrowserThread::PostAfterStartupTask(
-      FROM_HERE, content::BrowserThread::GetBlockingPool(), load_sths_closure);
-}
-
-// Called during startup and installation before ComponentReady().
-bool STHSetComponentInstallerTraits::VerifyInstallation(
-    const base::DictionaryValue& manifest,
-    const base::FilePath& install_dir) const {
-  return base::PathExists(GetInstalledPath(install_dir));
-}
-
-base::FilePath STHSetComponentInstallerTraits::GetRelativeInstallDir() const {
-  return base::FilePath(FILE_PATH_LITERAL("CertificateTransparency"));
-}
-
-void STHSetComponentInstallerTraits::GetHash(std::vector<uint8_t>* hash) const {
-  hash->assign(std::begin(kPublicKeySHA256), std::end(kPublicKeySHA256));
-}
-
-std::string STHSetComponentInstallerTraits::GetName() const {
-  return kSTHSetFetcherManifestName;
-}
-
-update_client::InstallerAttributes
-STHSetComponentInstallerTraits::GetInstallerAttributes() const {
-  return update_client::InstallerAttributes();
-}
-
-void STHSetComponentInstallerTraits::LoadSTHsFromDisk(
+// Loads the STHs from |sths_path|, which contains a series of files that
+// are the in the form "[log_id].sth", where [log_id] is the hex-encoded ID
+// of the log, and the contents are JSON STH. Parsed STHs will be posted to
+// |callback| on |origin_task_runner|.
+void LoadSTHsFromDisk(
     const base::FilePath& sths_path,
-    const base::Version& version) {
-  if (sths_path.empty())
-    return;
-
+    scoped_refptr<base::SequencedTaskRunner> origin_task_runner,
+    base::RepeatingCallback<void(const net::ct::SignedTreeHead&)> callback) {
   base::FileEnumerator sth_file_enumerator(sths_path, false,
                                            base::FileEnumerator::FILES,
                                            FILE_PATH_LITERAL("*.sth"));
@@ -134,13 +81,18 @@ void STHSetComponentInstallerTraits::LoadSTHsFromDisk(
       continue;
     }
 
-    const std::string log_id(reinterpret_cast<const char*>(&decoding_output[0]),
-                             decoding_output.size());
+    const std::string log_id(
+        reinterpret_cast<const char*>(decoding_output.data()),
+        decoding_output.size());
 
     std::string json_sth;
-    if (!base::ReadFileToString(sth_file_path, &json_sth)) {
-      DVLOG(1) << "Failed reading from " << sth_file_path.value();
-      continue;
+    {
+      base::ScopedBlockingCall scoped_blocking_call(
+          FROM_HERE, base::BlockingType::MAY_BLOCK);
+      if (!base::ReadFileToString(sth_file_path, &json_sth)) {
+        DVLOG(1) << "Failed reading from " << sth_file_path.value();
+        continue;
+      }
     }
 
     DVLOG(1) << "STH: Successfully read: " << json_sth;
@@ -148,57 +100,144 @@ void STHSetComponentInstallerTraits::LoadSTHsFromDisk(
     int error_code = 0;
     std::string error_message;
     std::unique_ptr<base::Value> parsed_json =
-        base::JSONReader::ReadAndReturnError(json_sth, base::JSON_PARSE_RFC,
-                                             &error_code, &error_message);
+        base::JSONReader::ReadAndReturnErrorDeprecated(
+            json_sth, base::JSON_PARSE_RFC, &error_code, &error_message);
 
-    if (error_code == base::JSONReader::JSON_NO_ERROR) {
-      OnJsonParseSuccess(log_id, std::move(parsed_json));
-    } else {
-      OnJsonParseError(log_id, error_message);
+    if (!parsed_json || error_code != base::JSONReader::JSON_NO_ERROR) {
+      DVLOG(1) << "STH loading failed: " << error_message << " for log: "
+               << base::HexEncode(log_id.data(), log_id.length());
+      continue;
     }
+
+    DVLOG(1) << "STH parsing success for log: "
+             << base::HexEncode(log_id.data(), log_id.length());
+
+    net::ct::SignedTreeHead signed_tree_head;
+    if (!net::ct::FillSignedTreeHead(*parsed_json, &signed_tree_head)) {
+      LOG(ERROR) << "Failed to fill in signed tree head.";
+      continue;
+    }
+
+    // The log id is not a part of the response, fill in manually.
+    signed_tree_head.log_id = log_id;
+    origin_task_runner->PostTask(FROM_HERE,
+                                 base::BindOnce(callback, signed_tree_head));
   }
 }
 
-void STHSetComponentInstallerTraits::OnJsonParseSuccess(
-    const std::string& log_id,
-    std::unique_ptr<base::Value> parsed_json) {
-  net::ct::SignedTreeHead signed_tree_head;
-  DVLOG(1) << "STH parsing success for log: "
-           << base::HexEncode(log_id.data(), log_id.length());
-  if (!net::ct::FillSignedTreeHead(*(parsed_json.get()), &signed_tree_head)) {
-    LOG(ERROR) << "Failed to fill in signed tree head.";
-    return;
-  }
-
-  // The log id is not a part of the response, fill in manually.
-  signed_tree_head.log_id = log_id;
-  content::BrowserThread::PostTask(
-      content::BrowserThread::IO, FROM_HERE,
-      base::Bind(&net::ct::STHObserver::NewSTHObserved,
-                 base::Unretained(sth_observer_), signed_tree_head));
+// Indicates that a new STH has been loaded.
+void OnSTHLoaded(const net::ct::SignedTreeHead& sth) {
+  network::mojom::NetworkService* network_service =
+      g_network_service_for_testing ? g_network_service_for_testing
+                                    : content::GetNetworkService();
+  network_service->UpdateSignedTreeHead(sth);
 }
 
-void STHSetComponentInstallerTraits::OnJsonParseError(
-    const std::string& log_id,
-    const std::string& error) {
-  DVLOG(1) << "STH loading failed: " << error
-           << " for log: " << base::HexEncode(log_id.data(), log_id.length());
+}  // namespace
+
+namespace component_updater {
+
+// The SHA256 of the SubjectPublicKeyInfo used to sign the extension.
+// The extension id is: ojjgnpkioondelmggbekfhllhdaimnho
+const uint8_t kSthSetPublicKeySHA256[32] = {
+    0xe9, 0x96, 0xdf, 0xa8, 0xee, 0xd3, 0x4b, 0xc6, 0x61, 0x4a, 0x57,
+    0xbb, 0x73, 0x08, 0xcd, 0x7e, 0x51, 0x9b, 0xcc, 0x69, 0x08, 0x41,
+    0xe1, 0x96, 0x9f, 0x7c, 0xb1, 0x73, 0xef, 0x16, 0x80, 0x0a};
+
+const char kSTHSetFetcherManifestName[] = "Signed Tree Heads";
+
+STHSetComponentInstallerPolicy::STHSetComponentInstallerPolicy() {}
+
+STHSetComponentInstallerPolicy::~STHSetComponentInstallerPolicy() = default;
+
+// static
+void STHSetComponentInstallerPolicy::ReconfigureAfterNetworkRestart() {
+  if (!GetInstallDir().empty())
+    ConfigureNetworkService();
+}
+
+void STHSetComponentInstallerPolicy::SetNetworkServiceForTesting(
+    network::mojom::NetworkService* network_service) {
+  DCHECK(network_service);
+  g_network_service_for_testing = network_service;
+}
+
+bool STHSetComponentInstallerPolicy::
+    SupportsGroupPolicyEnabledComponentUpdates() const {
+  return false;
+}
+
+// Public data is delivered via this component, no need for encryption.
+bool STHSetComponentInstallerPolicy::RequiresNetworkEncryption() const {
+  return false;
+}
+
+update_client::CrxInstaller::Result
+STHSetComponentInstallerPolicy::OnCustomInstall(
+    const base::DictionaryValue& manifest,
+    const base::FilePath& install_dir) {
+  return update_client::CrxInstaller::Result(0);  // Nothing custom here.
+}
+
+void STHSetComponentInstallerPolicy::OnCustomUninstall() {}
+
+void STHSetComponentInstallerPolicy::ComponentReady(
+    const base::Version& version,
+    const base::FilePath& install_dir,
+    std::unique_ptr<base::DictionaryValue> manifest) {
+  GetInstallDir() = install_dir;
+  ConfigureNetworkService();
+}
+
+// Called during startup and installation before ComponentReady().
+bool STHSetComponentInstallerPolicy::VerifyInstallation(
+    const base::DictionaryValue& manifest,
+    const base::FilePath& install_dir) const {
+  return base::PathExists(GetInstalledPath(install_dir));
+}
+
+base::FilePath STHSetComponentInstallerPolicy::GetRelativeInstallDir() const {
+  return base::FilePath(FILE_PATH_LITERAL("CertificateTransparency"));
+}
+
+void STHSetComponentInstallerPolicy::GetHash(std::vector<uint8_t>* hash) const {
+  hash->assign(std::begin(kSthSetPublicKeySHA256),
+               std::end(kSthSetPublicKeySHA256));
+}
+
+std::string STHSetComponentInstallerPolicy::GetName() const {
+  return kSTHSetFetcherManifestName;
+}
+
+update_client::InstallerAttributes
+STHSetComponentInstallerPolicy::GetInstallerAttributes() const {
+  return update_client::InstallerAttributes();
+}
+
+std::vector<std::string> STHSetComponentInstallerPolicy::GetMimeTypes() const {
+  return std::vector<std::string>();
+}
+
+// static
+void STHSetComponentInstallerPolicy::ConfigureNetworkService() {
+  // Load and parse the STH JSON on a background task runner, then
+  // dispatch back to the current task runner with all of the successfully
+  // parsed results.
+  auto background_runner = base::MakeRefCounted<AfterStartupTaskUtils::Runner>(
+      base::CreateTaskRunnerWithTraits(
+          {base::TaskPriority::BEST_EFFORT, base::MayBlock()}));
+  background_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(&LoadSTHsFromDisk, GetInstalledPath(GetInstallDir()),
+                     base::SequencedTaskRunnerHandle::Get(),
+                     base::BindRepeating(OnSTHLoaded)));
 }
 
 void RegisterSTHSetComponent(ComponentUpdateService* cus,
                              const base::FilePath& user_data_dir) {
   DVLOG(1) << "Registering STH Set fetcher component.";
-
-  net::ct::STHDistributor* distributor =
-      chrome_browser_net::GetGlobalSTHDistributor();
-  // The global STHDistributor should have been created by this point.
-  DCHECK(distributor);
-
-  std::unique_ptr<ComponentInstallerTraits> traits(
-      new STHSetComponentInstallerTraits(distributor));
-  // |cus| will take ownership of |installer| during installer->Register(cus).
-  DefaultComponentInstaller* installer =
-      new DefaultComponentInstaller(std::move(traits));
+  auto installer = base::MakeRefCounted<ComponentInstaller>(
+      std::make_unique<STHSetComponentInstallerPolicy>());
   installer->Register(cus, base::Closure());
 }
 

@@ -6,27 +6,44 @@
 #define CONTENT_BROWSER_DEVTOOLS_PROTOCOL_MEMORY_HANDLER_H_
 
 #include "base/macros.h"
-#include "content/browser/devtools/protocol/devtools_protocol_dispatcher.h"
+#include "base/memory/weak_ptr.h"
+#include "content/browser/devtools/protocol/devtools_domain_handler.h"
+#include "content/browser/devtools/protocol/memory.h"
+#include "third_party/blink/public/mojom/leak_detector/leak_detector.mojom.h"
 
 namespace content {
-namespace devtools {
-namespace memory {
+namespace protocol {
 
-class MemoryHandler {
+class MemoryHandler : public DevToolsDomainHandler,
+                      public Memory::Backend {
  public:
   MemoryHandler();
-  ~MemoryHandler();
+  ~MemoryHandler() override;
 
-  typedef DevToolsProtocolClient::Response Response;
-  Response SetPressureNotificationsSuppressed(bool suppressed);
-  Response SimulatePressureNotification(const std::string& level);
+  void Wire(UberDispatcher* dispatcher) override;
+  void SetRenderer(int process_host_id,
+                   RenderFrameHostImpl* frame_host) override;
+
+  Response GetBrowserSamplingProfile(
+      std::unique_ptr<Memory::SamplingProfile>* out_profile) override;
+  Response SetPressureNotificationsSuppressed(bool suppressed) override;
+  Response SimulatePressureNotification(const std::string& level) override;
+  void PrepareForLeakDetection(
+      std::unique_ptr<PrepareForLeakDetectionCallback> callback) override;
 
  private:
+  void OnLeakDetectionComplete(blink::mojom::LeakDetectionResultPtr result);
+  void OnLeakDetectorIsGone();
+
+  int process_host_id_;
+  blink::mojom::LeakDetectorPtr leak_detector_;
+  std::unique_ptr<PrepareForLeakDetectionCallback> leak_detection_callback_;
+  base::WeakPtrFactory<MemoryHandler> weak_factory_;
+
   DISALLOW_COPY_AND_ASSIGN(MemoryHandler);
 };
 
-}  // namespace memory
-}  // namespace devtools
+}  // namespace protocol
 }  // namespace content
 
 #endif  // CONTENT_BROWSER_DEVTOOLS_PROTOCOL_MEMORY_HANDLER_H_

@@ -36,21 +36,21 @@ CountdownTimer.TIMER_INTERVAL_MILLIS = 200;
  * @return {boolean} whether the timeout could be set.
  */
 CountdownTimer.prototype.setTimeout = function(timeoutMillis, cb) {
-  if (this.timeoutId)
+  if (this.timeoutId) {
     return false;
-  if (!timeoutMillis || timeoutMillis < 0)
+  }
+  if (!timeoutMillis || timeoutMillis < 0) {
     return false;
+  }
   this.remainingMillis = timeoutMillis;
   this.cb = cb;
   if (this.remainingMillis > CountdownTimer.TIMER_INTERVAL_MILLIS) {
-    this.timeoutId =
-        this.sysTimer_.setInterval(this.timerTick.bind(this),
-            CountdownTimer.TIMER_INTERVAL_MILLIS);
+    this.timeoutId = this.sysTimer_.setInterval(
+        this.timerTick.bind(this), CountdownTimer.TIMER_INTERVAL_MILLIS);
   } else {
     // Set a one-shot timer for the last interval.
-    this.timeoutId =
-        this.sysTimer_.setTimeout(
-            this.timerTick.bind(this), this.remainingMillis);
+    this.timeoutId = this.sysTimer_.setTimeout(
+        this.timerTick.bind(this), this.remainingMillis);
   }
   return true;
 };
@@ -114,8 +114,7 @@ function CountdownTimerFactory(sysTimer) {
  * @param {function()=} opt_cb Called back when the countdown expires.
  * @return {!Countdown} The timer.
  */
-CountdownTimerFactory.prototype.createTimer =
-    function(timeoutMillis, opt_cb) {
+CountdownTimerFactory.prototype.createTimer = function(timeoutMillis, opt_cb) {
   return new CountdownTimer(this.sysTimer_, timeoutMillis, opt_cb);
 };
 
@@ -135,8 +134,9 @@ var MINIMUM_TIMEOUT_ATTENUATION_SECONDS = 1;
 function attenuateTimeoutInSeconds(timeoutSeconds, opt_attenuationSeconds) {
   var attenuationSeconds =
       opt_attenuationSeconds || MINIMUM_TIMEOUT_ATTENUATION_SECONDS;
-  if (timeoutSeconds < attenuationSeconds)
+  if (timeoutSeconds < attenuationSeconds) {
     return 0;
+  }
   return timeoutSeconds - attenuationSeconds;
 }
 
@@ -177,9 +177,9 @@ function getTimeoutValueFromRequest(request, opt_defaultTimeoutSeconds) {
  * @param {number=} opt_attenuationSeconds Attenuation value in seconds.
  * @return {!Countdown} A countdown timer.
  */
-function createAttenuatedTimer(timerFactory, timeoutValueSeconds,
-    opt_attenuationSeconds) {
-  timeoutValueSeconds = attenuateTimeoutInSeconds(timeoutValueSeconds,
-      opt_attenuationSeconds);
+function createAttenuatedTimer(
+    timerFactory, timeoutValueSeconds, opt_attenuationSeconds) {
+  timeoutValueSeconds =
+      attenuateTimeoutInSeconds(timeoutValueSeconds, opt_attenuationSeconds);
   return timerFactory.createTimer(timeoutValueSeconds * 1000);
 }

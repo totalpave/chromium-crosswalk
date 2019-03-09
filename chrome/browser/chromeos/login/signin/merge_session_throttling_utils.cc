@@ -10,16 +10,17 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/singleton.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "chrome/browser/chromeos/login/signin/oauth2_login_manager.h"
 #include "chrome/browser/chromeos/login/signin/oauth2_login_manager_factory.h"
 #include "chrome/common/url_constants.h"
-#include "components/google/core/browser/google_util.h"
+#include "components/google/core/common/google_util.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/web_contents.h"
-#include "net/base/network_change_notifier.h"
+#include "services/network/public/cpp/network_connection_tracker.h"
 #include "url/gurl.h"
 
 using content::BrowserThread;
@@ -32,23 +33,26 @@ namespace {
 const int64_t kMaxSessionRestoreTimeInSec = 60;
 
 // The set of blocked profiles.
-class ProfileSet : public base::NonThreadSafe, public std::set<Profile*> {
+class ProfileSet : public std::set<Profile*> {
  public:
   ProfileSet() {}
 
-  virtual ~ProfileSet() {}
+  virtual ~ProfileSet() { DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_); }
 
   static ProfileSet* Get();
 
  private:
-  friend struct ::base::DefaultLazyInstanceTraits<ProfileSet>;
+  friend struct ::base::LazyInstanceTraitsBase<ProfileSet>;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(ProfileSet);
 };
 
 // Set of all of profiles for which restore session is in progress.
 // This static member is accessible only form UI thread.
-base::LazyInstance<ProfileSet> g_blocked_profiles = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<ProfileSet>::DestructorAtExit g_blocked_profiles =
+    LAZY_INSTANCE_INITIALIZER;
 
 ProfileSet* ProfileSet::Get() {
   return g_blocked_profiles.Pointer();
@@ -59,12 +63,16 @@ ProfileSet* ProfileSet::Get() {
 // even be even added to new requests. Value of 0 (initial) means that we
 // probably have some profiles to restore, while 1 means that all known
 // profiles are restored.
-base::AtomicRefCount g_all_profiles_restored_ = 0;
+base::AtomicRefCount g_all_profiles_restored_(0);
 
 }  // namespace
 
+bool ShouldAttachNavigationThrottle() {
+  return user_manager::UserManager::IsInitialized();
+}
+
 bool AreAllSessionMergedAlready() {
-  return !base::AtomicRefCountIsZero(&g_all_profiles_restored_);
+  return !g_all_profiles_restored_.IsZero();
 }
 
 void BlockProfile(Profile* profile) {
@@ -78,7 +86,7 @@ void BlockProfile(Profile* profile) {
     // Since a new profile just got blocked, we can not assume that
     // all sessions are merged anymore.
     if (AreAllSessionMergedAlready()) {
-      base::AtomicRefCountDec(&g_all_profiles_restored_);
+      g_all_profiles_restored_.Decrement();
       DVLOG(1) << "Marking all sessions unmerged!";
     }
   }
@@ -93,8 +101,9 @@ void UnblockProfile(Profile* profile) {
 
   // Check if there is any other profile to block on.
   if (ProfileSet::Get()->size() == 0) {
-    base::AtomicRefCountInc(&g_all_profiles_restored_);
-    DVLOG(1) << "All profiles merged " << g_all_profiles_restored_;
+    g_all_profiles_restored_.Increment();
+    DVLOG(1) << "All profiles merged "
+             << g_all_profiles_restored_.SubtleRefCountForDebug();
   }
 }
 
@@ -108,7 +117,7 @@ bool ShouldDelayRequestForProfile(Profile* profile) {
     // This is not a regular user session, let's remove the throttle
     // permanently.
     if (!AreAllSessionMergedAlready())
-      base::AtomicRefCountInc(&g_all_profiles_restored_);
+      g_all_profiles_restored_.Increment();
 
     return false;
   }
@@ -174,10 +183,50 @@ bool ShouldDelayRequestForWebContents(content::WebContents* web_contents) {
 bool ShouldDelayUrl(const GURL& url) {
   // If we are loading google properties while merge session is in progress,
   // we will show delayed loading page instead.
-  return !net::NetworkChangeNotifier::IsOffline() &&
+  return !content::GetNetworkConnectionTracker()->IsOffline() &&
          !AreAllSessionMergedAlready() &&
          google_util::IsGoogleHostname(url.host_piece(),
                                        google_util::ALLOW_SUBDOMAIN);
+}
+
+bool IsSessionRestorePending(Profile* profile) {
+  if (!profile)
+    return false;
+
+  chromeos::OAuth2LoginManager* login_manager =
+      chromeos::OAuth2LoginManagerFactory::GetInstance()->GetForProfile(
+          profile);
+  bool pending_session_restore = false;
+  if (login_manager) {
+    switch (login_manager->state()) {
+      case chromeos::OAuth2LoginManager::SESSION_RESTORE_PREPARING:
+      case chromeos::OAuth2LoginManager::SESSION_RESTORE_IN_PROGRESS:
+        pending_session_restore = true;
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  return pending_session_restore;
+}
+
+void ResetAreAllSessionsMergedForTesting() {
+  if (AreAllSessionMergedAlready()) {
+    // This is safe for tests since it will only be called from SetUp() once per
+    // test and not concurrently.
+    int current_value = g_all_profiles_restored_.SubtleRefCountForDebug();
+    bool is_positive = current_value > 0;
+    if (!is_positive)
+      current_value *= -1;
+    for (int i = 0; i < current_value; i++) {
+      if (is_positive)
+        g_all_profiles_restored_.Decrement();
+      else
+        g_all_profiles_restored_.Increment();
+    }
+  }
 }
 
 }  // namespace merge_session_throttling_utils

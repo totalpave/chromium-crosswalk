@@ -8,11 +8,11 @@
 #include <stddef.h>
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/strings/string16.h"
 #include "components/policy/policy_export.h"
 
@@ -83,7 +83,7 @@ class POLICY_EXPORT PolicyErrorMap {
   // space. Returns an empty string if there are no errors for |policy|.
   base::string16 GetErrors(const std::string& policy);
 
-  bool empty();
+  bool empty() const;
   size_t size();
 
   const_iterator begin();
@@ -91,9 +91,18 @@ class POLICY_EXPORT PolicyErrorMap {
 
   void Clear();
 
+  // Sets the debug info |debug_info| for the policy with key |policy|.
+  // This is intended to be developer-friendly, non-localized detailed
+  // information from validation of |policy|.
+  void SetDebugInfo(const std::string& policy, const std::string& debug_info);
+
+  // Returns the debug info set for the key |policy| by |SetDebugInfo| or an
+  // empty string if no debug info was set.
+  const std::string GetDebugInfo(const std::string& policy);
+
  private:
   // Maps the error when ready, otherwise adds it to the pending errors list.
-  void AddError(PendingError* error);
+  void AddError(std::unique_ptr<PendingError> error);
 
   // Converts a PendingError into a |map_| entry.
   void Convert(PendingError* error);
@@ -101,8 +110,11 @@ class POLICY_EXPORT PolicyErrorMap {
   // Converts all pending errors to |map_| entries.
   void CheckReadyAndConvert();
 
-  ScopedVector<PendingError> pending_;
+  std::vector<std::unique_ptr<PendingError>> pending_;
   PolicyMapType map_;
+
+  // Maps policy keys to debug infos set through |SetDebugInfo|.
+  std::map<std::string, std::string> debug_infos_;
 
   DISALLOW_COPY_AND_ASSIGN(PolicyErrorMap);
 };

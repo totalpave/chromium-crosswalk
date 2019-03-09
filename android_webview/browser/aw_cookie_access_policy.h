@@ -16,10 +16,6 @@ namespace content {
 class ResourceContext;
 }
 
-namespace net {
-class CookieOptions;
-}
-
 class GURL;
 
 namespace android_webview {
@@ -36,8 +32,12 @@ class AwCookieAccessPolicy {
   void SetShouldAcceptCookies(bool allow);
 
   // Can we read/write third party cookies?
+  // |render_process_id| and |render_frame_id| must be valid.
+  // Navigation requests are not associated with a renderer process. In this
+  // case, |frame_tree_node_id| must be valid instead.
   bool GetShouldAcceptThirdPartyCookies(int render_process_id,
-                                        int render_frame_id);
+                                        int render_frame_id,
+                                        int frame_tree_node_id);
   bool GetShouldAcceptThirdPartyCookies(const net::URLRequest& request);
 
   // These are the functions called when operating over cookies from the
@@ -45,7 +45,7 @@ class AwCookieAccessPolicy {
   bool OnCanGetCookies(const net::URLRequest& request,
                        const net::CookieList& cookie_list);
   bool OnCanSetCookie(const net::URLRequest& request,
-                      const std::string& cookie_line,
+                      const net::CanonicalCookie& cookie,
                       net::CookieOptions* options);
 
   // These are the functions called when operating over cookies from the
@@ -58,14 +58,13 @@ class AwCookieAccessPolicy {
                       int render_frame_id);
   bool AllowSetCookie(const GURL& url,
                       const GURL& first_party,
-                      const std::string& cookie_line,
+                      const net::CanonicalCookie& cookie,
                       content::ResourceContext* context,
                       int render_process_id,
-                      int render_frame_id,
-                      const net::CookieOptions& options);
+                      int render_frame_id);
 
  private:
-  friend struct base::DefaultLazyInstanceTraits<AwCookieAccessPolicy>;
+  friend struct base::LazyInstanceTraitsBase<AwCookieAccessPolicy>;
 
   AwCookieAccessPolicy();
   ~AwCookieAccessPolicy();

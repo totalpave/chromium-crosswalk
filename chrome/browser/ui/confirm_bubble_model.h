@@ -9,10 +9,6 @@
 #include "base/strings/string16.h"
 #include "url/gurl.h"
 
-namespace gfx {
-class Image;
-}
-
 // An interface implemented by objects wishing to control an ConfirmBubbleView.
 // To use this class to implement a bubble menu, we need two steps:
 // 1. Implement a class derived from this class.
@@ -54,10 +50,10 @@ class ConfirmBubbleModel {
   virtual base::string16 GetLinkText() const;
 
   // Returns the URL of the link to be displayed.
-  virtual GURL GetLinkURL() const;
+  virtual GURL GetHelpPageURL() const;
 
   // Called when the link is clicked.
-  virtual void LinkClicked();
+  virtual void OpenHelpPage();
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ConfirmBubbleModel);

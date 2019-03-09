@@ -11,9 +11,10 @@
 #include "base/macros.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
+#include "remoting/codec/encoder_bitrate_filter.h"
 #include "remoting/codec/scoped_vpx_codec.h"
-#include "remoting/codec/video_encoder.h"
-#include "remoting/codec/video_encoder_helper.h"
+#include "remoting/codec/webrtc_video_encoder.h"
+#include "remoting/codec/webrtc_video_encoder_selector.h"
 #include "third_party/libvpx/source/libvpx/vpx/vpx_encoder.h"
 
 typedef struct vpx_image vpx_image_t;
@@ -28,22 +29,29 @@ namespace remoting {
 // This is a copy of VideoEncoderVpx with enhancements to encoder for use
 // over WebRTC as transport. The original VideoEncoderVpx should be deleted
 // once the old implementation is no longer in use.
-class WebrtcVideoEncoderVpx : public VideoEncoder {
+class WebrtcVideoEncoderVpx : public WebrtcVideoEncoder {
  public:
-  // Create encoder for the specified protocol.
-  static std::unique_ptr<WebrtcVideoEncoderVpx> CreateForVP8();
-  static std::unique_ptr<WebrtcVideoEncoderVpx> CreateForVP9();
+  // Creates encoder for the specified protocol.
+  static std::unique_ptr<WebrtcVideoEncoder> CreateForVP8();
+  static std::unique_ptr<WebrtcVideoEncoder> CreateForVP9();
+
+  // Checks the support for the specified protocol.
+  static bool IsSupportedByVP8(
+      const WebrtcVideoEncoderSelector::Profile& profile);
+  static bool IsSupportedByVP9(
+      const WebrtcVideoEncoderSelector::Profile& profile);
 
   ~WebrtcVideoEncoderVpx() override;
 
-  void SetTickClockForTests(base::TickClock* tick_clock);
+  void SetTickClockForTests(const base::TickClock* tick_clock);
 
-  // VideoEncoder interface.
-  void SetLosslessEncode(bool want_lossless) override;
-  void SetLosslessColor(bool want_lossless) override;
-  std::unique_ptr<VideoPacket> Encode(const webrtc::DesktopFrame& frame,
-                                      uint32_t flags) override;
-  void UpdateTargetBitrate(int bitrate_kbps) override;
+  void SetLosslessEncode(bool want_lossless);
+  void SetLosslessColor(bool want_lossless);
+
+  // WebrtcVideoEncoder interface.
+  void Encode(std::unique_ptr<webrtc::DesktopFrame> frame,
+              const FrameParams& params,
+              EncodeCallback done) override;
 
  private:
   explicit WebrtcVideoEncoderVpx(bool use_vp9);
@@ -52,10 +60,16 @@ class WebrtcVideoEncoderVpx : public VideoEncoder {
   // with the configured lossless color & encoding modes.
   void Configure(const webrtc::DesktopSize& size);
 
+  // Updates codec configuration.
+  void UpdateConfig(const FrameParams& params);
+
   // Prepares |image_| for encoding. Writes updated rectangles into
   // |updated_region|.
-  void PrepareImage(const webrtc::DesktopFrame& frame,
+  void PrepareImage(const webrtc::DesktopFrame* frame,
                     webrtc::DesktopRegion* updated_region);
+
+  // Clears active map.
+  void ClearActiveMap();
 
   // Updates the active map according to |updated_region|. Active map is then
   // given to the encoder to speed up encoding.
@@ -77,7 +91,6 @@ class WebrtcVideoEncoderVpx : public VideoEncoder {
   ScopedVpxCodec codec_;
 
   vpx_codec_enc_cfg_t config_;
-  uint32_t target_bitrate_kbps_;
 
   // Used to generate zero-based frame timestamps.
   base::TimeTicks timestamp_base_;
@@ -90,14 +103,9 @@ class WebrtcVideoEncoderVpx : public VideoEncoder {
   std::unique_ptr<uint8_t[]> active_map_;
   webrtc::DesktopSize active_map_size_;
 
-  // True if the codec wants unchanged frames to finish topping-off with.
-  bool encode_unchanged_frame_;
+  const base::TickClock* clock_;
 
-  // Used to help initialize VideoPackets from DesktopFrames.
-  VideoEncoderHelper helper_;
-
-  base::DefaultTickClock default_tick_clock_;
-  base::TickClock* clock_;
+  EncoderBitrateFilter bitrate_filter_;
 
   DISALLOW_COPY_AND_ASSIGN(WebrtcVideoEncoderVpx);
 };

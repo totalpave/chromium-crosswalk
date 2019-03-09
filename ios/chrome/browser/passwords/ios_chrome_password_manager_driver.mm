@@ -7,9 +7,11 @@
 #include "base/strings/string16.h"
 #include "components/autofill/core/common/password_form.h"
 #include "components/autofill/core/common/password_form_fill_data.h"
-#include "components/password_manager/core/browser/password_generation_manager.h"
 #include "components/password_manager/core/browser/password_manager.h"
-#import "ios/chrome/browser/passwords/password_generation_agent.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 using password_manager::PasswordAutofillManager;
 using password_manager::PasswordGenerationManager;
@@ -26,9 +28,16 @@ void IOSChromePasswordManagerDriver::FillPasswordForm(
   [delegate_ fillPasswordForm:form_data completionHandler:nil];
 }
 
+void IOSChromePasswordManagerDriver::InformNoSavedCredentials() {
+  [delegate_ onNoSavedCredentials];
+}
+
 void IOSChromePasswordManagerDriver::FormsEligibleForGenerationFound(
-    const std::vector<autofill::PasswordFormGenerationData>& forms) {
-  // TODO(crbug.com/569579): Implement.
+    const std::vector<autofill::PasswordFormGenerationData>& forms) {}
+
+void IOSChromePasswordManagerDriver::FormEligibleForGenerationFound(
+    const autofill::NewPasswordFormGenerationData& form) {
+  [delegate_ formEligibleForGenerationFound:form];
 }
 
 void IOSChromePasswordManagerDriver::GeneratedPasswordAccepted(
@@ -69,7 +78,6 @@ PasswordManager* IOSChromePasswordManagerDriver::GetPasswordManager() {
 
 void IOSChromePasswordManagerDriver::AllowPasswordGenerationForForm(
     const autofill::PasswordForm& form) {
-  [[delegate_ passwordGenerationAgent] allowPasswordGenerationForForm:form];
 }
 
 PasswordAutofillManager*
@@ -79,6 +87,16 @@ IOSChromePasswordManagerDriver::GetPasswordAutofillManager() {
   return nullptr;
 }
 
-void IOSChromePasswordManagerDriver::ForceSavePassword() {
+autofill::AutofillDriver* IOSChromePasswordManagerDriver::GetAutofillDriver() {
   NOTIMPLEMENTED();
+  return nullptr;
+}
+
+bool IOSChromePasswordManagerDriver::IsMainFrame() const {
+  // On IOS only processing of password forms in main frame is implemented.
+  return true;
+}
+
+GURL IOSChromePasswordManagerDriver::GetLastCommittedURL() const {
+  return delegate_.lastCommittedURL;
 }

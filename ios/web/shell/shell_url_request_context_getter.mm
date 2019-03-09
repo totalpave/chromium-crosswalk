@@ -12,10 +12,9 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
-#include "base/threading/worker_pool.h"
-#include "ios/net/cookies/cookie_store_ios.h"
-#include "ios/web/public/web_client.h"
-#include "ios/web/public/web_thread.h"
+#include "base/task/post_task.h"
+#import "ios/net/cookies/cookie_store_ios_persistent.h"
+#import "ios/web/public/web_client.h"
 #include "ios/web/shell/shell_network_delegate.h"
 #include "net/base/cache_type.h"
 #include "net/cert/cert_verifier.h"
@@ -29,11 +28,13 @@
 #include "net/http/http_server_properties_impl.h"
 #include "net/http/transport_security_persister.h"
 #include "net/http/transport_security_state.h"
-#include "net/proxy/proxy_config_service_ios.h"
-#include "net/proxy/proxy_service.h"
+#include "net/log/net_log.h"
+#include "net/proxy_resolution/proxy_config_service_ios.h"
+#include "net/proxy_resolution/proxy_resolution_service.h"
 #include "net/ssl/channel_id_service.h"
 #include "net/ssl/default_channel_id_store.h"
 #include "net/ssl/ssl_config_service_defaults.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/data_protocol_handler.h"
 #include "net/url_request/static_http_user_agent_settings.h"
 #include "net/url_request/url_request_context.h"
@@ -48,14 +49,11 @@ namespace web {
 
 ShellURLRequestContextGetter::ShellURLRequestContextGetter(
     const base::FilePath& base_path,
-    const scoped_refptr<base::SingleThreadTaskRunner>& network_task_runner,
-    const scoped_refptr<base::SingleThreadTaskRunner>& file_task_runner,
-    const scoped_refptr<base::SingleThreadTaskRunner>& cache_task_runner)
+    const scoped_refptr<base::SingleThreadTaskRunner>& network_task_runner)
     : base_path_(base_path),
-      file_task_runner_(file_task_runner),
       network_task_runner_(network_task_runner),
-      cache_task_runner_(cache_task_runner),
-      proxy_config_service_(new net::ProxyConfigServiceIOS),
+      proxy_config_service_(
+          new net::ProxyConfigServiceIOS(NO_TRAFFIC_ANNOTATION_YET)),
       net_log_(new net::NetLog()) {}
 
 ShellURLRequestContextGetter::~ShellURLRequestContextGetter() {}
@@ -75,42 +73,46 @@ net::URLRequestContext* ShellURLRequestContextGetter::GetURLRequestContext() {
 
     // Setup the cookie store.
     base::FilePath cookie_path;
-    bool cookie_path_found = PathService::Get(base::DIR_APP_DATA, &cookie_path);
+    bool cookie_path_found =
+        base::PathService::Get(base::DIR_APP_DATA, &cookie_path);
     DCHECK(cookie_path_found);
     cookie_path = cookie_path.Append("WebShell").Append("Cookies");
     scoped_refptr<net::CookieMonster::PersistentCookieStore> persistent_store =
         new net::SQLitePersistentCookieStore(
             cookie_path, network_task_runner_,
-            web::WebThread::GetBlockingPool()->GetSequencedTaskRunner(
-                web::WebThread::GetBlockingPool()->GetSequenceToken()),
+            base::CreateSequencedTaskRunnerWithTraits(
+                {base::MayBlock(), base::TaskPriority::BEST_EFFORT}),
             true, nullptr);
     std::unique_ptr<net::CookieStoreIOS> cookie_store(
-        new net::CookieStoreIOS(persistent_store.get()));
-    net::CookieStoreIOS::SwitchSynchronizedStore(nullptr, cookie_store.get());
+        new net::CookieStoreIOSPersistent(persistent_store.get(),
+                                          net_log_.get()));
     storage_->set_cookie_store(std::move(cookie_store));
 
-    std::string user_agent = web::GetWebClient()->GetUserAgent(false);
-    storage_->set_http_user_agent_settings(base::WrapUnique(
-        new net::StaticHttpUserAgentSettings("en-us,en", user_agent)));
-    storage_->set_proxy_service(
-        net::ProxyService::CreateUsingSystemProxyResolver(
-            std::move(proxy_config_service_), 0,
-            url_request_context_->net_log()));
-    storage_->set_ssl_config_service(new net::SSLConfigServiceDefaults);
+    std::string user_agent =
+        web::GetWebClient()->GetUserAgent(web::UserAgentType::MOBILE);
+    storage_->set_http_user_agent_settings(
+        std::make_unique<net::StaticHttpUserAgentSettings>("en-us,en",
+                                                           user_agent));
+    storage_->set_proxy_resolution_service(
+        net::ProxyResolutionService::CreateUsingSystemProxyResolver(
+            std::move(proxy_config_service_), url_request_context_->net_log()));
+    storage_->set_ssl_config_service(
+        std::make_unique<net::SSLConfigServiceDefaults>());
     storage_->set_cert_verifier(net::CertVerifier::CreateDefault());
 
     storage_->set_transport_security_state(
-        base::WrapUnique(new net::TransportSecurityState()));
+        std::make_unique<net::TransportSecurityState>());
     storage_->set_cert_transparency_verifier(
         base::WrapUnique(new net::MultiLogCTVerifier));
     storage_->set_ct_policy_enforcer(
-        base::WrapUnique(new net::CTPolicyEnforcer));
-    transport_security_persister_.reset(new net::TransportSecurityPersister(
-        url_request_context_->transport_security_state(), base_path_,
-        file_task_runner_, false));
-    storage_->set_channel_id_service(base::WrapUnique(
-        new net::ChannelIDService(new net::DefaultChannelIDStore(nullptr),
-                                  base::WorkerPool::GetTaskRunner(true))));
+        base::WrapUnique(new net::DefaultCTPolicyEnforcer));
+    transport_security_persister_ =
+        std::make_unique<net::TransportSecurityPersister>(
+            url_request_context_->transport_security_state(), base_path_,
+            base::CreateSequencedTaskRunnerWithTraits(
+                {base::MayBlock(), base::TaskPriority::BEST_EFFORT}));
+    storage_->set_channel_id_service(std::make_unique<net::ChannelIDService>(
+        new net::DefaultChannelIDStore(nullptr)));
     storage_->set_http_server_properties(
         std::unique_ptr<net::HttpServerProperties>(
             new net::HttpServerPropertiesImpl()));
@@ -119,43 +121,43 @@ net::URLRequestContext* ShellURLRequestContextGetter::GetURLRequestContext() {
         net::HostResolver::CreateDefaultResolver(
             url_request_context_->net_log()));
     storage_->set_http_auth_handler_factory(
-        net::HttpAuthHandlerFactory::CreateDefault(host_resolver.get()));
+        net::HttpAuthHandlerFactory::CreateDefault());
     storage_->set_host_resolver(std::move(host_resolver));
 
-    net::HttpNetworkSession::Params network_session_params;
-    network_session_params.cert_verifier =
+    net::HttpNetworkSession::Context network_session_context;
+    network_session_context.cert_verifier =
         url_request_context_->cert_verifier();
-    network_session_params.transport_security_state =
+    network_session_context.transport_security_state =
         url_request_context_->transport_security_state();
-    network_session_params.cert_transparency_verifier =
+    network_session_context.cert_transparency_verifier =
         url_request_context_->cert_transparency_verifier();
-    network_session_params.ct_policy_enforcer =
+    network_session_context.ct_policy_enforcer =
         url_request_context_->ct_policy_enforcer();
-    network_session_params.channel_id_service =
+    network_session_context.channel_id_service =
         url_request_context_->channel_id_service();
-    network_session_params.net_log = url_request_context_->net_log();
-    network_session_params.proxy_service =
-        url_request_context_->proxy_service();
-    network_session_params.ssl_config_service =
+    network_session_context.net_log = url_request_context_->net_log();
+    network_session_context.proxy_resolution_service =
+        url_request_context_->proxy_resolution_service();
+    network_session_context.ssl_config_service =
         url_request_context_->ssl_config_service();
-    network_session_params.http_auth_handler_factory =
+    network_session_context.http_auth_handler_factory =
         url_request_context_->http_auth_handler_factory();
-    network_session_params.http_server_properties =
+    network_session_context.http_server_properties =
         url_request_context_->http_server_properties();
-    network_session_params.host_resolver =
+    network_session_context.host_resolver =
         url_request_context_->host_resolver();
 
     base::FilePath cache_path = base_path_.Append(FILE_PATH_LITERAL("Cache"));
     std::unique_ptr<net::HttpCache::DefaultBackend> main_backend(
-        new net::HttpCache::DefaultBackend(net::DISK_CACHE,
-                                           net::CACHE_BACKEND_DEFAULT,
-                                           cache_path, 0, cache_task_runner_));
+        new net::HttpCache::DefaultBackend(
+            net::DISK_CACHE, net::CACHE_BACKEND_DEFAULT, cache_path, 0));
 
     storage_->set_http_network_session(
-        base::WrapUnique(new net::HttpNetworkSession(network_session_params)));
-    storage_->set_http_transaction_factory(base::WrapUnique(new net::HttpCache(
+        std::make_unique<net::HttpNetworkSession>(
+            net::HttpNetworkSession::Params(), network_session_context));
+    storage_->set_http_transaction_factory(std::make_unique<net::HttpCache>(
         storage_->http_network_session(), std::move(main_backend),
-        true /* set_up_quic_server_info */)));
+        true /* set_up_quic_server_info */));
 
     std::unique_ptr<net::URLRequestJobFactoryImpl> job_factory(
         new net::URLRequestJobFactoryImpl());

@@ -4,18 +4,18 @@
 
 #include "chrome/browser/ui/views/frame/immersive_mode_controller_stub.h"
 
-#if defined(USE_ASH)
+#if defined(OS_CHROMEOS)
 #include "chrome/browser/ui/views/frame/immersive_mode_controller_ash.h"
 #endif
 
 namespace chrome {
 
-ImmersiveModeController* CreateImmersiveModeController() {
-#if defined(USE_ASH)
-  return new ImmersiveModeControllerAsh();
+std::unique_ptr<ImmersiveModeController> CreateImmersiveModeController() {
+#if defined(OS_CHROMEOS)
+  return std::make_unique<ImmersiveModeControllerAsh>();
 #else
-  return new ImmersiveModeControllerStub();
-#endif  // USE_ASH
+  return std::make_unique<ImmersiveModeControllerStub>();
+#endif  // OS_CHROMEOS
 }
 
 }  // namespace chrome

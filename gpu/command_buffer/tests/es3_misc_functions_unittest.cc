@@ -7,8 +7,8 @@
 #include <GLES2/gl2extchromium.h>
 #include <GLES3/gl3.h>
 
-#include "base/command_line.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "gpu/command_buffer/tests/gl_manager.h"
 #include "gpu/command_buffer/tests/gl_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -22,11 +22,9 @@ namespace gpu {
 class OpenGLES3FunctionTest : public testing::Test {
  protected:
   void SetUp() override {
-    base::CommandLine command_line(*base::CommandLine::ForCurrentProcess());
-    command_line.AppendSwitch(switches::kEnableUnsafeES3APIs);
     GLManager::Options options;
-    options.context_type = gles2::CONTEXT_TYPE_OPENGLES3;
-    gl_.InitializeWithCommandLine(options, command_line);
+    options.context_type = CONTEXT_TYPE_OPENGLES3;
+    gl_.Initialize(options);
   }
   void TearDown() override { gl_.Destroy(); }
   bool IsApplicable() const { return gl_.IsInitialized(); }

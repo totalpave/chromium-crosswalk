@@ -6,54 +6,74 @@
 #define CONTENT_BROWSER_DEVTOOLS_PROTOCOL_EMULATION_HANDLER_H_
 
 #include "base/macros.h"
-#include "content/browser/devtools/protocol/devtools_protocol_dispatcher.h"
-#include "third_party/WebKit/public/web/WebDeviceEmulationParams.h"
+#include "content/browser/devtools/protocol/devtools_domain_handler.h"
+#include "content/browser/devtools/protocol/emulation.h"
+#include "third_party/blink/public/web/web_device_emulation_params.h"
+
+namespace net {
+class HttpRequestHeaders;
+}  // namespace net
 
 namespace content {
 
+class DevToolsAgentHostImpl;
 class RenderFrameHostImpl;
 class WebContentsImpl;
 
-namespace devtools {
+namespace protocol {
 
-namespace page { class PageHandler; }
-
-namespace emulation {
-
-class EmulationHandler {
+class EmulationHandler : public DevToolsDomainHandler,
+                         public Emulation::Backend {
  public:
-  using Response = DevToolsProtocolClient::Response;
-
   EmulationHandler();
-  ~EmulationHandler();
+  ~EmulationHandler() override;
 
-  void SetRenderFrameHost(RenderFrameHostImpl* host);
-  void Detached();
+  static std::vector<EmulationHandler*> ForAgentHost(
+      DevToolsAgentHostImpl* host);
 
-  Response SetGeolocationOverride(double* latitude,
-                                  double* longitude,
-                                  double* accuracy);
-  Response ClearGeolocationOverride();
+  void Wire(UberDispatcher* dispatcher) override;
+  void SetRenderer(int process_host_id,
+                   RenderFrameHostImpl* frame_host) override;
 
-  Response SetTouchEmulationEnabled(bool enabled,
-                                    const std::string* configuration);
+  Response Disable() override;
 
-  Response CanEmulate(bool* result);
+  Response SetGeolocationOverride(Maybe<double> latitude,
+                                  Maybe<double> longitude,
+                                  Maybe<double> accuracy) override;
+  Response ClearGeolocationOverride() override;
+
+  Response SetEmitTouchEventsForMouse(
+      bool enabled,
+      Maybe<std::string> configuration) override;
+
+  Response SetUserAgentOverride(const std::string& user_agent,
+                                Maybe<std::string> accept_language,
+                                Maybe<std::string> platform) override;
+
+  Response CanEmulate(bool* result) override;
   Response SetDeviceMetricsOverride(
       int width,
       int height,
       double device_scale_factor,
       bool mobile,
-      bool fit_window,
-      const double* optional_scale,
-      const double* optional_offset_x,
-      const double* optional_offset_y,
-      const int* screen_widget,
-      const int* screen_height,
-      const int* position_x,
-      const int* position_y,
-      const std::unique_ptr<base::DictionaryValue>& screen_orientation);
-  Response ClearDeviceMetricsOverride();
+      Maybe<double> scale,
+      Maybe<int> screen_widget,
+      Maybe<int> screen_height,
+      Maybe<int> position_x,
+      Maybe<int> position_y,
+      Maybe<bool> dont_set_visible_size,
+      Maybe<Emulation::ScreenOrientation> screen_orientation,
+      Maybe<protocol::Page::Viewport> viewport) override;
+  Response ClearDeviceMetricsOverride() override;
+
+  Response SetVisibleSize(int width, int height) override;
+
+  blink::WebDeviceEmulationParams GetDeviceEmulationParams();
+  void SetDeviceEmulationParams(const blink::WebDeviceEmulationParams& params);
+
+  bool device_emulation_enabled() { return device_emulation_enabled_; }
+
+  void ApplyOverrides(net::HttpRequestHeaders* headers);
 
  private:
   WebContentsImpl* GetWebContents();
@@ -65,14 +85,15 @@ class EmulationHandler {
 
   bool device_emulation_enabled_;
   blink::WebDeviceEmulationParams device_emulation_params_;
+  std::string user_agent_;
+  std::string accept_language_;
 
   RenderFrameHostImpl* host_;
 
   DISALLOW_COPY_AND_ASSIGN(EmulationHandler);
 };
 
-}  // namespace emulation
-}  // namespace devtools
+}  // namespace protocol
 }  // namespace content
 
 #endif  // CONTENT_BROWSER_DEVTOOLS_PROTOCOL_EMULATION_HANDLER_H_

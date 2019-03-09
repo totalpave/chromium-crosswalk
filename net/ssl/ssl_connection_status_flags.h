@@ -21,14 +21,8 @@ enum {
   SSL_CONNECTION_COMPRESSION_SHIFT = 16,
   SSL_CONNECTION_COMPRESSION_MASK = 3,
 
-  // We fell back to an older protocol version for this connection.
-  SSL_CONNECTION_VERSION_FALLBACK = 1 << 18,
-
-  // The server doesn't support the renegotiation_info extension. If this bit
-  // is not set then either the extension isn't supported, or we don't have any
-  // knowledge either way. (The latter case will occur when we use an SSL
-  // library that doesn't report it, like SChannel.)
-  SSL_CONNECTION_NO_RENEGOTIATION_EXTENSION = 1 << 19,
+  // 1 << 18 was previously used for SSL_CONNECTION_VERSION_FALLBACK.
+  // 1 << 19 was previously used for SSL_CONNECTION_NO_RENEGOTIATION_EXTENSION.
 
   // The next three bits are reserved for the SSL version.
   SSL_CONNECTION_VERSION_SHIFT = 20,
@@ -41,14 +35,14 @@ enum {
 // NOTE: the SSL version enum constants must be between 0 and
 // SSL_CONNECTION_VERSION_MASK, inclusive. These values are persisted to disk
 // and used in UMA, so they must remain stable.
-enum {
+enum SSLVersion {
   SSL_CONNECTION_VERSION_UNKNOWN = 0,  // Unknown SSL version.
   SSL_CONNECTION_VERSION_SSL2 = 1,
   SSL_CONNECTION_VERSION_SSL3 = 2,
   SSL_CONNECTION_VERSION_TLS1 = 3,
   SSL_CONNECTION_VERSION_TLS1_1 = 4,
   SSL_CONNECTION_VERSION_TLS1_2 = 5,
-  // Reserve 6 for TLS 1.3.
+  SSL_CONNECTION_VERSION_TLS1_3 = 6,
   SSL_CONNECTION_VERSION_QUIC = 7,
   SSL_CONNECTION_VERSION_MAX,
 };
@@ -59,9 +53,10 @@ inline uint16_t SSLConnectionStatusToCipherSuite(int connection_status) {
   return static_cast<uint16_t>(connection_status);
 }
 
-inline int SSLConnectionStatusToVersion(int connection_status) {
-  return (connection_status >> SSL_CONNECTION_VERSION_SHIFT) &
-         SSL_CONNECTION_VERSION_MASK;
+inline SSLVersion SSLConnectionStatusToVersion(int connection_status) {
+  return static_cast<SSLVersion>(
+      (connection_status >> SSL_CONNECTION_VERSION_SHIFT) &
+      SSL_CONNECTION_VERSION_MASK);
 }
 
 inline void SSLConnectionStatusSetCipherSuite(uint16_t cipher_suite,

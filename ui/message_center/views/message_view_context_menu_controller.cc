@@ -4,21 +4,20 @@
 
 #include "ui/message_center/views/message_view_context_menu_controller.h"
 
+#include "base/bind.h"
 #include "ui/base/models/menu_model.h"
-#include "ui/message_center/views/message_center_controller.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/views/message_view.h"
+#include "ui/message_center/views/notification_menu_model.h"
+#include "ui/views/controls/menu/menu_model_adapter.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/widget/widget.h"
 
 namespace message_center {
 
-MessageViewContextMenuController::MessageViewContextMenuController(
-    MessageCenterController* controller)
-    : controller_(controller) {
-}
+MessageViewContextMenuController::MessageViewContextMenuController() = default;
 
-MessageViewContextMenuController::~MessageViewContextMenuController() {
-}
+MessageViewContextMenuController::~MessageViewContextMenuController() = default;
 
 void MessageViewContextMenuController::ShowContextMenuForView(
     views::View* source,
@@ -26,20 +25,33 @@ void MessageViewContextMenuController::ShowContextMenuForView(
     ui::MenuSourceType source_type) {
   // Assumes that the target view has to be MessageView.
   MessageView* message_view = static_cast<MessageView*>(source);
-  std::unique_ptr<ui::MenuModel> menu_model(controller_->CreateMenuModel(
-      message_view->notifier_id(), message_view->display_source()));
+  Notification* notification =
+      MessageCenter::Get()->FindVisibleNotificationById(
+          message_view->notification_id());
 
-  if (!menu_model || menu_model->GetItemCount() == 0)
+  // Notification is null if the notification view is being removed or some
+  // invalid status. In this case, just returns.
+  if (!notification)
     return;
 
-  views::MenuRunner menu_runner(menu_model.get(),
-                                views::MenuRunner::HAS_MNEMONICS);
+  menu_model_ = std::make_unique<NotificationMenuModel>(*notification);
 
-  ignore_result(menu_runner.RunMenuAt(source->GetWidget()->GetTopLevelWidget(),
-                                      NULL,
-                                      gfx::Rect(point, gfx::Size()),
-                                      views::MENU_ANCHOR_TOPRIGHT,
-                                      source_type));
+  if (!menu_model_ || menu_model_->GetItemCount() == 0)
+    return;
+
+  menu_runner_ = std::make_unique<views::MenuRunner>(
+      menu_model_.get(), views::MenuRunner::HAS_MNEMONICS,
+      base::Bind(&MessageViewContextMenuController::OnMenuClosed,
+                 base::Unretained(this)));
+
+  menu_runner_->RunMenuAt(source->GetWidget()->GetTopLevelWidget(), NULL,
+                          gfx::Rect(point, gfx::Size()),
+                          views::MENU_ANCHOR_TOPRIGHT, source_type);
+}
+
+void MessageViewContextMenuController::OnMenuClosed() {
+  menu_runner_.reset();
+  menu_model_.reset();
 }
 
 }  // namespace message_center

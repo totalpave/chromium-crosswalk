@@ -5,26 +5,23 @@
 #ifndef CHROME_BROWSER_PLUGINS_PLUGIN_INFOBAR_DELEGATES_H_
 #define CHROME_BROWSER_PLUGINS_PLUGIN_INFOBAR_DELEGATES_H_
 
+#include <memory>
+#include <string>
+
 #include "base/callback.h"
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "chrome/browser/plugins/plugin_installer_observer.h"
+#include "chrome/common/buildflags.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
 #include "url/gurl.h"
 
-#if defined(ENABLE_PLUGIN_INSTALLATION)
-#include "chrome/browser/plugins/plugin_installer_observer.h"
-#endif
 
 class InfoBarService;
-class HostContentSettingsMap;
+class PluginInstaller;
 class PluginMetadata;
 
-namespace content {
-class WebContents;
-}
-
-#if defined(ENABLE_PLUGIN_INSTALLATION)
-// Infobar that's shown when a plugin is out of date.
+// Infobar that's shown when a plugin is out of date or deprecated.
 class OutdatedPluginInfoBarDelegate : public ConfirmInfoBarDelegate,
                                       public WeakPluginInstallerObserver {
  public:
@@ -34,24 +31,19 @@ class OutdatedPluginInfoBarDelegate : public ConfirmInfoBarDelegate,
                      PluginInstaller* installer,
                      std::unique_ptr<PluginMetadata> metadata);
 
-  // Replaces |infobar|, which must currently be owned, with an infobar asking
-  // the user to update a particular plugin.
-  static void Replace(infobars::InfoBar* infobar,
-                      PluginInstaller* installer,
-                      std::unique_ptr<PluginMetadata> plugin_metadata,
-                      const base::string16& message);
-
  private:
-  OutdatedPluginInfoBarDelegate(PluginInstaller* installer,
-                                std::unique_ptr<PluginMetadata> metadata,
-                                const base::string16& message);
+  OutdatedPluginInfoBarDelegate(
+      PluginInstaller* installer,
+      std::unique_ptr<PluginMetadata> metadata,
+      const base::string16& message_override = base::string16());
   ~OutdatedPluginInfoBarDelegate() override;
 
   // ConfirmInfoBarDelegate:
   infobars::InfoBarDelegate::InfoBarIdentifier GetIdentifier() const override;
   void InfoBarDismissed() override;
-  int GetIconId() const override;
+  const gfx::VectorIcon& GetVectorIcon() const override;
   base::string16 GetMessageText() const override;
+  int GetButtons() const override;
   base::string16 GetButtonLabel(InfoBarButton button) const override;
   bool Accept() override;
   bool Cancel() override;
@@ -59,9 +51,6 @@ class OutdatedPluginInfoBarDelegate : public ConfirmInfoBarDelegate,
   GURL GetLinkURL() const override;
 
   // PluginInstallerObserver:
-  void DownloadStarted() override;
-  void DownloadError(const std::string& message) override;
-  void DownloadCancelled() override;
   void DownloadFinished() override;
 
   // WeakPluginInstallerObserver:
@@ -79,6 +68,5 @@ class OutdatedPluginInfoBarDelegate : public ConfirmInfoBarDelegate,
 
   DISALLOW_COPY_AND_ASSIGN(OutdatedPluginInfoBarDelegate);
 };
-#endif  // defined(ENABLE_PLUGIN_INSTALLATION)
 
 #endif  // CHROME_BROWSER_PLUGINS_PLUGIN_INFOBAR_DELEGATES_H_

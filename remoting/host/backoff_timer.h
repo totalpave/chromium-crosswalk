@@ -23,7 +23,7 @@ class BackoffTimer {
   // Invokes |user_task| at intervals specified by |delay|, and
   // increasing up to |max_delay|.  Always invokes |user_task| before
   // the first scheduled delay.
-  void Start(const tracked_objects::Location& posted_from,
+  void Start(const base::Location& posted_from,
              base::TimeDelta delay,
              base::TimeDelta max_delay,
              const base::Closure& user_task);
@@ -34,15 +34,15 @@ class BackoffTimer {
   // Returns true if the user task may be invoked in the future.
   bool IsRunning() const { return !!backoff_entry_; }
 
-  void SetTimerForTest(std::unique_ptr<base::Timer> timer);
+  void SetTimerForTest(std::unique_ptr<base::OneShotTimer> timer);
 
  private:
   void StartTimer();
   void OnTimerFired();
 
-  std::unique_ptr<base::Timer> timer_;
+  std::unique_ptr<base::OneShotTimer> timer_;
   base::Closure user_task_;
-  tracked_objects::Location posted_from_;
+  base::Location posted_from_;
   net::BackoffEntry::Policy backoff_policy_ = {};
   std::unique_ptr<net::BackoffEntry> backoff_entry_;
 

@@ -3,8 +3,8 @@
 # found in the LICENSE file.
 
 import("//tools/grit/grit_rule.gni")
+import("//tools/grit/repack.gni")
 
-# GYP version: device/bluetooth/bluetooth_strings.gyp:bluetooth_strings
 grit("strings") {
   source = "../bluetooth_strings.grd"
   outputs = [
@@ -63,5 +63,15 @@ grit("strings") {
     "bluetooth_strings_vi.pak",
     "bluetooth_strings_zh-CN.pak",
     "bluetooth_strings_zh-TW.pak",
+  ]
+}
+
+repack("bluetooth_test_strings") {
+  sources = [
+    "$root_gen_dir/device/bluetooth/strings/bluetooth_strings_en-US.pak",
+  ]
+  output = "$root_out_dir/bluetooth_test_strings.pak"
+  deps = [
+    ":strings",
   ]
 }

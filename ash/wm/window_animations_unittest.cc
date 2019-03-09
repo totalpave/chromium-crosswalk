@@ -4,12 +4,14 @@
 
 #include "ash/wm/window_animations.h"
 
-#include "ash/common/shell_window_ids.h"
-#include "ash/common/wm/window_animation_types.h"
-#include "ash/common/wm/window_state.h"
+#include "ash/public/cpp/shell_window_ids.h"
+#include "ash/public/cpp/window_animation_types.h"
+#include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/wm/window_state_aura.h"
+#include "ash/wm/window_state.h"
+#include "ash/wm/wm_event.h"
 #include "ash/wm/workspace_controller.h"
+#include "base/command_line.h"
 #include "base/time/time.h"
 #include "ui/aura/test/test_windows.h"
 #include "ui/aura/window.h"
@@ -18,16 +20,22 @@
 #include "ui/compositor/layer_animator.h"
 #include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
+#include "ui/keyboard/public/keyboard_switches.h"
 
 using aura::Window;
 using ui::Layer;
 
 namespace ash {
-class WindowAnimationsTest : public ash::test::AshTestBase {
- public:
-  WindowAnimationsTest() {}
 
-  void TearDown() override { AshTestBase::TearDown(); }
+class WindowAnimationsTest : public AshTestBase {
+ public:
+  WindowAnimationsTest() = default;
+
+  void SetUp() override {
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        keyboard::switches::kEnableVirtualKeyboard);
+    AshTestBase::SetUp();
+  }
 
  private:
   DISALLOW_COPY_AND_ASSIGN(WindowAnimationsTest);
@@ -42,7 +50,7 @@ class MinimizeAnimationObserver : public ui::LayerAnimationObserver {
     animator_->AddObserver(this);
     // RemoveObserver is called when the first animation is scheduled and so
     // there should be no need for now to remove it in destructor.
-  };
+  }
   base::TimeDelta duration() { return duration_; }
 
  protected:
@@ -164,9 +172,9 @@ TEST_F(WindowAnimationsTest, CrossFadeToBounds) {
                                        base::TimeDelta::FromSeconds(1));
 }
 
-// Tests that when crossfading from a window which has a transform that the
-// crossfade starts from this transformed size rather than snapping the window
-// to an identity transform and crossfading from there.
+// Tests that when crossfading from a window which has a transform, the cross
+// fading animation should be ignored and the window should set to its desired
+// bounds directly.
 TEST_F(WindowAnimationsTest, CrossFadeToBoundsFromTransform) {
   ui::ScopedAnimationDurationScaleMode test_duration_mode(
       ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
@@ -185,23 +193,13 @@ TEST_F(WindowAnimationsTest, CrossFadeToBoundsFromTransform) {
   // Cross fade to a larger size, as in a maximize animation.
   GetWindowState(window.get())
       ->SetBoundsDirectCrossFade(gfx::Rect(0, 0, 640, 480));
-  // Window's layer has been replaced.
-  EXPECT_NE(old_layer, window->layer());
-  // Original layer stays opaque and stretches to new size.
+  // Window's layer has not been replaced.
+  EXPECT_EQ(old_layer, window->layer());
+  // Original layer stays opaque and set to new size directly.
   EXPECT_EQ(1.0f, old_layer->GetTargetOpacity());
-  EXPECT_EQ("10,10 320x240", old_layer->bounds().ToString());
+  EXPECT_EQ("0,0 640x480", old_layer->bounds().ToString());
+  // Window still has its old transform before crossfading animation.
   EXPECT_EQ(half_size, old_layer->transform());
-
-  // New layer animates in from the old window's transformed size to the
-  // identity transform.
-  EXPECT_EQ(1.0f, window->layer()->GetTargetOpacity());
-  // Set up the transform necessary to start at the old windows transformed
-  // position.
-  gfx::Transform quarter_size_shifted;
-  quarter_size_shifted.Translate(20, 20);
-  quarter_size_shifted.Scale(0.25f, 0.25f);
-  EXPECT_EQ(quarter_size_shifted, window->layer()->transform());
-  EXPECT_EQ(gfx::Transform(), window->layer()->GetTargetTransform());
 }
 
 }  // namespace wm
@@ -280,6 +278,82 @@ TEST_F(WindowAnimationsTest, LockAnimationDuration) {
     window->Show();
     layer->GetAnimator()->StopAnimating();
   }
+}
+
+// Test that a slide out animation slides the window off the screen while
+// modifying the opacity.
+TEST_F(WindowAnimationsTest, SlideOutAnimation) {
+  ui::ScopedAnimationDurationScaleMode test_duration_mode(
+      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+
+  std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithId(0));
+  window->SetBounds(gfx::Rect(0, 0, 100, 100));
+  window->Show();
+  EXPECT_TRUE(window->layer()->visible());
+
+  ::wm::SetWindowVisibilityAnimationType(
+      window.get(), wm::WINDOW_VISIBILITY_ANIMATION_TYPE_FADE_IN_SLIDE_OUT);
+  AnimateOnChildWindowVisibilityChanged(window.get(), false);
+
+  EXPECT_EQ(0.0f, window->layer()->GetTargetOpacity());
+  EXPECT_FALSE(window->layer()->GetTargetVisibility());
+  EXPECT_FALSE(window->layer()->visible());
+  EXPECT_EQ(gfx::Rect(-150, 0, 100, 100), window->layer()->GetTargetBounds());
+}
+
+// Test that a fade in slide out animation fades in.
+TEST_F(WindowAnimationsTest, FadeInAnimation) {
+  ui::ScopedAnimationDurationScaleMode test_duration_mode(
+      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+
+  std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithId(0));
+  window->SetBounds(gfx::Rect(0, 0, 100, 100));
+  window->Hide();
+  EXPECT_FALSE(window->layer()->visible());
+
+  ::wm::SetWindowVisibilityAnimationType(
+      window.get(), wm::WINDOW_VISIBILITY_ANIMATION_TYPE_FADE_IN_SLIDE_OUT);
+  AnimateOnChildWindowVisibilityChanged(window.get(), true);
+
+  EXPECT_EQ(1.0f, window->layer()->GetTargetOpacity());
+  EXPECT_TRUE(window->layer()->GetTargetVisibility());
+  EXPECT_TRUE(window->layer()->visible());
+  EXPECT_EQ(gfx::Rect(0, 0, 100, 100), window->layer()->GetTargetBounds());
+}
+
+TEST_F(WindowAnimationsTest, SlideOutAnimationPlaysTwiceForPipWindow) {
+  ui::ScopedAnimationDurationScaleMode test_duration_mode(
+      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+
+  std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithId(0));
+  window->SetBounds(gfx::Rect(8, 8, 100, 100));
+
+  wm::WindowState* window_state = wm::GetWindowState(window.get());
+  const wm::WMEvent enter_pip(wm::WM_EVENT_PIP);
+  window_state->OnWMEvent(&enter_pip);
+  EXPECT_TRUE(window_state->IsPip());
+
+  window->Show();
+  EXPECT_TRUE(window->layer()->visible());
+  EXPECT_EQ("8,8 100x100", window->layer()->GetTargetBounds().ToString());
+
+  window->Hide();
+  EXPECT_EQ(0.0f, window->layer()->GetTargetOpacity());
+  EXPECT_FALSE(window->layer()->GetTargetVisibility());
+  EXPECT_FALSE(window->layer()->visible());
+  EXPECT_EQ("-142,8 100x100", window->layer()->GetTargetBounds().ToString());
+
+  // Reset the position and try again.
+  window->Show();
+  window->SetBounds(gfx::Rect(8, 8, 100, 100));
+  EXPECT_TRUE(window->layer()->visible());
+  EXPECT_EQ("8,8 100x100", window->layer()->GetTargetBounds().ToString());
+
+  window->Hide();
+  EXPECT_EQ(0.0f, window->layer()->GetTargetOpacity());
+  EXPECT_FALSE(window->layer()->GetTargetVisibility());
+  EXPECT_FALSE(window->layer()->visible());
+  EXPECT_EQ("-142,8 100x100", window->layer()->GetTargetBounds().ToString());
 }
 
 }  // namespace ash

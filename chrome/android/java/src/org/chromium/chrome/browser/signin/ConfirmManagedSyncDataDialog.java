@@ -5,11 +5,12 @@
 package org.chromium.chrome.browser.signin;
 
 import android.app.Dialog;
-import android.app.DialogFragment;
-import android.app.FragmentManager;
 import android.content.DialogInterface;
 import android.content.res.Resources;
 import android.os.Bundle;
+import android.support.v4.app.DialogFragment;
+import android.support.v4.app.FragmentManager;
+import android.support.v4.app.FragmentTransaction;
 import android.support.v7.app.AlertDialog;
 
 import org.chromium.base.VisibleForTesting;
@@ -29,12 +30,12 @@ public class ConfirmManagedSyncDataDialog extends DialogFragment
         /**
          * The user has accepted the dialog.
          */
-        public void onConfirm();
+        void onConfirm();
 
         /**
          * The user has cancelled the dialog either through a negative response or by dismissing it.
          */
-        public void onCancel();
+        void onCancel();
     }
 
     @VisibleForTesting
@@ -108,7 +109,9 @@ public class ConfirmManagedSyncDataDialog extends DialogFragment
                 newInstance(title, description, positiveButton, negativeButton);
 
         confirmSync.setListener(callback);
-        confirmSync.show(fragmentManager, CONFIRM_IMPORT_SYNC_DATA_DIALOG_TAG);
+        FragmentTransaction transaction = fragmentManager.beginTransaction();
+        transaction.add(confirmSync, CONFIRM_IMPORT_SYNC_DATA_DIALOG_TAG);
+        transaction.commitAllowingStateLoss();
     }
 
     private static ConfirmManagedSyncDataDialog newInstance(String title, String description,
@@ -130,7 +133,7 @@ public class ConfirmManagedSyncDataDialog extends DialogFragment
         String positiveButton = getArguments().getString(KEY_POSITIVE_BUTTON);
         String negativeButton = getArguments().getString(KEY_NEGATIVE_BUTTON);
 
-        return new AlertDialog.Builder(getActivity(), R.style.AlertDialogTheme)
+        return new AlertDialog.Builder(getActivity(), R.style.Theme_Chromium_AlertDialog)
                 .setTitle(title)
                 .setMessage(description)
                 .setPositiveButton(positiveButton, this)

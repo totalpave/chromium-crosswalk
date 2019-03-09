@@ -6,6 +6,7 @@
 
 import os
 import subprocess
+import sys
 import xml.dom.minidom
 
 
@@ -13,10 +14,22 @@ CHROMIUM_SRC = os.path.normpath(
     os.path.join(os.path.dirname(__file__),
                  os.pardir, os.pardir, os.pardir))
 CHECKSTYLE_ROOT = os.path.join(CHROMIUM_SRC, 'third_party', 'checkstyle',
-                               'checkstyle-6.5-all.jar')
+                               'checkstyle-8.0-all.jar')
+
+
+def FormatCheckstyleOutput(checkstyle_output):
+  lines = checkstyle_output.splitlines(True)
+  if 'Checkstyle ends with' in lines[-1]:
+    return ''.join(lines[:-1])
+  else:
+    return checkstyle_output
 
 
 def RunCheckstyle(input_api, output_api, style_file, black_list=None):
+  # Android toolchain is only available on Linux.
+  if not sys.platform.startswith('linux'):
+    return []
+
   if not os.path.exists(style_file):
     file_error = ('  Java checkstyle configuration file is missing: '
                   + style_file)
@@ -49,8 +62,10 @@ def RunCheckstyle(input_api, output_api, style_file, black_list=None):
   result_errors = []
   result_warnings = []
 
+  formatted_checkstyle_output = FormatCheckstyleOutput(stdout)
+
   local_path = input_api.PresubmitLocalPath()
-  root = xml.dom.minidom.parseString(stdout)
+  root = xml.dom.minidom.parseString(formatted_checkstyle_output)
   for fileElement in root.getElementsByTagName('file'):
     fileName = fileElement.attributes['name'].value
     fileName = os.path.relpath(fileName, local_path)

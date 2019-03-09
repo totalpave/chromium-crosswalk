@@ -56,10 +56,6 @@ config("afl-tool") {
     "-Wno-sign-compare",
     "-Wno-pointer-sign",
 
-    # TODO: Patch afl so the version is defined in source code and not the
-    # Makefile.
-    "-DVERSION=\"2.14b\"",
-
     # afl_docs copies docs/ to this location.
     "-DDOC_PATH=\"$root_build_dir/afl/docs/\"",
 
@@ -99,6 +95,8 @@ executable("afl-fuzz") {
   configs -= [ "//build/config/sanitizers:default_sanitizer_flags" ]
   configs += [ ":afl-tool" ]
 
+  no_default_deps = true
+
   sources = [
     "src/afl-fuzz.c",
   ]
@@ -109,6 +107,8 @@ executable("afl-tmin") {
   configs -= [ "//build/config/sanitizers:default_sanitizer_flags" ]
   configs += [ ":afl-tool" ]
 
+  no_default_deps = true
+
   sources = [
     "src/afl-tmin.c",
   ]
@@ -118,6 +118,8 @@ executable("afl-tmin") {
 executable("afl-showmap") {
   configs -= [ "//build/config/sanitizers:default_sanitizer_flags" ]
   configs += [ ":afl-tool" ]
+
+  no_default_deps = true
 
   sources = [
     "src/afl-showmap.c",

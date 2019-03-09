@@ -10,9 +10,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/password_manager/core/browser/password_bubble_experiment.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
 #include "jni/AutoSigninSnackbarController_jni.h"
 #include "ui/base/l10n/l10n_util.h"
+
+using base::android::ScopedJavaLocalRef;
 
 void ShowAutoSigninPrompt(content::WebContents* web_contents,
                           const base::string16& username) {
@@ -26,10 +29,6 @@ void ShowAutoSigninPrompt(content::WebContents* web_contents,
     return;
   ScopedJavaLocalRef<jstring> java_message =
       base::android::ConvertUTF16ToJavaString(env, message);
-  Java_AutoSigninSnackbarController_showSnackbar(
-      env, tab->GetJavaObject().obj(), java_message.obj());
-}
-
-bool RegisterAutoSigninSnackbarController(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+  Java_AutoSigninSnackbarController_showSnackbar(env, tab->GetJavaObject(),
+                                                 java_message);
 }

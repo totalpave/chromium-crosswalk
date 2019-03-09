@@ -7,16 +7,17 @@
  * which is given by a parameter.
  * @param {string} filename Name of video file to be checked. This must be same
  *     as entry.name() of the video file.
- * @param {function(!HTMLElement):boolean} testFunction
+ * @param {function(!Element):boolean} testFunction
  */
 function testElement(filename, testFunction) {
-  for (var appId in window.background.appWindows) {
-    var contentWindow = window.background.appWindows[appId].contentWindow;
+  for (var appId in window.appWindows) {
+    var contentWindow = window.appWindows[appId].contentWindow;
     if (contentWindow &&
         contentWindow.document.title === filename) {
       var element = contentWindow.document.querySelector('video');
-      if (element && testFunction(element))
+      if (element && testFunction(element)) {
         return true;
+      }
     }
   }
   return false;
@@ -45,6 +46,17 @@ test.util.sync.isMuted = function(filename) {
 };
 
 /**
+ * Returns if the video has subtitle attached.
+ *
+ * @param {string} filename Name of video file to be checked. This must be same
+ *     as entry.name() of the video file.
+ * @return {boolean} True if the video has subtitle, false otherwise.
+ */
+test.util.sync.hasSubtitle = function(filename) {
+  return testElement(filename, element => element.textTracks.length > 0);
+};
+
+/**
  * Loads the mock of the cast extension.
  *
  * @param {Window} contentWindow Video player window to be chacked toOB.
@@ -58,7 +70,7 @@ test.util.sync.loadMockCastExtension = function(contentWindow) {
 };
 
 /**
- * Opens the main Files.app's window and waits until it is ready.
+ * Opens the main Files app's window and waits until it is ready.
  *
  * @param {!Array<string>} urls URLs to be opened.
  * @param {function(string)} callback Completion callback with the new window's

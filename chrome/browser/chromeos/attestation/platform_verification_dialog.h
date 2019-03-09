@@ -8,8 +8,9 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/strings/string16.h"
+#include "content/public/browser/reload_type.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "ui/views/controls/styled_label_listener.h"
+#include "ui/views/controls/button/image_button.h"
 #include "ui/views/window/dialog_delegate.h"
 
 namespace content {
@@ -21,7 +22,7 @@ namespace attestation {
 
 // A tab-modal dialog UI to ask the user for PlatformVerificationFlow.
 class PlatformVerificationDialog : public views::DialogDelegateView,
-                                   public views::StyledLabelListener,
+                                   public views::ButtonListener,
                                    public content::WebContentsObserver {
  public:
   enum ConsentResponse {
@@ -49,6 +50,7 @@ class PlatformVerificationDialog : public views::DialogDelegateView,
                              const ConsentCallback& callback);
 
   // views::DialogDelegate:
+  View* CreateExtraView() override;
   bool Cancel() override;
   bool Accept() override;
   bool Close() override;
@@ -58,20 +60,18 @@ class PlatformVerificationDialog : public views::DialogDelegateView,
   ui::ModalType GetModalType() const override;
 
   // views::View:
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
 
-  // views::StyledLabelListener:
-  void StyledLabelLinkClicked(views::StyledLabel* label,
-                              const gfx::Range& range,
-                              int event_flags) override;
+  // views::ButtonListener:
+  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
 
   // content::WebContentsObserver:
-  void DidStartNavigationToPendingEntry(
-      const GURL& url,
-      content::NavigationController::ReloadType reload_type) override;
+  void DidStartNavigation(
+      content::NavigationHandle* navigation_handle) override;
 
   base::string16 domain_;
   ConsentCallback callback_;
+  views::ImageButton* learn_more_button_;
 
   DISALLOW_COPY_AND_ASSIGN(PlatformVerificationDialog);
 };

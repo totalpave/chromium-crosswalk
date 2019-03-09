@@ -4,229 +4,59 @@
 
 #include "components/arc/arc_bridge_service.h"
 
-#include <utility>
-
-#include "base/command_line.h"
-#include "base/sequenced_task_runner.h"
-#include "base/threading/thread_task_runner_handle.h"
-#include "chromeos/chromeos_switches.h"
+// These header is necessary for instantiation of ConnectionHolder.
+#include "components/arc/common/accessibility_helper.mojom.h"
+#include "components/arc/common/app.mojom.h"
+#include "components/arc/common/app_permissions.mojom.h"
+#include "components/arc/common/appfuse.mojom.h"
+#include "components/arc/common/arc_bridge.mojom.h"
+#include "components/arc/common/audio.mojom.h"
+#include "components/arc/common/auth.mojom.h"
+#include "components/arc/common/backup_settings.mojom.h"
+#include "components/arc/common/bluetooth.mojom.h"
+#include "components/arc/common/boot_phase_monitor.mojom.h"
+#include "components/arc/common/cast_receiver.mojom.h"
+#include "components/arc/common/cert_store.mojom.h"
+#include "components/arc/common/clipboard.mojom.h"
+#include "components/arc/common/crash_collector.mojom.h"
+#include "components/arc/common/disk_quota.mojom.h"
+#include "components/arc/common/enterprise_reporting.mojom.h"
+#include "components/arc/common/file_system.mojom.h"
+#include "components/arc/common/ime.mojom.h"
+#include "components/arc/common/input_method_manager.mojom.h"
+#include "components/arc/common/intent_helper.mojom.h"
+#include "components/arc/common/kiosk.mojom.h"
+#include "components/arc/common/lock_screen.mojom.h"
+#include "components/arc/common/media_session.mojom.h"
+#include "components/arc/common/metrics.mojom.h"
+#include "components/arc/common/midis.mojom.h"
+#include "components/arc/common/net.mojom.h"
+#include "components/arc/common/obb_mounter.mojom.h"
+#include "components/arc/common/oemcrypto.mojom.h"
+#include "components/arc/common/pip.mojom.h"
+#include "components/arc/common/policy.mojom.h"
+#include "components/arc/common/power.mojom.h"
+#include "components/arc/common/print.mojom.h"
+#include "components/arc/common/process.mojom.h"
+#include "components/arc/common/property.mojom.h"
+#include "components/arc/common/rotation_lock.mojom.h"
+#include "components/arc/common/screen_capture.mojom.h"
+#include "components/arc/common/storage_manager.mojom.h"
+#include "components/arc/common/timer.mojom.h"
+#include "components/arc/common/tracing.mojom.h"
+#include "components/arc/common/tts.mojom.h"
+#include "components/arc/common/usb_host.mojom.h"
+#include "components/arc/common/video.mojom.h"
+#include "components/arc/common/voice_interaction_arc_home.mojom.h"
+#include "components/arc/common/voice_interaction_framework.mojom.h"
+#include "components/arc/common/volume_mounter.mojom.h"
+#include "components/arc/common/wake_lock.mojom.h"
+#include "components/arc/common/wallpaper.mojom.h"
 
 namespace arc {
 
-namespace {
+ArcBridgeService::ArcBridgeService() = default;
 
-// Weak pointer.  This class is owned by ArcServiceManager.
-ArcBridgeService* g_arc_bridge_service = nullptr;
-
-}  // namespace
-
-ArcBridgeService::ArcBridgeService()
-    : available_(false),
-      state_(State::STOPPED),
-      stop_reason_(StopReason::SHUTDOWN),
-      weak_factory_(this) {
-  DCHECK(!g_arc_bridge_service);
-  g_arc_bridge_service = this;
-}
-
-ArcBridgeService::~ArcBridgeService() {
-  DCHECK(CalledOnValidThread());
-  DCHECK(state() == State::STOPPING || state() == State::STOPPED);
-  DCHECK(g_arc_bridge_service == this);
-  g_arc_bridge_service = nullptr;
-}
-
-// static
-ArcBridgeService* ArcBridgeService::Get() {
-  if (!g_arc_bridge_service) {
-    // ArcBridgeService may be indirectly referenced in unit tests where
-    // ArcBridgeService is optional.
-    LOG(ERROR) << "ArcBridgeService is not ready.";
-    return nullptr;
-  }
-  DCHECK(g_arc_bridge_service->CalledOnValidThread());
-  return g_arc_bridge_service;
-}
-
-// static
-bool ArcBridgeService::GetEnabled(const base::CommandLine* command_line) {
-  return command_line->HasSwitch(chromeos::switches::kEnableArc);
-}
-
-void ArcBridgeService::AddObserver(Observer* observer) {
-  DCHECK(CalledOnValidThread());
-  observer_list_.AddObserver(observer);
-}
-
-void ArcBridgeService::RemoveObserver(Observer* observer) {
-  DCHECK(CalledOnValidThread());
-  observer_list_.RemoveObserver(observer);
-}
-
-void ArcBridgeService::OnAppInstanceReady(mojom::AppInstancePtr app_ptr) {
-  DCHECK(CalledOnValidThread());
-  app_.OnInstanceReady(std::move(app_ptr));
-}
-
-void ArcBridgeService::OnAudioInstanceReady(mojom::AudioInstancePtr audio_ptr) {
-  DCHECK(CalledOnValidThread());
-  audio_.OnInstanceReady(std::move(audio_ptr));
-}
-
-void ArcBridgeService::OnAuthInstanceReady(mojom::AuthInstancePtr auth_ptr) {
-  DCHECK(CalledOnValidThread());
-  auth_.OnInstanceReady(std::move(auth_ptr));
-}
-
-void ArcBridgeService::OnBluetoothInstanceReady(
-    mojom::BluetoothInstancePtr bluetooth_ptr) {
-  DCHECK(CalledOnValidThread());
-  bluetooth_.OnInstanceReady(std::move(bluetooth_ptr));
-}
-
-void ArcBridgeService::OnClipboardInstanceReady(
-    mojom::ClipboardInstancePtr clipboard_ptr) {
-  DCHECK(CalledOnValidThread());
-  clipboard_.OnInstanceReady(std::move(clipboard_ptr));
-}
-
-void ArcBridgeService::OnCrashCollectorInstanceReady(
-    mojom::CrashCollectorInstancePtr crash_collector_ptr) {
-  DCHECK(CalledOnValidThread());
-  crash_collector_.OnInstanceReady(std::move(crash_collector_ptr));
-}
-
-void ArcBridgeService::OnEnterpriseReportingInstanceReady(
-    mojom::EnterpriseReportingInstancePtr enterprise_reporting_ptr) {
-  enterprise_reporting_.OnInstanceReady(std::move(enterprise_reporting_ptr));
-}
-
-void ArcBridgeService::OnFileSystemInstanceReady(
-    mojom::FileSystemInstancePtr file_system_ptr) {
-  DCHECK(CalledOnValidThread());
-  file_system_.OnInstanceReady(std::move(file_system_ptr));
-}
-
-void ArcBridgeService::OnImeInstanceReady(mojom::ImeInstancePtr ime_ptr) {
-  DCHECK(CalledOnValidThread());
-  ime_.OnInstanceReady(std::move(ime_ptr));
-}
-
-void ArcBridgeService::OnIntentHelperInstanceReady(
-    mojom::IntentHelperInstancePtr intent_helper_ptr) {
-  DCHECK(CalledOnValidThread());
-  intent_helper_.OnInstanceReady(std::move(intent_helper_ptr));
-}
-
-void ArcBridgeService::OnMetricsInstanceReady(
-    mojom::MetricsInstancePtr metrics_ptr) {
-  DCHECK(CalledOnValidThread());
-  metrics_.OnInstanceReady(std::move(metrics_ptr));
-}
-
-void ArcBridgeService::OnNetInstanceReady(mojom::NetInstancePtr net_ptr) {
-  DCHECK(CalledOnValidThread());
-  net_.OnInstanceReady(std::move(net_ptr));
-}
-
-void ArcBridgeService::OnNotificationsInstanceReady(
-    mojom::NotificationsInstancePtr notifications_ptr) {
-  DCHECK(CalledOnValidThread());
-  notifications_.OnInstanceReady(std::move(notifications_ptr));
-}
-
-void ArcBridgeService::OnObbMounterInstanceReady(
-    mojom::ObbMounterInstancePtr obb_mounter_ptr) {
-  DCHECK(CalledOnValidThread());
-  obb_mounter_.OnInstanceReady(std::move(obb_mounter_ptr));
-}
-
-void ArcBridgeService::OnPolicyInstanceReady(
-    mojom::PolicyInstancePtr policy_ptr) {
-  DCHECK(CalledOnValidThread());
-  policy_.OnInstanceReady(std::move(policy_ptr));
-}
-
-void ArcBridgeService::OnPowerInstanceReady(mojom::PowerInstancePtr power_ptr) {
-  DCHECK(CalledOnValidThread());
-  power_.OnInstanceReady(std::move(power_ptr));
-}
-
-void ArcBridgeService::OnProcessInstanceReady(
-    mojom::ProcessInstancePtr process_ptr) {
-  DCHECK(CalledOnValidThread());
-  process_.OnInstanceReady(std::move(process_ptr));
-}
-
-void ArcBridgeService::OnStorageManagerInstanceReady(
-    mojom::StorageManagerInstancePtr storage_manager_ptr) {
-  DCHECK(CalledOnValidThread());
-  storage_manager_.OnInstanceReady(std::move(storage_manager_ptr));
-}
-
-void ArcBridgeService::OnVideoInstanceReady(mojom::VideoInstancePtr video_ptr) {
-  DCHECK(CalledOnValidThread());
-  video_.OnInstanceReady(std::move(video_ptr));
-}
-
-void ArcBridgeService::OnWindowManagerInstanceReady(
-    mojom::WindowManagerInstancePtr window_manager_ptr) {
-  DCHECK(CalledOnValidThread());
-  window_manager_.OnInstanceReady(std::move(window_manager_ptr));
-}
-
-void ArcBridgeService::SetState(State state) {
-  DCHECK(CalledOnValidThread());
-  // DCHECK on enum classes not supported.
-  DCHECK(state_ != state);
-  state_ = state;
-  VLOG(2) << "State: " << static_cast<uint32_t>(state_);
-  FOR_EACH_OBSERVER(Observer, observer_list(), OnStateChanged(state_));
-  if (state_ == State::READY)
-    FOR_EACH_OBSERVER(Observer, observer_list(), OnBridgeReady());
-  else if (state == State::STOPPED)
-    FOR_EACH_OBSERVER(Observer, observer_list(), OnBridgeStopped(stop_reason_));
-}
-
-void ArcBridgeService::SetAvailable(bool available) {
-  DCHECK(CalledOnValidThread());
-  DCHECK(available_ != available);
-  available_ = available;
-  FOR_EACH_OBSERVER(Observer, observer_list(), OnAvailableChanged(available_));
-}
-
-void ArcBridgeService::SetStopReason(StopReason stop_reason) {
-  DCHECK(CalledOnValidThread());
-  stop_reason_ = stop_reason;
-}
-
-bool ArcBridgeService::CalledOnValidThread() {
-  return thread_checker_.CalledOnValidThread();
-}
-
-void ArcBridgeService::CloseAllChannels() {
-  // Call all the error handlers of all the channels to both close the channel
-  // and notify any observers that the channel is closed.
-  app_.CloseChannel();
-  audio_.CloseChannel();
-  auth_.CloseChannel();
-  bluetooth_.CloseChannel();
-  clipboard_.CloseChannel();
-  crash_collector_.CloseChannel();
-  enterprise_reporting_.CloseChannel();
-  file_system_.CloseChannel();
-  ime_.CloseChannel();
-  intent_helper_.CloseChannel();
-  metrics_.CloseChannel();
-  net_.CloseChannel();
-  notifications_.CloseChannel();
-  obb_mounter_.CloseChannel();
-  policy_.CloseChannel();
-  power_.CloseChannel();
-  process_.CloseChannel();
-  storage_manager_.CloseChannel();
-  video_.CloseChannel();
-  window_manager_.CloseChannel();
-}
+ArcBridgeService::~ArcBridgeService() = default;
 
 }  // namespace arc

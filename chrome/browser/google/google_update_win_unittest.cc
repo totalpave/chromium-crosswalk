@@ -5,14 +5,14 @@
 #include "chrome/browser/google/google_update_win.h"
 
 #include <windows.h>
-#include <atlbase.h>
-#include <atlcom.h>
+
+#include <wrl/client.h>
 
 #include <memory>
-#include <queue>
 
 #include "base/base_paths.h"
 #include "base/bind.h"
+#include "base/containers/queue.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
@@ -23,10 +23,10 @@
 #include "base/test/test_simple_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/version.h"
+#include "base/win/atl.h"
 #include "base/win/registry.h"
-#include "base/win/scoped_comptr.h"
 #include "chrome/common/chrome_version.h"
-#include "chrome/installer/util/browser_distribution.h"
+#include "chrome/install_static/test/scoped_install_details.h"
 #include "chrome/installer/util/google_update_settings.h"
 #include "chrome/installer/util/helper.h"
 #include "google_update/google_update_idl.h"
@@ -75,7 +75,7 @@ class GoogleUpdateFactory {
  public:
   virtual ~GoogleUpdateFactory() {}
   virtual HRESULT Create(
-      base::win::ScopedComPtr<IGoogleUpdate3Web>* google_update) = 0;
+      Microsoft::WRL::ComPtr<IGoogleUpdate3Web>* google_update) = 0;
 };
 
 class MockCurrentState : public CComObjectRootEx<CComSingleThreadModel>,
@@ -229,6 +229,12 @@ class MockApp : public CComObjectRootEx<CComSingleThreadModel>, public IAppWeb {
   MOCK_METHOD0_WITH_CALLTYPE(STDMETHODCALLTYPE,
                              uninstall,
                              HRESULT());
+  MOCK_METHOD1_WITH_CALLTYPE(STDMETHODCALLTYPE,
+                             get_serverInstallDataIndex,
+                             HRESULT(BSTR *));
+  MOCK_METHOD1_WITH_CALLTYPE(STDMETHODCALLTYPE,
+                             put_serverInstallDataIndex,
+                             HRESULT(BSTR));
 
   // IDispatch:
   MOCK_METHOD1_WITH_CALLTYPE(STDMETHODCALLTYPE,
@@ -318,7 +324,7 @@ class MockApp : public CComObjectRootEx<CComSingleThreadModel>, public IAppWeb {
   }
 
   // The states returned by the MockApp when probed.
-  std::queue<CComObject<MockCurrentState>*> states_;
+  base::queue<CComObject<MockCurrentState>*> states_;
 
   // A gmock sequence under which a series of get_CurrentState expectations are
   // evaluated.
@@ -489,7 +495,7 @@ class MockGoogleUpdate : public CComObjectRootEx<CComSingleThreadModel>,
 class MockGoogleUpdateFactory : public GoogleUpdateFactory {
  public:
   MockGoogleUpdateFactory() {}
-  MOCK_METHOD1(Create, HRESULT(base::win::ScopedComPtr<IGoogleUpdate3Web>*));
+  MOCK_METHOD1(Create, HRESULT(Microsoft::WRL::ComPtr<IGoogleUpdate3Web>*));
 
   // Returns a mock IGoogleUpdate3Web object that will be returned by the
   // factory.
@@ -531,7 +537,8 @@ class GoogleUpdateWinTest : public ::testing::TestWithParam<bool> {
   GoogleUpdateWinTest()
       : task_runner_(new base::TestSimpleTaskRunner()),
         task_runner_handle_(task_runner_),
-        system_level_install_(GetParam()) {}
+        system_level_install_(GetParam()),
+        scoped_install_details_(system_level_install_, 0) {}
 
   void SetUp() override {
     ::testing::TestWithParam<bool>::SetUp();
@@ -539,9 +546,9 @@ class GoogleUpdateWinTest : public ::testing::TestWithParam<bool> {
     // Override FILE_EXE so that it looks like the test is running from the
     // standard install location for this mode (system-level or user-level).
     base::FilePath file_exe;
-    ASSERT_TRUE(PathService::Get(base::FILE_EXE, &file_exe));
-    base::FilePath install_dir(installer::GetChromeInstallPath(
-        system_level_install_, BrowserDistribution::GetDistribution()));
+    ASSERT_TRUE(base::PathService::Get(base::FILE_EXE, &file_exe));
+    base::FilePath install_dir(
+        installer::GetChromeInstallPath(system_level_install_));
     file_exe_override_.reset(new base::ScopedPathOverride(
         base::FILE_EXE, install_dir.Append(file_exe.BaseName()),
         true /* is_absolute */, false /* create */));
@@ -549,21 +556,23 @@ class GoogleUpdateWinTest : public ::testing::TestWithParam<bool> {
     // Override these paths so that they can be found after the registry
     // override manager is in place.
     base::FilePath temp;
-    PathService::Get(base::DIR_PROGRAM_FILES, &temp);
+    base::PathService::Get(base::DIR_PROGRAM_FILES, &temp);
     program_files_override_.reset(
         new base::ScopedPathOverride(base::DIR_PROGRAM_FILES, temp));
-    PathService::Get(base::DIR_PROGRAM_FILESX86, &temp);
+    base::PathService::Get(base::DIR_PROGRAM_FILESX86, &temp);
     program_files_x86_override_.reset(
         new base::ScopedPathOverride(base::DIR_PROGRAM_FILESX86, temp));
-    PathService::Get(base::DIR_LOCAL_APP_DATA, &temp);
+    base::PathService::Get(base::DIR_LOCAL_APP_DATA, &temp);
     local_app_data_override_.reset(
         new base::ScopedPathOverride(base::DIR_LOCAL_APP_DATA, temp));
 
     // Override the registry so that tests can freely push state to it.
-    registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER);
-    registry_override_manager_.OverrideRegistry(HKEY_LOCAL_MACHINE);
+    ASSERT_NO_FATAL_FAILURE(
+        registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER));
+    ASSERT_NO_FATAL_FAILURE(
+        registry_override_manager_.OverrideRegistry(HKEY_LOCAL_MACHINE));
 
-    // Chrome is installed as multi-install.
+    // Chrome is installed.
     const HKEY root =
         system_level_install_ ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
     base::win::RegKey key(root, kClients, KEY_WRITE | KEY_WOW64_32KEY);
@@ -577,8 +586,7 @@ class GoogleUpdateWinTest : public ::testing::TestWithParam<bool> {
     ASSERT_EQ(ERROR_SUCCESS,
               key.CreateKey(kChromeGuid, KEY_WRITE | KEY_WOW64_32KEY));
     ASSERT_EQ(ERROR_SUCCESS,
-              key.WriteValue(L"UninstallArguments",
-                             L"--uninstall --multi-install --chrome"));
+              key.WriteValue(L"UninstallArguments", L"--uninstall"));
 
     // Provide an IGoogleUpdate3Web class factory so that this test can provide
     // a mocked-out instance.
@@ -593,6 +601,8 @@ class GoogleUpdateWinTest : public ::testing::TestWithParam<bool> {
                                       current_version.components()[1],
                                       current_version.components()[2] + 1,
                                       current_version.components()[3]);
+
+    SetUpdateDriverTaskRunnerForTesting(task_runner_.get());
   }
 
   // Creates app bundle and app mocks that will be used to simulate Google
@@ -602,7 +612,7 @@ class GoogleUpdateWinTest : public ::testing::TestWithParam<bool> {
     CComObject<MockGoogleUpdate>* google_update =
         mock_google_update_factory_.MakeServerMock();
     CComObject<MockAppBundle>* app_bundle = google_update->MakeAppBundle();
-    CComObject<MockApp>* app = app_bundle->MakeApp(kChromeBinariesGuid);
+    CComObject<MockApp>* app = app_bundle->MakeApp(kChromeGuid);
 
     if (mock_app_bundle)
       *mock_app_bundle = app_bundle;
@@ -611,6 +621,7 @@ class GoogleUpdateWinTest : public ::testing::TestWithParam<bool> {
   }
 
   void TearDown() override {
+    SetUpdateDriverTaskRunnerForTesting(nullptr);
     // Remove the test's IGoogleUpdate on-demand update class factory.
     SetGoogleUpdateFactoryForTesting(GoogleUpdate3ClassFactory());
     ::testing::TestWithParam<bool>::TearDown();
@@ -619,11 +630,11 @@ class GoogleUpdateWinTest : public ::testing::TestWithParam<bool> {
   static const base::char16 kClients[];
   static const base::char16 kClientState[];
   static const base::char16 kChromeGuid[];
-  static const base::char16 kChromeBinariesGuid[];
 
   scoped_refptr<base::TestSimpleTaskRunner> task_runner_;
   base::ThreadTaskRunnerHandle task_runner_handle_;
   bool system_level_install_;
+  install_static::ScopedInstallDetails scoped_install_details_;
   std::unique_ptr<base::ScopedPathOverride> file_exe_override_;
   std::unique_ptr<base::ScopedPathOverride> program_files_override_;
   std::unique_ptr<base::ScopedPathOverride> program_files_x86_override_;
@@ -653,8 +664,6 @@ const base::char16 GoogleUpdateWinTest::kClientState[] =
     L"Software\\Google\\Update\\ClientState";
 const base::char16 GoogleUpdateWinTest::kChromeGuid[] =
     L"{8A69D345-D564-463c-AFF1-A69D9E530F96}";
-const base::char16 GoogleUpdateWinTest::kChromeBinariesGuid[] =
-    L"{4DC8B4CA-1BDA-483e-B5FA-D3C12E15B62D}";
 
 // Test that an update check fails with the proper error code if Chrome isn't in
 // one of the expected install directories.
@@ -663,8 +672,8 @@ TEST_P(GoogleUpdateWinTest, InvalidInstallDirectory) {
   // non-standard location.
   base::FilePath file_exe;
   base::FilePath dir_temp;
-  ASSERT_TRUE(PathService::Get(base::FILE_EXE, &file_exe));
-  ASSERT_TRUE(PathService::Get(base::DIR_TEMP, &dir_temp));
+  ASSERT_TRUE(base::PathService::Get(base::FILE_EXE, &file_exe));
+  ASSERT_TRUE(base::PathService::Get(base::DIR_TEMP, &dir_temp));
   file_exe_override_.reset();
   file_exe_override_.reset(new base::ScopedPathOverride(
       base::FILE_EXE, dir_temp.Append(file_exe.BaseName()),
@@ -672,7 +681,7 @@ TEST_P(GoogleUpdateWinTest, InvalidInstallDirectory) {
 
   EXPECT_CALL(mock_update_check_delegate_,
               OnError(CANNOT_UPGRADE_CHROME_IN_THIS_DIRECTORY, _, _));
-  BeginUpdateCheck(task_runner_, std::string(), false, 0,
+  BeginUpdateCheck(std::string(), false, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -686,7 +695,7 @@ TEST_P(GoogleUpdateWinTest, NoGoogleUpdateForCheck) {
   // Expect the appropriate error when the on-demand class cannot be created.
   EXPECT_CALL(mock_update_check_delegate_,
               OnError(GOOGLE_UPDATE_ONDEMAND_CLASS_NOT_FOUND, _, _));
-  BeginUpdateCheck(task_runner_, std::string(), false, 0,
+  BeginUpdateCheck(std::string(), false, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -699,7 +708,7 @@ TEST_P(GoogleUpdateWinTest, NoGoogleUpdateForUpgrade) {
   // Expect the appropriate error when the on-demand class cannot be created.
   EXPECT_CALL(mock_update_check_delegate_,
               OnError(GOOGLE_UPDATE_ONDEMAND_CLASS_NOT_FOUND, _, _));
-  BeginUpdateCheck(task_runner_, std::string(), true, 0,
+  BeginUpdateCheck(std::string(), true, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -716,7 +725,7 @@ TEST_P(GoogleUpdateWinTest, FailUpdateCheck) {
 
   EXPECT_CALL(mock_update_check_delegate_,
               OnError(GOOGLE_UPDATE_ONDEMAND_CLASS_REPORTED_ERROR, _, _));
-  BeginUpdateCheck(task_runner_, std::string(), false, 0,
+  BeginUpdateCheck(std::string(), false, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -741,7 +750,7 @@ TEST_P(GoogleUpdateWinTest, UpdatesDisabledByPolicy) {
 
   EXPECT_CALL(mock_update_check_delegate_,
               OnError(GOOGLE_UPDATE_DISABLED_BY_POLICY, _, _));
-  BeginUpdateCheck(task_runner_, std::string(), false, 0,
+  BeginUpdateCheck(std::string(), false, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -767,7 +776,7 @@ TEST_P(GoogleUpdateWinTest, ManualUpdatesDisabledByPolicy) {
 
   EXPECT_CALL(mock_update_check_delegate_,
               OnError(GOOGLE_UPDATE_DISABLED_BY_POLICY_AUTO_ONLY, _, _));
-  BeginUpdateCheck(task_runner_, std::string(), false, 0,
+  BeginUpdateCheck(std::string(), false, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -788,7 +797,7 @@ TEST_P(GoogleUpdateWinTest, UpdateCheckNoUpdate) {
 
   EXPECT_CALL(mock_update_check_delegate_,
               OnUpdateCheckComplete(IsEmpty()));  // new_version
-  BeginUpdateCheck(task_runner_, std::string(), false, 0,
+  BeginUpdateCheck(std::string(), false, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -809,7 +818,7 @@ TEST_P(GoogleUpdateWinTest, UpdateCheckUpdateAvailable) {
 
   EXPECT_CALL(mock_update_check_delegate_,
               OnUpdateCheckComplete(StrEq(new_version_)));
-  BeginUpdateCheck(task_runner_, std::string(), false, 0,
+  BeginUpdateCheck(std::string(), false, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -854,7 +863,7 @@ TEST_P(GoogleUpdateWinTest, UpdateInstalled) {
     EXPECT_CALL(mock_update_check_delegate_,
                 OnUpgradeComplete(StrEq(new_version_)));
   }
-  BeginUpdateCheck(task_runner_, std::string(), true, 0,
+  BeginUpdateCheck(std::string(), true, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -905,7 +914,7 @@ TEST_P(GoogleUpdateWinTest, UpdateFailed) {
                 OnError(GOOGLE_UPDATE_ERROR_UPDATING, HasSubstr(error),
                         StrEq(new_version_)));
   }
-  BeginUpdateCheck(task_runner_, std::string(), true, 0,
+  BeginUpdateCheck(std::string(), true, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -920,12 +929,12 @@ TEST_P(GoogleUpdateWinTest, RetryAfterExternalUpdaterError) {
   // The first attempt will fail in createInstalledApp indicating that an update
   // is already in progress.
   Sequence bundle_seq;
-  EXPECT_CALL(*mock_app_bundle, createInstalledApp(StrEq(kChromeBinariesGuid)))
+  EXPECT_CALL(*mock_app_bundle, createInstalledApp(StrEq(kChromeGuid)))
       .InSequence(bundle_seq)
       .WillOnce(Return(GOOPDATE_E_APP_USING_EXTERNAL_UPDATER));
 
   // Expect a retry on the same instance.
-  EXPECT_CALL(*mock_app_bundle, createInstalledApp(StrEq(kChromeBinariesGuid)))
+  EXPECT_CALL(*mock_app_bundle, createInstalledApp(StrEq(kChromeGuid)))
       .InSequence(bundle_seq)
       .WillOnce(Return(S_OK));
 
@@ -946,7 +955,7 @@ TEST_P(GoogleUpdateWinTest, RetryAfterExternalUpdaterError) {
   // Expect the update check to succeed.
   EXPECT_CALL(mock_update_check_delegate_,
               OnUpdateCheckComplete(IsEmpty()));  // new_version
-  BeginUpdateCheck(task_runner_, std::string(), false, 0,
+  BeginUpdateCheck(std::string(), false, 0,
                    mock_update_check_delegate_.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
@@ -1006,13 +1015,13 @@ TEST_P(GoogleUpdateWinTest, UpdateInstalledMultipleDelegates) {
     EXPECT_CALL(mock_update_check_delegate_2,
                 OnUpgradeComplete(StrEq(new_version_)));
   }
-  BeginUpdateCheck(task_runner_, std::string(), true, 0,
+  BeginUpdateCheck(std::string(), true, 0,
                    mock_update_check_delegate_.AsWeakPtr());
-  BeginUpdateCheck(task_runner_, std::string(), true, 0,
+  BeginUpdateCheck(std::string(), true, 0,
                    mock_update_check_delegate_2.AsWeakPtr());
   task_runner_->RunUntilIdle();
 }
 
-INSTANTIATE_TEST_CASE_P(UserLevel, GoogleUpdateWinTest, Values(false));
+INSTANTIATE_TEST_SUITE_P(UserLevel, GoogleUpdateWinTest, Values(false));
 
-INSTANTIATE_TEST_CASE_P(SystemLevel, GoogleUpdateWinTest, Values(true));
+INSTANTIATE_TEST_SUITE_P(SystemLevel, GoogleUpdateWinTest, Values(true));

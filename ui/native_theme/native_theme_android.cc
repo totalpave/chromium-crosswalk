@@ -20,12 +20,17 @@ const int kCheckboxAndRadioHeight = 16;
 NativeTheme* NativeTheme::GetInstanceForWeb() {
   return NativeThemeAndroid::instance();
 }
+
+NativeTheme* NativeTheme::GetInstanceForNativeUi() {
+  NOTREACHED();
+  return nullptr;
+}
 #endif
 
 // static
 NativeThemeAndroid* NativeThemeAndroid::instance() {
-  CR_DEFINE_STATIC_LOCAL(NativeThemeAndroid, s_native_theme, ());
-  return &s_native_theme;
+  static base::NoDestructor<NativeThemeAndroid> s_native_theme;
+  return s_native_theme.get();
 }
 
 gfx::Size NativeThemeAndroid::GetPartSize(Part part,

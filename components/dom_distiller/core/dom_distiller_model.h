@@ -9,15 +9,15 @@
 #include <stdint.h>
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
-#include "base/containers/hash_tables.h"
-#include "base/id_map.h"
+#include "base/containers/id_map.h"
 #include "base/macros.h"
 #include "components/dom_distiller/core/article_entry.h"
-#include "sync/api/sync_change.h"
-#include "sync/api/sync_change_processor.h"  // syncer::SyncChangeList
-#include "sync/api/sync_data.h"
+#include "components/sync/model/sync_change.h"
+#include "components/sync/model/sync_change_processor.h"  // syncer::SyncChangeList
+#include "components/sync/model/sync_data.h"
 #include "url/gurl.h"
 
 namespace dom_distiller {
@@ -62,8 +62,8 @@ class DomDistillerModel {
 
  private:
   typedef int32_t KeyType;
-  typedef base::hash_map<KeyType, ArticleEntry> EntryMap;
-  typedef base::hash_map<std::string, KeyType> StringToKeyMap;
+  typedef std::unordered_map<KeyType, ArticleEntry> EntryMap;
+  typedef std::unordered_map<std::string, KeyType> StringToKeyMap;
 
   void AddEntry(const ArticleEntry& entry);
   void RemoveEntry(const ArticleEntry& entry);

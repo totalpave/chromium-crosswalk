@@ -12,14 +12,11 @@
 #include <vector>
 
 #include "base/callback.h"
-#include "base/memory/scoped_vector.h"
 #include "base/time/time.h"
 #include "media/midi/usb_midi_export.h"
 
-namespace media {
 namespace midi {
 
-class MidiManagerUsb;
 class UsbMidiDevice;
 
 // Delegate class for UsbMidiDevice.
@@ -46,14 +43,14 @@ class USB_MIDI_EXPORT UsbMidiDeviceDelegate {
 // will be a derived class.
 class USB_MIDI_EXPORT UsbMidiDevice {
  public:
-  typedef ScopedVector<UsbMidiDevice> Devices;
+  typedef std::vector<std::unique_ptr<UsbMidiDevice>> Devices;
 
   // Factory class for USB-MIDI devices.
   // Each concrete implementation will find and create devices
   // in platform-dependent way.
   class Factory {
    public:
-    typedef base::Callback<void(bool result, Devices* devices)> Callback;
+    typedef base::OnceCallback<void(bool result, Devices* devices)> Callback;
     virtual ~Factory() {}
 
     // Enumerates devices.
@@ -87,6 +84,5 @@ class USB_MIDI_EXPORT UsbMidiDevice {
 };
 
 }  // namespace midi
-}  // namespace media
 
 #endif  // MEDIA_MIDI_USB_MIDI_DEVICE_H_

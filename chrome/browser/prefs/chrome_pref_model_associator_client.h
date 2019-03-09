@@ -8,7 +8,7 @@
 #include <string>
 
 #include "base/macros.h"
-#include "components/syncable_prefs/pref_model_associator_client.h"
+#include "components/sync_preferences/pref_model_associator_client.h"
 
 namespace base {
 template <typename T>
@@ -16,7 +16,7 @@ struct DefaultSingletonTraits;
 }
 
 class ChromePrefModelAssociatorClient
-    : public syncable_prefs::PrefModelAssociatorClient {
+    : public sync_preferences::PrefModelAssociatorClient {
  public:
   // Returns the global instance.
   static ChromePrefModelAssociatorClient* GetInstance();
@@ -27,10 +27,14 @@ class ChromePrefModelAssociatorClient
   ChromePrefModelAssociatorClient();
   ~ChromePrefModelAssociatorClient() override;
 
-  // syncable_prefs::PrefModelAssociatorClient implementation.
+  // sync_preferences::PrefModelAssociatorClient implementation.
   bool IsMergeableListPreference(const std::string& pref_name) const override;
   bool IsMergeableDictionaryPreference(
       const std::string& pref_name) const override;
+  std::unique_ptr<base::Value> MaybeMergePreferenceValues(
+      const std::string& pref_name,
+      const base::Value& local_value,
+      const base::Value& server_value) const override;
 
   DISALLOW_COPY_AND_ASSIGN(ChromePrefModelAssociatorClient);
 };

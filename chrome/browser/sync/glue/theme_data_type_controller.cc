@@ -4,29 +4,31 @@
 
 #include "chrome/browser/sync/glue/theme_data_type_controller.h"
 
+#include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/profiles/profile.h"
-#include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_system.h"
-
-using content::BrowserThread;
 
 namespace browser_sync {
 
 ThemeDataTypeController::ThemeDataTypeController(
-    const base::Closure& error_callback,
-    sync_driver::SyncClient* sync_client,
+    const base::Closure& dump_stack,
+    syncer::SyncService* sync_service,
+    syncer::SyncClient* sync_client,
     Profile* profile)
-    : UIDataTypeController(
-          BrowserThread::GetMessageLoopProxyForThread(BrowserThread::UI),
-          error_callback,
-          syncer::THEMES,
-          sync_client),
+    : AsyncDirectoryTypeController(syncer::THEMES,
+                                   dump_stack,
+                                   sync_service,
+                                   sync_client,
+                                   syncer::GROUP_UI,
+                                   base::ThreadTaskRunnerHandle::Get()),
       profile_(profile) {}
 
 ThemeDataTypeController::~ThemeDataTypeController() {}
 
 bool ThemeDataTypeController::StartModels() {
-  extensions::ExtensionSystem::Get(profile_)->InitForRegularProfile(true);
+  DCHECK(CalledOnValidThread());
+  extensions::ExtensionSystem::Get(profile_)->InitForRegularProfile(
+      true /* extensions_enabled */);
   return true;
 }
 

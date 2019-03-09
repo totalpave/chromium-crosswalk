@@ -7,8 +7,8 @@
 #import <UIKit/UIKit.h>
 
 #include "base/logging.h"
+#include "base/mac/foundation_util.h"
 #include "base/mac/scoped_block.h"
-#include "base/mac/scoped_nsobject.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
@@ -17,22 +17,13 @@
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
 bool UrlIsExternalFileReference(const GURL& url) {
   return url.SchemeIs(kChromeUIScheme) &&
          base::LowerCaseEqualsASCII(url.host(), kChromeUIExternalFileHost);
-}
-
-NSURL* UrlToLaunchChrome() {
-  // Determines the target URL scheme that will launch Chrome.
-  NSString* scheme = [[ChromeAppConstants sharedInstance] getBundleURLScheme];
-  return [NSURL URLWithString:[NSString stringWithFormat:@"%@://", scheme]];
-}
-
-NSURL* UrlOfChromeAppIcon(int width, int height) {
-  NSString* url =
-      [[ChromeAppConstants sharedInstance] getChromeAppIconURLOfWidth:width
-                                                               height:height];
-  return [NSURL URLWithString:url];
 }
 
 bool UrlHasChromeScheme(const GURL& url) {
@@ -41,6 +32,10 @@ bool UrlHasChromeScheme(const GURL& url) {
 
 bool UrlHasChromeScheme(NSURL* url) {
   return net::UrlSchemeIs(url, base::SysUTF8ToNSString(kChromeUIScheme));
+}
+
+bool IsURLNtp(const GURL& url) {
+  return UrlHasChromeScheme(url) && url.host() == kChromeUINewTabHost;
 }
 
 bool IsHandledProtocol(const std::string& scheme) {
@@ -55,8 +50,8 @@ bool IsHandledProtocol(const std::string& scheme) {
 }
 
 @implementation ChromeAppConstants {
-  base::scoped_nsobject<NSString> _callbackScheme;
-  base::mac::ScopedBlock<AppIconURLProvider> _appIconURLProvider;
+  NSString* _callbackScheme;
+  NSArray* _schemes;
 }
 
 + (ChromeAppConstants*)sharedInstance {
@@ -67,46 +62,33 @@ bool IsHandledProtocol(const std::string& scheme) {
 - (NSString*)getBundleURLScheme {
   if (!_callbackScheme) {
     NSSet* allowableSchemes =
-        [NSSet setWithObjects:@"googlechrome", @"chromium", nil];
-    NSDictionary* info = [[NSBundle mainBundle] infoDictionary];
-    NSArray* urlTypes = [info objectForKey:@"CFBundleURLTypes"];
-    for (NSDictionary* urlType in urlTypes) {
-      DCHECK([urlType isKindOfClass:[NSDictionary class]]);
-      NSArray* schemes = [urlType objectForKey:@"CFBundleURLSchemes"];
-      if (!schemes)
-        continue;
-      DCHECK([schemes isKindOfClass:[NSArray class]]);
-      for (NSString* scheme in schemes) {
-        if ([allowableSchemes containsObject:scheme])
-          _callbackScheme.reset([scheme copy]);
-      }
+        [NSSet setWithObjects:@"googlechrome", @"chromium",
+                              @"ios-chrome-unittests.http", nil];
+    NSArray* schemes = [self getAllBundleURLSchemes];
+    for (NSString* scheme in schemes) {
+      if ([allowableSchemes containsObject:scheme])
+        _callbackScheme = [scheme copy];
     }
   }
   DCHECK([_callbackScheme length]);
   return _callbackScheme;
 }
 
-- (NSString*)getChromeAppIconURLOfWidth:(int)width height:(int)height {
-  if (!_appIconURLProvider) {
-    // TODO(ios): iOS code should default to "Chromium" branding.
-    // http://crbug.com/489270
-    _appIconURLProvider.reset(^(int width, int height) {
-      return [NSString
-          stringWithFormat:@"https://%@/Icon-%dx%d-%dx.png",
-                           @"ssl.gstatic.com/ios-apps/com.google.chrome.ios",
-                           width, height,
-                           [[UIScreen mainScreen] scale] == 1.0 ? 1 : 2];
-    }, base::scoped_policy::RETAIN);
+- (NSArray*)getAllBundleURLSchemes {
+  if (!_schemes) {
+    NSDictionary* info = [[NSBundle mainBundle] infoDictionary];
+    NSArray* urlTypes = [info objectForKey:@"CFBundleURLTypes"];
+    for (NSDictionary* urlType in urlTypes) {
+      DCHECK([urlType isKindOfClass:[NSDictionary class]]);
+      _schemes = [base::mac::ObjCCastStrict<NSArray>(
+          urlType[@"CFBundleURLSchemes"]) copy];
+    }
   }
-  return _appIconURLProvider.get()(width, height);
+  return _schemes;
 }
 
 - (void)setCallbackSchemeForTesting:(NSString*)scheme {
-  _callbackScheme.reset([scheme copy]);
-}
-
-- (void)setAppIconURLProviderForTesting:(AppIconURLProvider)block {
-  _appIconURLProvider.reset(block, base::scoped_policy::RETAIN);
+  _callbackScheme = [scheme copy];
 }
 
 @end

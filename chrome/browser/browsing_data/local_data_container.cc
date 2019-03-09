@@ -5,40 +5,42 @@
 #include "chrome/browser/browsing_data/local_data_container.h"
 
 #include "base/bind.h"
-#include "base/memory/linked_ptr.h"
-#include "chrome/browser/browsing_data/browsing_data_channel_id_helper.h"
 #include "chrome/browser/browsing_data/browsing_data_flash_lso_helper.h"
 #include "chrome/browser/browsing_data/cookies_tree_model.h"
+#include "content/public/browser/storage_usage_info.h"
 #include "net/cookies/canonical_cookie.h"
+#include "third_party/blink/public/mojom/appcache/appcache_info.mojom.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 // LocalDataContainer, public:
 
 LocalDataContainer::LocalDataContainer(
-    BrowsingDataCookieHelper* cookie_helper,
-    BrowsingDataDatabaseHelper* database_helper,
-    BrowsingDataLocalStorageHelper* local_storage_helper,
-    BrowsingDataLocalStorageHelper* session_storage_helper,
-    BrowsingDataAppCacheHelper* appcache_helper,
-    BrowsingDataIndexedDBHelper* indexed_db_helper,
-    BrowsingDataFileSystemHelper* file_system_helper,
-    BrowsingDataQuotaHelper* quota_helper,
-    BrowsingDataChannelIDHelper* channel_id_helper,
-    BrowsingDataServiceWorkerHelper* service_worker_helper,
-    BrowsingDataCacheStorageHelper* cache_storage_helper,
-    BrowsingDataFlashLSOHelper* flash_lso_helper)
-    : appcache_helper_(appcache_helper),
-      cookie_helper_(cookie_helper),
-      database_helper_(database_helper),
-      local_storage_helper_(local_storage_helper),
-      session_storage_helper_(session_storage_helper),
-      indexed_db_helper_(indexed_db_helper),
-      file_system_helper_(file_system_helper),
-      quota_helper_(quota_helper),
-      channel_id_helper_(channel_id_helper),
-      service_worker_helper_(service_worker_helper),
-      cache_storage_helper_(cache_storage_helper),
-      flash_lso_helper_(flash_lso_helper),
+    scoped_refptr<BrowsingDataCookieHelper> cookie_helper,
+    scoped_refptr<BrowsingDataDatabaseHelper> database_helper,
+    scoped_refptr<BrowsingDataLocalStorageHelper> local_storage_helper,
+    scoped_refptr<BrowsingDataLocalStorageHelper> session_storage_helper,
+    scoped_refptr<BrowsingDataAppCacheHelper> appcache_helper,
+    scoped_refptr<BrowsingDataIndexedDBHelper> indexed_db_helper,
+    scoped_refptr<BrowsingDataFileSystemHelper> file_system_helper,
+    scoped_refptr<BrowsingDataQuotaHelper> quota_helper,
+    scoped_refptr<BrowsingDataServiceWorkerHelper> service_worker_helper,
+    scoped_refptr<BrowsingDataSharedWorkerHelper> shared_worker_helper,
+    scoped_refptr<BrowsingDataCacheStorageHelper> cache_storage_helper,
+    scoped_refptr<BrowsingDataFlashLSOHelper> flash_lso_helper,
+    scoped_refptr<BrowsingDataMediaLicenseHelper> media_license_helper)
+    : appcache_helper_(std::move(appcache_helper)),
+      cookie_helper_(std::move(cookie_helper)),
+      database_helper_(std::move(database_helper)),
+      local_storage_helper_(std::move(local_storage_helper)),
+      session_storage_helper_(std::move(session_storage_helper)),
+      indexed_db_helper_(std::move(indexed_db_helper)),
+      file_system_helper_(std::move(file_system_helper)),
+      quota_helper_(std::move(quota_helper)),
+      service_worker_helper_(std::move(service_worker_helper)),
+      shared_worker_helper_(std::move(shared_worker_helper)),
+      cache_storage_helper_(std::move(cache_storage_helper)),
+      flash_lso_helper_(std::move(flash_lso_helper)),
+      media_license_helper_(std::move(media_license_helper)),
       weak_ptr_factory_(this) {}
 
 LocalDataContainer::~LocalDataContainer() {}
@@ -47,31 +49,33 @@ void LocalDataContainer::Init(CookiesTreeModel* model) {
   DCHECK(!model_);
   model_ = model;
 
-  batches_started_ = 1;
-  DCHECK(cookie_helper_.get());
-  cookie_helper_->StartFetching(
-      base::Bind(&LocalDataContainer::OnCookiesModelInfoLoaded,
-                 weak_ptr_factory_.GetWeakPtr()));
+  batches_started_ = 0;
+  if (cookie_helper_.get()) {
+    batches_started_++;
+    cookie_helper_->StartFetching(
+        base::BindOnce(&LocalDataContainer::OnCookiesModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
 
   if (database_helper_.get()) {
     batches_started_++;
     database_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnDatabaseModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnDatabaseModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   if (local_storage_helper_.get()) {
     batches_started_++;
     local_storage_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnLocalStorageModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnLocalStorageModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   if (session_storage_helper_.get()) {
     batches_started_++;
     session_storage_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnSessionStorageModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnSessionStorageModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   // TODO(michaeln): When all of the UI implementations have been updated, make
@@ -79,57 +83,64 @@ void LocalDataContainer::Init(CookiesTreeModel* model) {
   if (appcache_helper_.get()) {
     batches_started_++;
     appcache_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnAppCacheModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnAppCacheModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   if (indexed_db_helper_.get()) {
     batches_started_++;
     indexed_db_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnIndexedDBModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnIndexedDBModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   if (file_system_helper_.get()) {
     batches_started_++;
     file_system_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnFileSystemModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnFileSystemModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   if (quota_helper_.get()) {
     batches_started_++;
     quota_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnQuotaModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
-  }
-
-  if (channel_id_helper_.get()) {
-    batches_started_++;
-    channel_id_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnChannelIDModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnQuotaModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   if (service_worker_helper_.get()) {
     batches_started_++;
     service_worker_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnServiceWorkerModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnServiceWorkerModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  if (shared_worker_helper_.get()) {
+    batches_started_++;
+    shared_worker_helper_->StartFetching(
+        base::BindOnce(&LocalDataContainer::OnSharedWorkerInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   if (cache_storage_helper_.get()) {
     batches_started_++;
     cache_storage_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnCacheStorageModelInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnCacheStorageModelInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   if (flash_lso_helper_.get()) {
     batches_started_++;
     flash_lso_helper_->StartFetching(
-        base::Bind(&LocalDataContainer::OnFlashLSOInfoLoaded,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&LocalDataContainer::OnFlashLSOInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  if (media_license_helper_.get()) {
+    batches_started_++;
+    media_license_helper_->StartFetching(
+        base::BindOnce(&LocalDataContainer::OnMediaLicenseInfoLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   model_->SetBatchExpectation(batches_started_, true);
@@ -137,9 +148,7 @@ void LocalDataContainer::Init(CookiesTreeModel* model) {
 
 void LocalDataContainer::OnAppCacheModelInfoLoaded(
     scoped_refptr<content::AppCacheInfoCollection> appcache_info) {
-  using content::AppCacheInfo;
   using content::AppCacheInfoCollection;
-  using content::AppCacheInfoVector;
 
   if (!appcache_info.get() || appcache_info->infos_by_origin.empty()) {
     // This batch has been canceled, so let the model know it won't be arriving.
@@ -148,7 +157,8 @@ void LocalDataContainer::OnAppCacheModelInfoLoaded(
   }
 
   for (const auto& origin : appcache_info->infos_by_origin) {
-    std::list<AppCacheInfo>& info_list = appcache_info_[origin.first];
+    std::list<blink::mojom::AppCacheInfo>& info_list =
+        appcache_info_[origin.first];
     info_list.insert(info_list.begin(), origin.second.begin(),
                      origin.second.end());
   }
@@ -207,18 +217,18 @@ void LocalDataContainer::OnQuotaModelInfoLoaded(
   model_->PopulateQuotaInfo(this);
 }
 
-void LocalDataContainer::OnChannelIDModelInfoLoaded(
-    const ChannelIDList& channel_id_list) {
-  channel_id_list_ = channel_id_list;
-  DCHECK(model_);
-  model_->PopulateChannelIDInfo(this);
-}
-
 void LocalDataContainer::OnServiceWorkerModelInfoLoaded(
     const ServiceWorkerUsageInfoList& service_worker_info) {
   service_worker_info_list_ = service_worker_info;
   DCHECK(model_);
   model_->PopulateServiceWorkerUsageInfo(this);
+}
+
+void LocalDataContainer::OnSharedWorkerInfoLoaded(
+    const SharedWorkerInfoList& shared_worker_info) {
+  shared_worker_info_list_ = shared_worker_info;
+  DCHECK(model_);
+  model_->PopulateSharedWorkerInfo(this);
 }
 
 void LocalDataContainer::OnCacheStorageModelInfoLoaded(
@@ -233,4 +243,11 @@ void LocalDataContainer::OnFlashLSOInfoLoaded(
   flash_lso_domain_list_ = domains;
   DCHECK(model_);
   model_->PopulateFlashLSOInfo(this);
+}
+
+void LocalDataContainer::OnMediaLicenseInfoLoaded(
+    const MediaLicenseInfoList& media_license_info) {
+  media_license_info_list_ = media_license_info;
+  DCHECK(model_);
+  model_->PopulateMediaLicenseInfo(this);
 }

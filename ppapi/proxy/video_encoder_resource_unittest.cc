@@ -6,7 +6,9 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <utility>
+#include <vector>
 
 #include "base/memory/shared_memory.h"
 #include "base/process/process.h"
@@ -96,11 +98,11 @@ class VideoEncoderResourceTest : public PluginProxyTest,
   void SendReplyWithHandle(const ResourceMessageCallParams& params,
                            int32_t result,
                            const IPC::Message& nested_message,
-                           const SerializedHandle& handle) {
+                           SerializedHandle handle) {
     ResourceMessageReplyParams reply_params(params.pp_resource(),
                                             params.sequence());
     reply_params.set_result(result);
-    reply_params.AppendHandle(handle);
+    reply_params.AppendHandle(std::move(handle));
     PluginMessageFilter::DispatchResourceReplyForTest(reply_params,
                                                       nested_message);
   }
@@ -108,12 +110,12 @@ class VideoEncoderResourceTest : public PluginProxyTest,
   void SendReplyWithHandles(const ResourceMessageCallParams& params,
                             int32_t result,
                             const IPC::Message& nested_message,
-                            const std::vector<SerializedHandle>& handles) {
+                            std::vector<SerializedHandle> handles) {
     ResourceMessageReplyParams reply_params(params.pp_resource(),
                                             params.sequence());
     reply_params.set_result(result);
-    for (SerializedHandle handle : handles)
-      reply_params.AppendHandle(handle);
+    for (auto& handle : handles)
+      reply_params.AppendHandle(std::move(handle));
     PluginMessageFilter::DispatchResourceReplyForTest(reply_params,
                                                       nested_message);
   }
@@ -290,26 +292,25 @@ class VideoEncoderResourceTest : public PluginProxyTest,
   void SendBitstreamBuffers(const ResourceMessageCallParams& params,
                             uint32_t buffer_length) {
     std::vector<SerializedHandle> handles;
-    for (base::SharedMemory* mem : shared_memory_bitstreams_) {
+    for (const auto& mem : shared_memory_bitstreams_) {
       ASSERT_EQ(mem->requested_size(), buffer_length);
-      base::SharedMemoryHandle handle;
-
-      ASSERT_TRUE(
-          mem->ShareToProcess(base::Process::Current().Handle(), &handle));
+      base::SharedMemoryHandle handle = mem->handle().Duplicate();
+      ASSERT_TRUE(handle.IsValid());
       handles.push_back(SerializedHandle(handle, buffer_length));
     }
     SendReplyWithHandles(
         params, PP_OK,
-        PpapiPluginMsg_VideoEncoder_BitstreamBuffers(buffer_length), handles);
+        PpapiPluginMsg_VideoEncoder_BitstreamBuffers(buffer_length),
+        std::move(handles));
   }
 
   void SendGetVideoFramesReply(const ResourceMessageCallParams& params,
                                uint32_t frame_count,
                                uint32_t frame_length,
                                const PP_Size& size) {
-    base::SharedMemoryHandle handle;
-    ASSERT_TRUE(video_frames_manager_.shm()->ShareToProcess(
-        base::Process::Current().Handle(), &handle));
+    base::SharedMemoryHandle handle =
+        video_frames_manager_.shm()->handle().Duplicate();
+    ASSERT_TRUE(handle.IsValid());
     SendReplyWithHandle(
         params, PP_OK, PpapiPluginMsg_VideoEncoder_GetVideoFramesReply(
                            frame_count,
@@ -425,7 +426,7 @@ class VideoEncoderResourceTest : public PluginProxyTest,
   const PPB_VideoEncoder_0_2* encoder_iface_;
   const PPB_VideoEncoder_0_1* encoder_iface_0_1_;
 
-  ScopedVector<base::SharedMemory> shared_memory_bitstreams_;
+  std::vector<std::unique_ptr<base::SharedMemory>> shared_memory_bitstreams_;
 
   MediaStreamBufferManager video_frames_manager_;
 };

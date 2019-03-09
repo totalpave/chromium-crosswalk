@@ -4,16 +4,20 @@
 
 package org.chromium.chrome.test.util.browser.notifications;
 
+import android.annotation.TargetApi;
 import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationChannelGroup;
+import android.os.Build;
+import android.support.annotation.Nullable;
 
+import org.chromium.chrome.browser.notifications.ChromeNotification;
 import org.chromium.chrome.browser.notifications.NotificationManagerProxy;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
-import javax.annotation.Nullable;
 
 /**
  * Mocked implementation of the NotificationManagerProxy. Imitates behavior of the Android
@@ -42,6 +46,8 @@ public class MockNotificationManagerProxy implements NotificationManagerProxy {
 
     private int mMutationCount;
 
+    private boolean mNotificationsEnabled = true;
+
     public MockNotificationManagerProxy() {
         mNotifications = new LinkedHashMap<>();
         mMutationCount = 0;
@@ -55,7 +61,7 @@ public class MockNotificationManagerProxy implements NotificationManagerProxy {
      * @return List of the managed notifications.
      */
     public List<NotificationEntry> getNotifications() {
-        return new ArrayList<NotificationEntry>(mNotifications.values());
+        return new ArrayList<>(mNotifications.values());
     }
 
     /**
@@ -70,6 +76,15 @@ public class MockNotificationManagerProxy implements NotificationManagerProxy {
         if (mutationCount > 0) mMutationCount--;
 
         return mutationCount;
+    }
+
+    public void setNotificationsEnabled(boolean enabled) {
+        mNotificationsEnabled = enabled;
+    }
+
+    @Override
+    public boolean areNotificationsEnabled() {
+        return mNotificationsEnabled;
     }
 
     @Override
@@ -101,9 +116,52 @@ public class MockNotificationManagerProxy implements NotificationManagerProxy {
         mMutationCount++;
     }
 
+    @Override
+    public void notify(ChromeNotification notification) {
+        notify(notification.getMetadata().tag, notification.getMetadata().id,
+                notification.getNotification());
+    }
+
     private static String makeKey(int id, @Nullable String tag) {
         String key = Integer.toString(id);
         if (tag != null) key += KEY_SEPARATOR + tag;
         return key;
     }
+
+    // The following Channel methods are not implemented because a naive implementation would
+    // have compatibility issues (NotificationChannel is new in O), and we currently don't need them
+    // where the MockNotificationManagerProxy is used in tests.
+
+    @TargetApi(Build.VERSION_CODES.O)
+    @Override
+    public void createNotificationChannel(NotificationChannel channel) {}
+
+    @TargetApi(Build.VERSION_CODES.O)
+    @Override
+    public void createNotificationChannelGroup(NotificationChannelGroup channelGroup) {}
+
+    @TargetApi(Build.VERSION_CODES.O)
+    @Override
+    public List<NotificationChannel> getNotificationChannels() {
+        return null;
+    }
+
+    @Override
+    @TargetApi(Build.VERSION_CODES.O)
+    public List<NotificationChannelGroup> getNotificationChannelGroups() {
+        return null;
+    }
+
+    @TargetApi(Build.VERSION_CODES.O)
+    @Override
+    public void deleteNotificationChannel(String id) {}
+
+    @TargetApi(Build.VERSION_CODES.O)
+    @Override
+    public NotificationChannel getNotificationChannel(String channelId) {
+        return null;
+    }
+
+    @Override
+    public void deleteNotificationChannelGroup(String groupId) {}
 }

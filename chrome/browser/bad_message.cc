@@ -5,7 +5,7 @@
 #include "chrome/browser/bad_message.h"
 
 #include "base/logging.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/metrics/histogram_functions.h"
 #include "content/public/browser/browser_message_filter.h"
 #include "content/public/browser/render_process_host.h"
 
@@ -15,7 +15,7 @@ namespace {
 
 void LogBadMessage(BadMessageReason reason) {
   LOG(ERROR) << "Terminating renderer for bad IPC message, reason " << reason;
-  UMA_HISTOGRAM_SPARSE_SLOWLY("Stability.BadMessageTerminated.Chrome", reason);
+  base::UmaHistogramSparse("Stability.BadMessageTerminated.Chrome", reason);
 }
 
 }  // namespace
@@ -23,7 +23,8 @@ void LogBadMessage(BadMessageReason reason) {
 void ReceivedBadMessage(content::RenderProcessHost* host,
                         BadMessageReason reason) {
   LogBadMessage(reason);
-  host->ShutdownForBadMessage();
+  host->ShutdownForBadMessage(
+      content::RenderProcessHost::CrashReportMode::GENERATE_CRASH_DUMP);
 }
 
 void ReceivedBadMessage(content::BrowserMessageFilter* filter,

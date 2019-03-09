@@ -8,7 +8,7 @@
 #include "base/macros.h"
 #include "chromecast/public/graphics_types.h"
 #include "ui/display/display.h"
-#include "ui/display/screen.h"
+#include "ui/display/screen_base.h"
 
 namespace chromecast {
 namespace shell {
@@ -20,32 +20,24 @@ class CastBrowserMainParts;
 // class for necessary methods. The instantiation of CastScreen occurs in
 // CastBrowserMainParts, where its ownership is assigned to CastBrowserProcess.
 // To then subsequently access CastScreen, see CastBrowerProcess.
-class CastScreen : public display::Screen {
+class CastScreen : public display::ScreenBase {
  public:
+  CastScreen();
   ~CastScreen() override;
 
   // display::Screen overrides:
   gfx::Point GetCursorScreenPoint() override;
   bool IsWindowUnderCursor(gfx::NativeWindow window) override;
   gfx::NativeWindow GetWindowAtScreenPoint(const gfx::Point& point) override;
-  int GetNumDisplays() const override;
-  std::vector<display::Display> GetAllDisplays() const override;
-  display::Display GetDisplayNearestWindow(gfx::NativeView view) const override;
-  display::Display GetDisplayNearestPoint(
-      const gfx::Point& point) const override;
-  display::Display GetDisplayMatching(
-      const gfx::Rect& match_rect) const override;
-  display::Display GetPrimaryDisplay() const override;
-  void AddObserver(display::DisplayObserver* observer) override;
-  void RemoveObserver(display::DisplayObserver* observer) override;
+  display::Display GetDisplayNearestWindow(
+      gfx::NativeWindow window) const override;
+
+  void OnDisplayChanged(int64_t display_id,
+                        float scale_factor,
+                        display::Display::Rotation rotation,
+                        const gfx::Rect& bounds);
 
  private:
-  CastScreen();
-
-  display::Display display_;
-
-  friend class shell::CastBrowserMainParts;
-
   DISALLOW_COPY_AND_ASSIGN(CastScreen);
 };
 

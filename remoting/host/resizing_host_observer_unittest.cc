@@ -7,10 +7,10 @@
 #include <list>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
@@ -99,12 +99,12 @@ class FakeDesktopResizer : public DesktopResizer {
 class ResizingHostObserverTest : public testing::Test {
  public:
   ResizingHostObserverTest()
-      : now_(base::Time::Now()) {
+      : now_(base::TimeTicks::Now()) {
   }
 
   // This needs to be public because the derived test-case class needs to
   // pass it to Bind, which fails if it's protected.
-  base::Time GetTime() {
+  base::TimeTicks GetTime() {
     return now_;
   }
 
@@ -115,12 +115,10 @@ class ResizingHostObserverTest : public testing::Test {
                          bool restore_resolution) {
     current_resolution_ = initial_resolution;
     call_counts_ = FakeDesktopResizer::CallCounts();
-    resizing_host_observer_ = base::MakeUnique<ResizingHostObserver>(
-        base::MakeUnique<FakeDesktopResizer>(exact_size_supported,
-                                             std::move(supported_resolutions),
-                                             &current_resolution_,
-                                             &call_counts_,
-                                             restore_resolution),
+    resizing_host_observer_ = std::make_unique<ResizingHostObserver>(
+        std::make_unique<FakeDesktopResizer>(
+            exact_size_supported, std::move(supported_resolutions),
+            &current_resolution_, &call_counts_, restore_resolution),
         restore_resolution);
     resizing_host_observer_->SetNowFunctionForTesting(
         base::Bind(&ResizingHostObserverTest::GetTimeAndIncrement,
@@ -144,8 +142,8 @@ class ResizingHostObserverTest : public testing::Test {
     }
   }
 
-  base::Time GetTimeAndIncrement() {
-    base::Time result = now_;
+  base::TimeTicks GetTimeAndIncrement() {
+    base::TimeTicks result = now_;
     now_ += base::TimeDelta::FromSeconds(1);
     return result;
   }
@@ -153,7 +151,7 @@ class ResizingHostObserverTest : public testing::Test {
   ScreenResolution current_resolution_;
   FakeDesktopResizer::CallCounts call_counts_;
   std::unique_ptr<ResizingHostObserver> resizing_host_observer_;
-  base::Time now_;
+  base::TimeTicks now_;
 };
 
 // Check that the resolution isn't restored if it wasn't changed by this class.
@@ -195,6 +193,20 @@ TEST_F(ResizingHostObserverTest, RestoreFlag) {
   InitDesktopResizer(initial, false, supported_sizes, true);
   VerifySizes(client_sizes, client_sizes);
   resizing_host_observer_.reset();
+  EXPECT_EQ(1, call_counts_.set_resolution);
+  EXPECT_EQ(1, call_counts_.restore_resolution);
+  EXPECT_EQ(MakeResolution(640, 480), current_resolution_);
+}
+
+// Check that the size is restored if an empty ClientResolution is received.
+TEST_F(ResizingHostObserverTest, RestoreOnEmptyClientResolution) {
+  InitDesktopResizer(MakeResolution(640, 480), true,
+                     std::vector<ScreenResolution>(), true);
+  resizing_host_observer_->SetScreenResolution(MakeResolution(200, 100));
+  EXPECT_EQ(1, call_counts_.set_resolution);
+  EXPECT_EQ(0, call_counts_.restore_resolution);
+  EXPECT_EQ(MakeResolution(200, 100), current_resolution_);
+  resizing_host_observer_->SetScreenResolution(MakeResolution(0, 0));
   EXPECT_EQ(1, call_counts_.set_resolution);
   EXPECT_EQ(1, call_counts_.restore_resolution);
   EXPECT_EQ(MakeResolution(640, 480), current_resolution_);

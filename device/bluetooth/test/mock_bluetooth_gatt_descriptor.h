@@ -21,9 +21,6 @@ namespace device {
 
 class MockBluetoothGattCharacteristic;
 
-// TODO(rkc): This class doesn't seem to be used anywhere. Figure out whether
-// it will be used (in which case, name it appropriately), otherwise delete the
-// class.
 class MockBluetoothGattDescriptor : public BluetoothRemoteGattDescriptor {
  public:
   MockBluetoothGattDescriptor(
@@ -32,7 +29,7 @@ class MockBluetoothGattDescriptor : public BluetoothRemoteGattDescriptor {
       const BluetoothUUID& uuid,
       bool is_local,
       BluetoothRemoteGattCharacteristic::Permissions permissions);
-  virtual ~MockBluetoothGattDescriptor();
+  ~MockBluetoothGattDescriptor() override;
 
   MOCK_CONST_METHOD0(GetIdentifier, std::string());
   MOCK_CONST_METHOD0(GetUUID, BluetoothUUID());

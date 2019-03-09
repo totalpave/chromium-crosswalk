@@ -4,13 +4,14 @@
 
 package org.chromium.chrome.browser.widget;
 
-import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Paint.FontMetrics;
 import android.graphics.RectF;
+import android.support.annotation.Nullable;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.util.Log;
@@ -21,8 +22,6 @@ import org.chromium.chrome.browser.util.UrlUtilities;
 
 import java.net.URI;
 import java.util.Locale;
-
-import javax.annotation.Nullable;
 
 /**
  * Generator for transparent icons containing a rounded rectangle with a given background color,
@@ -46,20 +45,19 @@ public class RoundedIconGenerator {
     /**
      * Constructs the generator and initializes the common members based on the display density.
      *
-     * @param context The context used for initialization.
+     * @param res The resources used to convert sizes to px.
      * @param iconWidthDp The width of the generated icon in dp.
      * @param iconHeightDp The height of the generated icon in dp.
      * @param cornerRadiusDp The radius of the corners in the icon in dp.
      * @param backgroundColor Color with which the rounded rectangle should be drawn.
      * @param textSizeDp Size at which the text should be drawn in dp.
      */
-    public RoundedIconGenerator(Context context, int iconWidthDp, int iconHeightDp,
+    public RoundedIconGenerator(Resources res, int iconWidthDp, int iconHeightDp,
             int cornerRadiusDp, int backgroundColor, int textSizeDp) {
-        this((int) (context.getResources().getDisplayMetrics().density * iconWidthDp),
-                (int) (context.getResources().getDisplayMetrics().density * iconHeightDp),
-                (int) (context.getResources().getDisplayMetrics().density * cornerRadiusDp),
-                backgroundColor,
-                (int) (context.getResources().getDisplayMetrics().density * textSizeDp));
+        this((int) (res.getDisplayMetrics().density * iconWidthDp),
+                (int) (res.getDisplayMetrics().density * iconHeightDp),
+                (int) (res.getDisplayMetrics().density * cornerRadiusDp), backgroundColor,
+                res.getDisplayMetrics().density * textSizeDp);
     }
 
     /**
@@ -100,7 +98,7 @@ public class RoundedIconGenerator {
     }
 
     /**
-     * Generates an icon based on |text|.
+     * Generates an icon based on |text| (using the first character).
      *
      * @param text The text to render the first character of on the icon.
      * @return The generated icon.
@@ -111,7 +109,8 @@ public class RoundedIconGenerator {
 
         canvas.drawRoundRect(mBackgroundRect, mCornerRadiusPx, mCornerRadiusPx, mBackgroundPaint);
 
-        String displayText = text.substring(0, 1).toUpperCase(Locale.getDefault());
+        int length = Math.min(1, text.length());
+        String displayText = text.substring(0, length).toUpperCase(Locale.getDefault());
         float textWidth = mTextPaint.measureText(displayText);
 
         canvas.drawText(
@@ -172,9 +171,9 @@ public class RoundedIconGenerator {
         if (!TextUtils.isEmpty(domain)) return domain;
 
         // Special-case chrome:// and chrome-native:// URLs.
-        if (url.startsWith(UrlConstants.CHROME_SCHEME)
-                || url.startsWith(UrlConstants.CHROME_NATIVE_SCHEME)) {
-            return "chrome";
+        if (url.startsWith(UrlConstants.CHROME_URL_PREFIX)
+                || url.startsWith(UrlConstants.CHROME_NATIVE_URL_PREFIX)) {
+            return UrlConstants.CHROME_SCHEME;
         }
 
         // Use the host component of |url| when it can be parsed as a URI.

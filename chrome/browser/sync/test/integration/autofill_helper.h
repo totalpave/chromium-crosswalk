@@ -12,14 +12,15 @@
 #include "base/compiler_specific.h"
 #include "base/memory/ref_counted.h"
 #include "base/strings/string16.h"
-#include "chrome/browser/sync/test/integration/sync_datatype_helper.h"
+#include "chrome/browser/sync/test/integration/multi_client_status_change_checker.h"
+#include "components/autofill/core/browser/personal_data_manager_observer.h"
+#include "testing/gmock/include/gmock/gmock.h"
 
 namespace autofill {
 class AutofillEntry;
 class AutofillKey;
 class AutofillProfile;
 class AutofillType;
-class AutofillWebDataService;
 class CreditCard;
 class PersonalDataManager;
 }  // namespace autofill
@@ -32,10 +33,6 @@ enum ProfileType {
   PROFILE_FRASIER,
   PROFILE_NULL
 };
-
-// Used to access the web data service within a particular sync profile.
-scoped_refptr<autofill::AutofillWebDataService> GetWebDataService(
-    int index) WARN_UNUSED_RESULT;
 
 // Used to access the personal data manager within a particular sync profile.
 autofill::PersonalDataManager* GetPersonalDataManager(
@@ -58,9 +55,6 @@ std::set<autofill::AutofillEntry> GetAllKeys(int profile) WARN_UNUSED_RESULT;
 // Compares the form fields in the WebDataServices of sync profiles
 // |profile_a| and |profile_b|. Returns true if they match.
 bool KeysMatch(int profile_a, int profile_b) WARN_UNUSED_RESULT;
-
-// Allows syncers to run until KeysMatch() returns true.
-bool AwaitKeysMatch(int profile_a, int profile_b);
 
 // Replaces the Autofill profiles in sync profile |profile| with
 // |autofill_profiles|.
@@ -88,26 +82,19 @@ void UpdateProfile(int profile,
 
 // Gets all the Autofill profiles in the PersonalDataManager of sync profile
 // |profile|.
-const std::vector<autofill::AutofillProfile*>& GetAllAutoFillProfiles(
-    int profile) WARN_UNUSED_RESULT;
+std::vector<autofill::AutofillProfile*> GetAllAutoFillProfiles(int profile)
+    WARN_UNUSED_RESULT;
 
 // Returns the number of autofill profiles contained by sync profile
 // |profile|.
-int GetProfileCount(int profile);
+size_t GetProfileCount(int profile);
 
 // Returns the number of autofill keys contained by sync profile |profile|.
-int GetKeyCount(int profile);
+size_t GetKeyCount(int profile);
 
 // Compares the Autofill profiles in the PersonalDataManagers of sync profiles
 // |profile_a| and |profile_b|. Returns true if they match.
 bool ProfilesMatch(int profile_a, int profile_b) WARN_UNUSED_RESULT;
-
-// Compares the autofill profiles for all sync profiles, and returns true if
-// they all match.
-bool AllProfilesMatch() WARN_UNUSED_RESULT;
-
-// Allows the syncers to run until ProfilesMatch() returns true.
-bool AwaitProfilesMatch(int profile_a, int profile_b);
 
 // Creates a test autofill profile based on the persona specified in |type|.
 autofill::AutofillProfile CreateAutofillProfile(ProfileType type);
@@ -116,5 +103,49 @@ autofill::AutofillProfile CreateAutofillProfile(ProfileType type);
 autofill::AutofillProfile CreateUniqueAutofillProfile();
 
 }  // namespace autofill_helper
+
+// Checker to block until autofill keys match on both profiles.
+class AutofillKeysChecker : public MultiClientStatusChangeChecker {
+ public:
+  AutofillKeysChecker(int profile_a, int profile_b);
+
+  // StatusChangeChecker implementation.
+  bool IsExitConditionSatisfied() override;
+  std::string GetDebugMessage() const override;
+
+ private:
+  const int profile_a_;
+  const int profile_b_;
+};
+
+// Checker to block until autofill profiles match on both profiles.
+class AutofillProfileChecker : public StatusChangeChecker,
+                               public autofill::PersonalDataManagerObserver {
+ public:
+  AutofillProfileChecker(int profile_a, int profile_b);
+  ~AutofillProfileChecker() override;
+
+  // StatusChangeChecker implementation.
+  bool Wait() override;
+  bool IsExitConditionSatisfied() override;
+  std::string GetDebugMessage() const override;
+
+  // autofill::PersonalDataManager implementation.
+  void OnPersonalDataChanged() override;
+
+ private:
+  const int profile_a_;
+  const int profile_b_;
+};
+
+class PersonalDataLoadedObserverMock
+    : public autofill::PersonalDataManagerObserver {
+ public:
+  PersonalDataLoadedObserverMock();
+  ~PersonalDataLoadedObserverMock() override;
+
+  MOCK_METHOD0(OnPersonalDataChanged, void());
+  MOCK_METHOD0(OnPersonalDataFinishedProfileTasks, void());
+};
 
 #endif  // CHROME_BROWSER_SYNC_TEST_INTEGRATION_AUTOFILL_HELPER_H_

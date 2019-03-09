@@ -4,6 +4,7 @@
 
 #include "chromeos/network/policy_util.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/logging.h"
@@ -23,37 +24,33 @@ namespace chromeos {
 
 namespace policy_util {
 
-namespace {
-
-// This fake credential contains a random postfix which is extremly unlikely to
-// be used by any user.
 const char kFakeCredential[] = "FAKE_CREDENTIAL_VPaJDV9x";
 
+namespace {
 
 // Removes all kFakeCredential values from sensitive fields (determined by
 // onc::FieldIsCredential) of |onc_object|.
 void RemoveFakeCredentials(
     const onc::OncValueSignature& signature,
     base::DictionaryValue* onc_object) {
-  base::DictionaryValue::Iterator it(*onc_object);
-  while (!it.IsAtEnd()) {
-    base::Value* value = NULL;
+  std::vector<std::string> entries_to_remove;
+  for (base::DictionaryValue::Iterator it(*onc_object); !it.IsAtEnd();
+       it.Advance()) {
+    base::Value* value = nullptr;
     std::string field_name = it.key();
     // We need the non-const entry to remove nested values but DictionaryValue
     // has no non-const iterator.
     onc_object->GetWithoutPathExpansion(field_name, &value);
-    // Advance before delete.
-    it.Advance();
 
     // If |value| is a dictionary, recurse.
-    base::DictionaryValue* nested_object = NULL;
+    base::DictionaryValue* nested_object = nullptr;
     if (value->GetAsDictionary(&nested_object)) {
       const onc::OncFieldSignature* field_signature =
           onc::GetFieldSignature(signature, field_name);
       if (field_signature)
         RemoveFakeCredentials(*field_signature->value_signature, nested_object);
       else
-        LOG(ERROR) << "ONC has unrecoginzed field: " << field_name;
+        LOG(ERROR) << "ONC has unrecognized field: " << field_name;
       continue;
     }
 
@@ -64,12 +61,14 @@ void RemoveFakeCredentials(
       if (string_value == kFakeCredential) {
         // The value wasn't modified by the UI, thus we remove the field to keep
         // the existing value that is stored in Shill.
-        onc_object->RemoveWithoutPathExpansion(field_name, NULL);
+        entries_to_remove.push_back(field_name);
       }
       // Otherwise, the value is set and modified by the UI, thus we keep that
       // value to overwrite whatever is stored in Shill.
     }
   }
+  for (auto field_name : entries_to_remove)
+    onc_object->RemoveWithoutPathExpansion(field_name, nullptr);
 }
 
 // Returns true if |policy| matches |actual_network|, which must be part of a
@@ -159,22 +158,15 @@ bool IsAutoConnectEnabledInPolicy(const base::DictionaryValue& policy) {
   return autoconnect;
 }
 
-base::DictionaryValue* GetOrCreateDictionary(const std::string& key,
-                                             base::DictionaryValue* dict) {
-  base::DictionaryValue* inner_dict = NULL;
-  if (!dict->GetDictionaryWithoutPathExpansion(key, &inner_dict)) {
-    inner_dict = new base::DictionaryValue;
-    dict->SetWithoutPathExpansion(key, inner_dict);
-  }
-  return inner_dict;
-}
-
-base::DictionaryValue* GetOrCreateNestedDictionary(
-    const std::string& key1,
-    const std::string& key2,
-    base::DictionaryValue* dict) {
-  base::DictionaryValue* inner_dict = GetOrCreateDictionary(key1, dict);
-  return GetOrCreateDictionary(key2, inner_dict);
+base::Value* GetOrCreateNestedDictionary(const std::string& key1,
+                                         const std::string& key2,
+                                         base::Value* dict) {
+  base::Value* inner_dict =
+      dict->FindPathOfType({key1, key2}, base::Value::Type::DICTIONARY);
+  if (inner_dict)
+    return inner_dict;
+  return dict->SetPath({key1, key2},
+                       base::Value(base::Value::Type::DICTIONARY));
 }
 
 void ApplyGlobalAutoconnectPolicy(
@@ -190,7 +182,7 @@ void ApplyGlobalAutoconnectPolicy(
 
   // Managed dictionaries don't contain empty dictionaries (see onc_merger.cc),
   // so add the Autoconnect dictionary in case Shill didn't report a value.
-  base::DictionaryValue* auto_connect_dictionary = NULL;
+  base::Value* auto_connect_dictionary = nullptr;
   if (type == ::onc::network_type::kWiFi) {
     auto_connect_dictionary =
         GetOrCreateNestedDictionary(::onc::network_config::kWiFi,
@@ -213,9 +205,9 @@ void ApplyGlobalAutoconnectPolicy(
   else
     NOTREACHED();
 
-  auto_connect_dictionary->SetBooleanWithoutPathExpansion(policy_source, false);
-  auto_connect_dictionary->SetStringWithoutPathExpansion(
-      ::onc::kAugmentationEffectiveSetting, policy_source);
+  auto_connect_dictionary->SetKey(policy_source, base::Value(false));
+  auto_connect_dictionary->SetKey(::onc::kAugmentationEffectiveSetting,
+                                  base::Value(policy_source));
 }
 
 }  // namespace
@@ -288,14 +280,14 @@ void SetShillPropertiesForGlobalPolicy(
   if (shill_dictionary.GetBooleanWithoutPathExpansion(
           shill::kAutoConnectProperty, &old_autoconnect) &&
       !old_autoconnect) {
-    // Autoconnect is already explictly disabled. No need to set it again.
+    // Autoconnect is already explicitly disabled. No need to set it again.
     return;
   }
 
-  // If autconnect is not explicitly set yet, it might automatically be enabled
+  // If autoconnect is not explicitly set yet, it might automatically be enabled
   // by Shill. To prevent that, disable it explicitly.
-  shill_properties_to_update->SetBooleanWithoutPathExpansion(
-      shill::kAutoConnectProperty, false);
+  shill_properties_to_update->SetKey(shill::kAutoConnectProperty,
+                                     base::Value(false));
 }
 
 std::unique_ptr<base::DictionaryValue> CreateShillConfiguration(
@@ -336,7 +328,7 @@ std::unique_ptr<base::DictionaryValue> CreateShillConfiguration(
   RemoveFakeCredentials(onc::kNetworkConfigurationSignature,
                         effective.get());
 
-  effective->SetStringWithoutPathExpansion(::onc::network_config::kGUID, guid);
+  effective->SetKey(::onc::network_config::kGUID, base::Value(guid));
 
   // Remove irrelevant fields.
   onc::Normalizer normalizer(true /* remove recommended fields */);
@@ -347,8 +339,7 @@ std::unique_ptr<base::DictionaryValue> CreateShillConfiguration(
       onc::TranslateONCObjectToShill(&onc::kNetworkConfigurationSignature,
                                      *effective));
 
-  shill_dictionary->SetStringWithoutPathExpansion(shill::kProfileProperty,
-                                                  profile.path);
+  shill_dictionary->SetKey(shill::kProfileProperty, base::Value(profile.path));
 
   // If AutoConnect is enabled by policy, set the ManagedCredentials property to
   // indicate to Shill that this network can be used for autoconnect even
@@ -361,8 +352,8 @@ std::unique_ptr<base::DictionaryValue> CreateShillConfiguration(
   if (network_policy && IsAutoConnectEnabledInPolicy(*network_policy)) {
     VLOG(1) << "Enable ManagedCredentials for managed network with GUID "
             << guid;
-    shill_dictionary->SetBooleanWithoutPathExpansion(
-        shill::kManagedCredentialsProperty, true);
+    shill_dictionary->SetKey(shill::kManagedCredentialsProperty,
+                             base::Value(true));
   }
 
   if (!network_policy && global_policy) {
@@ -385,7 +376,7 @@ std::unique_ptr<base::DictionaryValue> CreateShillConfiguration(
     std::unique_ptr<base::DictionaryValue> sanitized_user_settings(
         onc::MaskCredentialsInOncObject(onc::kNetworkConfigurationSignature,
                                         *user_settings, kFakeCredential));
-    ui_data->set_user_settings(std::move(sanitized_user_settings));
+    ui_data->SetUserSettingsDictionary(std::move(sanitized_user_settings));
   }
 
   shill_property_util::SetUIData(*ui_data, shill_dictionary.get());
@@ -398,10 +389,9 @@ std::unique_ptr<base::DictionaryValue> CreateShillConfiguration(
 const base::DictionaryValue* FindMatchingPolicy(
     const GuidToPolicyMap& policies,
     const base::DictionaryValue& actual_network) {
-  for (GuidToPolicyMap::const_iterator it = policies.begin();
-       it != policies.end(); ++it) {
+  for (auto it = policies.begin(); it != policies.end(); ++it) {
     if (IsPolicyMatching(*it->second, actual_network))
-      return it->second;
+      return it->second.get();
   }
   return NULL;
 }

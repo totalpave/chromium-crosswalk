@@ -4,14 +4,12 @@
 
 #include "components/sync_bookmarks/bookmark_model_associator.h"
 
-#include <memory>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "base/containers/hash_tables.h"
 #include "base/format_macros.h"
 #include "base/location.h"
-#include "base/macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -20,27 +18,26 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/bookmarks/browser/bookmark_client.h"
 #include "components/bookmarks/browser/bookmark_model.h"
+#include "components/sync/base/cryptographer.h"
+#include "components/sync/base/data_type_histogram.h"
+#include "components/sync/engine/engine_util.h"
+#include "components/sync/model/sync_error.h"
+#include "components/sync/model/sync_merge_result.h"
+#include "components/sync/syncable/delete_journal.h"
+#include "components/sync/syncable/entry.h"
+#include "components/sync/syncable/read_node.h"
+#include "components/sync/syncable/read_transaction.h"
+#include "components/sync/syncable/syncable_write_transaction.h"
+#include "components/sync/syncable/write_node.h"
+#include "components/sync/syncable/write_transaction.h"
 #include "components/sync_bookmarks/bookmark_change_processor.h"
-#include "components/sync_driver/sync_client.h"
 #include "components/undo/bookmark_undo_service.h"
 #include "components/undo/bookmark_undo_utils.h"
-#include "sync/api/sync_error.h"
-#include "sync/api/sync_merge_result.h"
-#include "sync/internal_api/public/delete_journal.h"
-#include "sync/internal_api/public/read_node.h"
-#include "sync/internal_api/public/read_transaction.h"
-#include "sync/internal_api/public/write_node.h"
-#include "sync/internal_api/public/write_transaction.h"
-#include "sync/internal_api/syncapi_internal.h"
-#include "sync/syncable/entry.h"
-#include "sync/syncable/syncable_write_transaction.h"
-#include "sync/util/cryptographer.h"
-#include "sync/util/data_type_histogram.h"
 
 using bookmarks::BookmarkModel;
 using bookmarks::BookmarkNode;
 
-namespace browser_sync {
+namespace sync_bookmarks {
 
 // The sync protocol identifies top-level entities by means of well-known tags,
 // which should not be confused with titles.  Each tag corresponds to a
@@ -76,7 +73,7 @@ class BookmarkNodeFinder {
   explicit BookmarkNodeFinder(const BookmarkNode* parent_node);
 
   // Finds the bookmark node that matches the given url, title and folder
-  // attribute. Returns the matching node if one exists; NULL otherwise.
+  // attribute. Returns the matching node if one exists; null otherwise.
   // If there are multiple matches then a node with ID matching |preferred_id|
   // is returned; otherwise the first matching node is returned.
   // If a matching node is found, it's removed for further matches.
@@ -96,10 +93,9 @@ class BookmarkNodeFinder {
   // Maps bookmark node titles to instances, duplicates allowed.
   // Titles are converted to the sync internal format before
   // being used as keys for the map.
-  typedef base::hash_multimap<std::string,
-                              const BookmarkNode*> BookmarkNodeMap;
-  typedef std::pair<BookmarkNodeMap::iterator,
-                    BookmarkNodeMap::iterator> BookmarkNodeRange;
+  using BookmarkNodeMap = std::multimap<std::string, const BookmarkNode*>;
+  using BookmarkNodeRange =
+      std::pair<BookmarkNodeMap::iterator, BookmarkNodeMap::iterator>;
 
   // Converts and truncates bookmark titles in the form sync does internally
   // to avoid mismatches due to sync munging titles.
@@ -152,10 +148,8 @@ const BookmarkNode* BookmarkNodeFinder::FindBookmarkNode(
   std::string adjusted_title;
   ConvertTitleToSyncInternalFormat(title, &adjusted_title);
   BookmarkNodeRange range = child_nodes_.equal_range(adjusted_title);
-  BookmarkNodeMap::iterator match_iter = range.second;
-  for (BookmarkNodeMap::iterator iter = range.first;
-       iter != range.second;
-       ++iter) {
+  auto match_iter = range.second;
+  for (auto iter = range.first; iter != range.second; ++iter) {
     // Then within the range match the node by the folder bit
     // and the url.
     const BookmarkNode* node = iter->second;
@@ -279,13 +273,7 @@ void BookmarkModelAssociator::Context::IncrementSyncItemsDeleted(int count) {
 void BookmarkModelAssociator::Context::UpdateDuplicateCount(
     const base::string16& title,
     const GURL& url) {
-  // base::Hash is defined for 8-byte strings only so have to
-  // cast the title data to char* and double the length in order to
-  // compute its hash.
-  size_t bookmark_hash = base::Hash(reinterpret_cast<const char*>(title.data()),
-                                    title.length() * 2) ^
-                         base::Hash(url.spec());
-
+  size_t bookmark_hash = base::Hash(title) ^ base::Hash(url.spec());
   if (!hashes_.insert(bookmark_hash).second) {
     // This hash code already exists in the set.
     ++duplicate_count_;
@@ -308,14 +296,16 @@ void BookmarkModelAssociator::Context::MarkForVersionUpdate(
 
 BookmarkModelAssociator::BookmarkModelAssociator(
     BookmarkModel* bookmark_model,
-    sync_driver::SyncClient* sync_client,
+    BookmarkUndoService* bookmark_undo_service,
+    favicon::FaviconService* favicon_service,
     syncer::UserShare* user_share,
-    syncer::DataTypeErrorHandler* unrecoverable_error_handler,
+    std::unique_ptr<syncer::DataTypeErrorHandler> unrecoverable_error_handler,
     bool expect_mobile_bookmarks_folder)
     : bookmark_model_(bookmark_model),
-      sync_client_(sync_client),
+      bookmark_undo_service_(bookmark_undo_service),
+      favicon_service_(favicon_service),
       user_share_(user_share),
-      unrecoverable_error_handler_(unrecoverable_error_handler),
+      unrecoverable_error_handler_(std::move(unrecoverable_error_handler)),
       expect_mobile_bookmarks_folder_(expect_mobile_bookmarks_folder),
       weak_factory_(this) {
   DCHECK(bookmark_model_);
@@ -325,6 +315,18 @@ BookmarkModelAssociator::BookmarkModelAssociator(
 
 BookmarkModelAssociator::~BookmarkModelAssociator() {
   DCHECK(thread_checker_.CalledOnValidThread());
+}
+
+bookmarks::BookmarkModel* BookmarkModelAssociator::GetBookmarkModel() {
+  return bookmark_model_;
+}
+
+favicon::FaviconService* BookmarkModelAssociator::GetFaviconService() {
+  return favicon_service_;
+}
+
+BookmarkUndoService* BookmarkModelAssociator::GetBookmarkUndoService() {
+  return bookmark_undo_service_;
 }
 
 syncer::SyncError BookmarkModelAssociator::DisassociateModels() {
@@ -342,7 +344,7 @@ int64_t BookmarkModelAssociator::GetSyncIdFromChromeId(const int64_t& node_id) {
 const BookmarkNode* BookmarkModelAssociator::GetChromeNodeFromSyncId(
     int64_t sync_id) {
   SyncIdToBookmarkNodeMap::const_iterator iter = id_map_inverse_.find(sync_id);
-  return iter == id_map_inverse_.end() ? NULL : iter->second;
+  return iter == id_map_inverse_.end() ? nullptr : iter->second;
 }
 
 bool BookmarkModelAssociator::InitSyncNodeFromChromeId(
@@ -384,7 +386,7 @@ void BookmarkModelAssociator::Associate(const BookmarkNode* node,
 
 void BookmarkModelAssociator::Disassociate(int64_t sync_id) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  SyncIdToBookmarkNodeMap::iterator iter = id_map_inverse_.find(sync_id);
+  auto iter = id_map_inverse_.find(sync_id);
   if (iter == id_map_inverse_.end())
     return;
   id_map_.erase(iter->second->id());
@@ -447,8 +449,7 @@ syncer::SyncError BookmarkModelAssociator::AssociateModels(
     syncer::SyncMergeResult* syncer_merge_result) {
   // Since any changes to the bookmark model made here are not user initiated,
   // these change should not be undoable and so suspend the undo tracking.
-  ScopedSuspendBookmarkUndo suspend_undo(
-      sync_client_->GetBookmarkUndoServiceIfExists());
+  ScopedSuspendBookmarkUndo suspend_undo(bookmark_undo_service_);
 
   Context context(local_merge_result, syncer_merge_result);
 
@@ -647,10 +648,10 @@ syncer::SyncError BookmarkModelAssociator::BuildAssociations(Context* context) {
   BookmarkChangeProcessor::UpdateTransactionVersion(
       new_version, bookmark_model_, context->bookmarks_for_version_update());
 
-  UMA_HISTOGRAM_COUNTS("Sync.BookmarksDuplicationsAtAssociation",
-                       context->duplicate_count());
-  UMA_HISTOGRAM_COUNTS("Sync.BookmarksNewDuplicationsAtAssociation",
-                       context->duplicate_count() - initial_duplicate_count);
+  UMA_HISTOGRAM_COUNTS_1M("Sync.BookmarksDuplicationsAtAssociation",
+                          context->duplicate_count());
+  UMA_HISTOGRAM_COUNTS_1M("Sync.BookmarksNewDuplicationsAtAssociation",
+                          context->duplicate_count() - initial_duplicate_count);
 
   if (context->duplicate_count() > initial_duplicate_count) {
     UMA_HISTOGRAM_ENUMERATION("Sync.BookmarksModelSyncStateAtNewDuplication",
@@ -669,8 +670,7 @@ syncer::SyncError BookmarkModelAssociator::BuildAssociations(
   BookmarkNodeFinder node_finder(parent_node);
 
   int index = 0;
-  for (std::vector<int64_t>::const_iterator it = sync_ids.begin();
-       it != sync_ids.end(); ++it) {
+  for (auto it = sync_ids.begin(); it != sync_ids.end(); ++it) {
     int64_t sync_child_id = *it;
     syncer::ReadNode sync_child_node(trans);
     if (sync_child_node.InitByIdLookup(sync_child_id) !=
@@ -693,7 +693,7 @@ syncer::SyncError BookmarkModelAssociator::BuildAssociations(
                         (parent_node->GetChild(index) == child_node);
       if (!is_in_sync) {
         BookmarkChangeProcessor::UpdateBookmarkWithSyncData(
-            sync_child_node, bookmark_model_, child_node, sync_client_);
+            sync_child_node, bookmark_model_, child_node, favicon_service_);
         bookmark_model_->Move(child_node, parent_node, index);
         context->IncrementLocalItemsModified();
         context->MarkForVersionUpdate(child_node);
@@ -729,7 +729,7 @@ syncer::SyncError BookmarkModelAssociator::BuildAssociations(
   for (int i = index; i < parent_node->child_count(); ++i) {
     int64_t sync_child_id = BookmarkChangeProcessor::CreateSyncNode(
         parent_node, bookmark_model_, i, trans, this,
-        unrecoverable_error_handler_);
+        unrecoverable_error_handler_.get());
     if (syncer::kInvalidId == sync_child_id) {
       return unrecoverable_error_handler_->CreateAndUploadError(
           FROM_HERE, "Failed to create sync node.", model_type());
@@ -757,20 +757,17 @@ const BookmarkNode* BookmarkModelAssociator::CreateBookmarkNode(
   const std::string& sync_title = sync_child_node->GetTitle();
 
   if (!sync_child_node->GetIsFolder() && !url.is_valid()) {
-    unrecoverable_error_handler_->CreateAndUploadError(
-        FROM_HERE,
-        "Cannot associate sync node " + sync_child_node->GetSyncId().value() +
-            " with invalid url " + url.possibly_invalid_spec() + " and title " +
-            sync_title,
-        model_type());
-    // Don't propagate the error to the model_type in this case.
+    LOG(WARNING) << "Cannot associate sync node "
+                 << sync_child_node->GetSyncId().value() << " with invalid url "
+                 << url.possibly_invalid_spec() << " and title " << sync_title;
+    // Don't propagate an error to the model_type in this case.
     return nullptr;
   }
 
   base::string16 bookmark_title = base::UTF8ToUTF16(sync_title);
   const BookmarkNode* child_node = BookmarkChangeProcessor::CreateBookmarkNode(
       bookmark_title, url, sync_child_node, parent_node, bookmark_model_,
-      sync_client_, bookmark_index);
+      favicon_service_, bookmark_index);
   if (!child_node) {
     *error = unrecoverable_error_handler_->CreateAndUploadError(
         FROM_HERE, "Failed to create bookmark node with title " + sync_title +
@@ -783,22 +780,6 @@ const BookmarkNode* BookmarkModelAssociator::CreateBookmarkNode(
   return child_node;
 }
 
-int BookmarkModelAssociator::RemoveSyncNodeHierarchy(
-    syncer::WriteTransaction* trans,
-    int64_t sync_id) {
-  syncer::WriteNode sync_node(trans);
-  if (sync_node.InitByIdLookup(sync_id) != syncer::BaseNode::INIT_OK) {
-    syncer::SyncError error(FROM_HERE, syncer::SyncError::DATATYPE_ERROR,
-                            "Could not lookup bookmark node for ID deletion.",
-                            syncer::BOOKMARKS);
-    unrecoverable_error_handler_->OnSingleDataTypeUnrecoverableError(error);
-    return 0;
-  }
-
-  return BookmarkChangeProcessor::RemoveSyncNodeHierarchy(trans, &sync_node,
-                                                          this);
-}
-
 struct FolderInfo {
   FolderInfo(const BookmarkNode* f, const BookmarkNode* p, int64_t id)
       : folder(f), parent(p), sync_id(id) {}
@@ -806,7 +787,7 @@ struct FolderInfo {
   const BookmarkNode* parent;
   int64_t sync_id;
 };
-typedef std::vector<FolderInfo> FolderInfoList;
+using FolderInfoList = std::vector<FolderInfo>;
 
 void BookmarkModelAssociator::ApplyDeletesFromSyncJournal(
     syncer::BaseTransaction* trans,
@@ -828,7 +809,7 @@ void BookmarkModelAssociator::ApplyDeletesFromSyncJournal(
 
   // Check bookmark model from top to bottom.
   BookmarkStack dfs_stack;
-  for (BookmarkList::const_iterator it = context->bookmark_roots().begin();
+  for (auto it = context->bookmark_roots().begin();
        it != context->bookmark_roots().end(); ++it) {
     dfs_stack.push(*it);
   }
@@ -893,8 +874,7 @@ void BookmarkModelAssociator::ApplyDeletesFromSyncJournal(
   std::set<int64_t> journals_to_purge;
 
   // Remove empty folders from bottom to top.
-  for (FolderInfoList::reverse_iterator it = folders_matched.rbegin();
-      it != folders_matched.rend(); ++it) {
+  for (auto it = folders_matched.rbegin(); it != folders_matched.rend(); ++it) {
     if (it->folder->child_count() == 0) {
       bookmark_model_->Remove(it->folder);
       context->IncrementLocalItemsDeleted();
@@ -916,8 +896,8 @@ void BookmarkModelAssociator::PostPersistAssociationsTask() {
   if (weak_factory_.HasWeakPtrs())
     return;
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&BookmarkModelAssociator::PersistAssociations,
-                            weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&BookmarkModelAssociator::PersistAssociations,
+                                weak_factory_.GetWeakPtr()));
 }
 
 void BookmarkModelAssociator::PersistAssociations() {
@@ -946,7 +926,7 @@ void BookmarkModelAssociator::PersistAssociations() {
             syncer::SyncError::DATATYPE_ERROR,
             "Could not lookup bookmark node for ID persistence.",
             syncer::BOOKMARKS);
-        unrecoverable_error_handler_->OnSingleDataTypeUnrecoverableError(error);
+        unrecoverable_error_handler_->OnUnrecoverableError(error);
         return;
       }
       const BookmarkNode* node = GetChromeNodeFromSyncId(sync_id);
@@ -985,9 +965,10 @@ syncer::SyncError BookmarkModelAssociator::CheckModelSyncState(
     if (native_version == sync_version) {
       context->set_native_model_sync_state(IN_SYNC);
     } else {
+      // TODO(wychen): enum uma should be strongly typed. crbug.com/661401
       UMA_HISTOGRAM_ENUMERATION("Sync.LocalModelOutOfSync",
                                 ModelTypeToHistogramInt(syncer::BOOKMARKS),
-                                syncer::MODEL_TYPE_COUNT);
+                                static_cast<int>(syncer::MODEL_TYPE_COUNT));
 
       // Clear version on bookmark model so that we only report error once.
       bookmark_model_->SetNodeSyncTransactionVersion(
@@ -1015,4 +996,4 @@ syncer::SyncError BookmarkModelAssociator::CheckModelSyncState(
   return syncer::SyncError();
 }
 
-}  // namespace browser_sync
+}  // namespace sync_bookmarks

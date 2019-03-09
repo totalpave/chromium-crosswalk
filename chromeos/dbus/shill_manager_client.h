@@ -7,18 +7,14 @@
 
 #include <string>
 
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/dbus_client.h"
 #include "chromeos/dbus/dbus_method_call_status.h"
 #include "chromeos/dbus/shill_client_helper.h"
 
 namespace dbus {
 class ObjectPath;
-}
-
-namespace net {
-class IPEndPoint;
 }
 
 namespace chromeos {
@@ -28,13 +24,23 @@ class ShillPropertyChangedObserver;
 // ShillManagerClient is used to communicate with the Shill Manager
 // service.  All methods should be called from the origin thread which
 // initializes the DBusThreadManager instance.
-class CHROMEOS_EXPORT ShillManagerClient : public DBusClient {
+class COMPONENT_EXPORT(CHROMEOS_DBUS) ShillManagerClient : public DBusClient {
  public:
   typedef ShillClientHelper::PropertyChangedHandler PropertyChangedHandler;
   typedef ShillClientHelper::DictionaryValueCallback DictionaryValueCallback;
   typedef ShillClientHelper::ErrorCallback ErrorCallback;
-  typedef ShillClientHelper::StringCallback StringCallback;
-  typedef ShillClientHelper::BooleanCallback BooleanCallback;
+
+  struct NetworkThrottlingStatus {
+    // Enable or disable network bandwidth throttling.
+    // Following fields are available only if |enabled| is true.
+    bool enabled;
+
+    // Uploading rate (kbits/s).
+    uint32_t upload_rate_kbits;
+
+    // Downloading rate (kbits/s).
+    uint32_t download_rate_kbits;
+  };
 
   // Interface for setting up devices, services, and technologies for testing.
   // Accessed through GetTestInterface(), only implemented in the Stub Impl.
@@ -91,40 +97,14 @@ class CHROMEOS_EXPORT ShillManagerClient : public DBusClient {
     // Sets the 'best' service to connect to on a ConnectToBestServices call.
     virtual void SetBestServiceToConnect(const std::string& service_path) = 0;
 
+    // Returns the current network throttling status.
+    virtual const NetworkThrottlingStatus& GetNetworkThrottlingStatus() = 0;
+
+    // Returns the current Fast Transition status.
+    virtual bool GetFastTransitionStatus() = 0;
+
    protected:
     virtual ~TestInterface() {}
-  };
-
-  // Properties used to verify the origin device.
-  struct VerificationProperties {
-    VerificationProperties();
-    ~VerificationProperties();
-
-    // A string containing a PEM-encoded X.509 certificate for use in verifying
-    // the signed data.
-    std::string certificate;
-
-    // A string containing a PEM-encoded RSA public key to be used to compare
-    // with the one in signedData
-    std::string public_key;
-
-    // A string containing a base64-encoded random binary data for use in
-    // verifying the signed data.
-    std::string nonce;
-
-    // A string containing the identifying data string signed by the device.
-    std::string signed_data;
-
-    // A string containing the serial number of the device.
-    std::string device_serial;
-
-    // A string containing the SSID of the device. Only set if the device has
-    // already been setup once.
-    std::string device_ssid;
-
-    // A string containing the BSSID of the device. Only set if the device has
-    // already been setup.
-    std::string device_bssid;
   };
 
   ~ShillManagerClient() override;
@@ -195,34 +175,17 @@ class CHROMEOS_EXPORT ShillManagerClient : public DBusClient {
                           const ObjectPathCallback& callback,
                           const ErrorCallback& error_callback) = 0;
 
-  // Verifies that the given data corresponds to a trusted device, and returns
-  // true to the callback if it is.
-  virtual void VerifyDestination(const VerificationProperties& properties,
-                                 const BooleanCallback& callback,
-                                 const ErrorCallback& error_callback) = 0;
-
-  // Verifies that the given data corresponds to a trusted device, and if it is,
-  // returns the encrypted credentials for connecting to the network represented
-  // by the given |service_path|, encrypted using the |public_key| for the
-  // trusted device. If the device is not trusted, returns the empty string.
-  virtual void VerifyAndEncryptCredentials(
-      const VerificationProperties& properties,
-      const std::string& service_path,
-      const StringCallback& callback,
-      const ErrorCallback& error_callback) = 0;
-
-  // Verifies that the given data corresponds to a trusted device, and returns
-  // the |data| encrypted using the |public_key| for the trusted device. If the
-  // device is not trusted, returns the empty string.
-  virtual void VerifyAndEncryptData(const VerificationProperties& properties,
-                                    const std::string& data,
-                                    const StringCallback& callback,
-                                    const ErrorCallback& error_callback) = 0;
-
   // For each technology present, connects to the "best" service available.
   // Called once the user is logged in and certificates are loaded.
   virtual void ConnectToBestServices(const base::Closure& callback,
                                      const ErrorCallback& error_callback) = 0;
+
+  // Enable or disable network bandwidth throttling, on all interfaces on the
+  // system.
+  virtual void SetNetworkThrottlingStatus(
+      const NetworkThrottlingStatus& status,
+      const base::Closure& callback,
+      const ErrorCallback& error_callback) = 0;
 
   // Returns an interface for testing (stub only), or returns NULL.
   virtual TestInterface* GetTestInterface() = 0;

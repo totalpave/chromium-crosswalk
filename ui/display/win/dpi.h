@@ -6,33 +6,52 @@
 #define UI_DISPLAY_WIN_DPI_H_
 
 #include "ui/display/display_export.h"
-#include "ui/gfx/geometry/size.h"
 
 namespace display {
 namespace win {
 
+// Deprecated. Use --force-device-scale-factor instead.
+//
 // Sets the device scale factor that will be used unless overridden on the
-// command line by --force-device-scale-factor.  If this is not called, and that
-// flag is not used, the scale factor used by the DIP conversion functions below
-// will be that returned by GetDPIScale().
+// command line by --force-device-scale-factor.
 DISPLAY_EXPORT void SetDefaultDeviceScaleFactor(float scale);
 
-// Gets the scale factor of the display. For example, if the display DPI is
-// 96 then the scale factor is 1.0.  This clamps scale factors <= 1.25 to 1.0 to
-// maintain previous (non-DPI-aware) behavior where only the font size was
-// boosted.
+// Deprecated. Use win::ScreenWin::GetScaleFactorForHWND instead.
+//
+// Gets the system's scale factor. For example, if the system DPI is 96 then the
+// scale factor is 1.0. This does not handle per-monitor DPI.
 DISPLAY_EXPORT float GetDPIScale();
 
+// Deprecated. Use win::ScreenWin::GetDPIForHWND instead.
+//
 // Returns the equivalent DPI for |device_scaling_factor|.
 DISPLAY_EXPORT int GetDPIFromScalingFactor(float device_scaling_factor);
 
+// Returns a factor to adjust a system font's height by, to adjust for
+// accessibility measures already built into the font, in order to prevent
+// applying the same scale factor twice. Value should be in the range
+// 0.0 (exclusive) to 1.0 (inclusive).
+//
+// Windows will add text scaling factor into the logical size of its default
+// system fonts (which it does *not* do for DPI scaling). Since we're scaling
+// the entire UI by a combination of text scale and DPI scale, this results in
+// double scaling. Call this function to unscale the font before using it in
+// any of our rendering code.
+DISPLAY_EXPORT double GetAccessibilityFontScale();
+
+namespace internal {
+// Note: These methods do not take accessibility adjustments into account.
+
+// Equivalent to GetDPIScale() but ignores the --force-device-scale-factor flag.
+float GetUnforcedDeviceScaleFactor();
+
 // Returns the equivalent scaling factor for |dpi|.
-DISPLAY_EXPORT float GetScalingFactorFromDPI(int dpi);
+float GetScalingFactorFromDPI(int dpi);
 
-// Win32's GetSystemMetrics uses pixel measures. This function calls
-// GetSystemMetrics for the given |metric|, then converts the result to DIP.
-DISPLAY_EXPORT int GetSystemMetricsInDIP(int metric);
+// Gets the default DPI for the system.
+int GetDefaultSystemDPI();
 
+}  // namespace internal
 }  // namespace win
 }  // namespace display
 

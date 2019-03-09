@@ -4,14 +4,16 @@
 
 #include "components/policy/core/common/cloud/external_policy_data_updater.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/callback.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/sequenced_task_runner.h"
-#include "base/stl_util.h"
 #include "components/policy/core/common/cloud/external_policy_data_fetcher.h"
 #include "crypto/sha2.h"
 #include "net/base/backoff_entry.h"
@@ -26,54 +28,54 @@ namespace {
 
 // For temporary errors (HTTP 500, RST, etc).
 const net::BackoffEntry::Policy kRetrySoonPolicy = {
-  // Number of initial errors to ignore before starting to back off.
-  0,
+    // Number of initial errors to ignore before starting to back off.
+    0,
 
-  // Initial delay in ms: 60 seconds.
-  1000 * 60,
+    // Initial delay in ms: 15 seconds.
+    1000 * 15,
 
-  // Factor by which the waiting time is multiplied.
-  2,
+    // Factor by which the waiting time is multiplied.
+    2,
 
-  // Fuzzing percentage; this spreads delays randomly between 80% and 100%
-  // of the calculated time.
-  0.20,
+    // Fuzzing percentage; this spreads delays randomly between 80% and 100%
+    // of the calculated time.
+    0.20,
 
-  // Maximum delay in ms: 12 hours.
-  1000 * 60 * 60 * 12,
+    // Maximum delay in ms: 12 hours.
+    1000 * 60 * 60 * 12,
 
-  // When to discard an entry: never.
-  -1,
+    // When to discard an entry: never.
+    -1,
 
-  // |always_use_initial_delay|; false means that the initial delay is
-  // applied after the first error, and starts backing off from there.
-  false,
+    // |always_use_initial_delay|; false means that the initial delay is
+    // applied after the first error, and starts backing off from there.
+    false,
 };
 
 // For other errors (request failed, server errors).
 const net::BackoffEntry::Policy kRetryLaterPolicy = {
-  // Number of initial errors to ignore before starting to back off.
-  0,
+    // Number of initial errors to ignore before starting to back off.
+    0,
 
-  // Initial delay in ms: 1 hour.
-  1000 * 60 * 60,
+    // Initial delay in ms: 1 minute.
+    1000 * 60,
 
-  // Factor by which the waiting time is multiplied.
-  2,
+    // Factor by which the waiting time is multiplied.
+    2,
 
-  // Fuzzing percentage; this spreads delays randomly between 80% and 100%
-  // of the calculated time.
-  0.20,
+    // Fuzzing percentage; this spreads delays randomly between 80% and 100%
+    // of the calculated time.
+    0.20,
 
-  // Maximum delay in ms: 12 hours.
-  1000 * 60 * 60 * 12,
+    // Maximum delay in ms: 12 hours.
+    1000 * 60 * 60 * 12,
 
-  // When to discard an entry: never.
-  -1,
+    // When to discard an entry: never.
+    -1,
 
-  // |always_use_initial_delay|; false means that the initial delay is
-  // applied after the first error, and starts backing off from there.
-  false,
+    // |always_use_initial_delay|; false means that the initial delay is
+    // applied after the first error, and starts backing off from there.
+    false,
 };
 
 // When the data fails validation (maybe because the policy URL and the data
@@ -132,28 +134,28 @@ class ExternalPolicyDataUpdater::FetchJob
   void Reschedule();
 
   // Always valid as long as |this| is alive.
-  ExternalPolicyDataUpdater* updater_;
+  ExternalPolicyDataUpdater* const updater_;
 
   const std::string key_;
   const ExternalPolicyDataUpdater::Request request_;
-  ExternalPolicyDataUpdater::FetchSuccessCallback callback_;
+  const ExternalPolicyDataUpdater::FetchSuccessCallback callback_;
 
   // If the job is currently running, a corresponding |fetch_job_| exists in the
   // |external_policy_data_fetcher_|. The job must eventually call back to the
   // |updater_|'s OnJobSucceeded() or OnJobFailed() method in this case.
   // If the job is currently not running, |fetch_job_| is NULL and no callbacks
   // should be invoked.
-  ExternalPolicyDataFetcher::Job* fetch_job_;  // Not owned.
+  ExternalPolicyDataFetcher::Job* fetch_job_ = nullptr;  // Not owned.
 
   // Some errors should trigger a limited number of retries, even with backoff.
   // This counts down the number of such retries to stop retrying once the limit
   // is reached.
-  int limited_retries_remaining_;
+  int limited_retries_remaining_ = kMaxLimitedRetries;
 
   // Various delays to retry a failed download, depending on the failure reason.
-  net::BackoffEntry retry_soon_entry_;
-  net::BackoffEntry retry_later_entry_;
-  net::BackoffEntry retry_much_later_entry_;
+  net::BackoffEntry retry_soon_entry_{&kRetrySoonPolicy};
+  net::BackoffEntry retry_later_entry_{&kRetryLaterPolicy};
+  net::BackoffEntry retry_much_later_entry_{&kRetryMuchLaterPolicy};
 
   DISALLOW_COPY_AND_ASSIGN(FetchJob);
 };
@@ -176,16 +178,7 @@ ExternalPolicyDataUpdater::FetchJob::FetchJob(
     const std::string& key,
     const ExternalPolicyDataUpdater::Request& request,
     const ExternalPolicyDataUpdater::FetchSuccessCallback& callback)
-    : updater_(updater),
-      key_(key),
-      request_(request),
-      callback_(callback),
-      fetch_job_(NULL),
-      limited_retries_remaining_(kMaxLimitedRetries),
-      retry_soon_entry_(&kRetrySoonPolicy),
-      retry_later_entry_(&kRetryLaterPolicy),
-      retry_much_later_entry_(&kRetryMuchLaterPolicy) {
-}
+    : updater_(updater), key_(key), request_(request), callback_(callback) {}
 
 ExternalPolicyDataUpdater::FetchJob::~FetchJob() {
   if (fetch_job_) {
@@ -207,8 +200,11 @@ const ExternalPolicyDataUpdater::Request&
 
 void ExternalPolicyDataUpdater::FetchJob::Start() {
   DCHECK(!fetch_job_);
+  DVLOG(1) << "Fetching data for " << key_ << " from " << request_.url << " .";
   // Start a fetch job in the |external_policy_data_fetcher_|. This will
   // eventually call back to OnFetchFinished() with the result.
+  // Passing |this| as base::Unretained() is safe here because the |FetchJob|
+  // destructor cancels the fetcher job if one is still running.
   fetch_job_ = updater_->external_policy_data_fetcher_->StartJob(
       GURL(request_.url), request_.max_size,
       base::Bind(&ExternalPolicyDataUpdater::FetchJob::OnFetchFinished,
@@ -219,35 +215,42 @@ void ExternalPolicyDataUpdater::FetchJob::OnFetchFinished(
     ExternalPolicyDataFetcher::Result result,
     std::unique_ptr<std::string> data) {
   // The fetch job in the |external_policy_data_fetcher_| is finished.
-  fetch_job_ = NULL;
+  fetch_job_ = nullptr;
 
   switch (result) {
     case ExternalPolicyDataFetcher::CONNECTION_INTERRUPTED:
       // The connection was interrupted. Try again soon.
+      DVLOG(1) << "Failed to fetch the data due to the interrupted connection.";
       OnFailed(&retry_soon_entry_);
       return;
     case ExternalPolicyDataFetcher::NETWORK_ERROR:
       // Another network error occurred. Try again later.
+      DVLOG(1) << "Failed to fetch the data due to a network error.";
       OnFailed(&retry_later_entry_);
       return;
     case ExternalPolicyDataFetcher::SERVER_ERROR:
       // Problem at the server. Try again soon.
+      LOG(WARNING) << "Failed to fetch the data due to a server HTTP error.";
       OnFailed(&retry_soon_entry_);
       return;
     case ExternalPolicyDataFetcher::CLIENT_ERROR:
       // Client error. This is unlikely to go away. Try again later, and give up
       // retrying after 3 attempts.
-      OnFailed(limited_retries_remaining_ ? &retry_later_entry_ : NULL);
+      LOG(WARNING) << "Failed to fetch the data due to a client HTTP error.";
+      OnFailed(limited_retries_remaining_ ? &retry_later_entry_ : nullptr);
       if (limited_retries_remaining_)
         --limited_retries_remaining_;
       return;
     case ExternalPolicyDataFetcher::HTTP_ERROR:
       // Any other type of HTTP failure. Try again later.
+      LOG(WARNING) << "Failed to fetch the data due to an HTTP error.";
       OnFailed(&retry_later_entry_);
       return;
     case ExternalPolicyDataFetcher::MAX_SIZE_EXCEEDED:
       // Received |data| exceeds maximum allowed size. This may be because the
       // data being served is stale. Try again much later.
+      LOG(WARNING) << "Failed to fetch the data due to the excessive size (max "
+                   << request_.max_size << " bytes).";
       OnFailed(&retry_much_later_entry_);
       return;
     case ExternalPolicyDataFetcher::SUCCESS:
@@ -257,6 +260,7 @@ void ExternalPolicyDataUpdater::FetchJob::OnFetchFinished(
   if (crypto::SHA256HashString(*data) != request_.hash) {
     // Received |data| does not match expected hash. This may be because the
     // data being served is stale. Try again much later.
+    LOG(ERROR) << "The fetched data doesn't match the expected hash.";
     OnFailed(&retry_much_later_entry_);
     return;
   }
@@ -274,14 +278,14 @@ void ExternalPolicyDataUpdater::FetchJob::OnFetchFinished(
 void ExternalPolicyDataUpdater::FetchJob::OnFailed(net::BackoffEntry* entry) {
   if (entry) {
     entry->InformOfRequest(false);
+    const base::TimeDelta delay = entry->GetTimeUntilRelease();
+    DVLOG(1) << "Rescheduling the fetch in " << delay << ".";
 
     // This function may have been invoked because the job was obsoleted and is
     // in the process of being deleted. If this is the case, the WeakPtr will
     // become invalid and the delayed task will never run.
     updater_->task_runner_->PostDelayedTask(
-        FROM_HERE,
-        base::Bind(&FetchJob::Reschedule, AsWeakPtr()),
-        entry->GetTimeUntilRelease());
+        FROM_HERE, base::BindOnce(&FetchJob::Reschedule, AsWeakPtr()), delay);
   }
 
   updater_->OnJobFailed(this);
@@ -296,56 +300,65 @@ ExternalPolicyDataUpdater::ExternalPolicyDataUpdater(
     std::unique_ptr<ExternalPolicyDataFetcher> external_policy_data_fetcher,
     size_t max_parallel_fetches)
     : task_runner_(task_runner),
-      external_policy_data_fetcher_(external_policy_data_fetcher.release()),
-      max_parallel_jobs_(max_parallel_fetches),
-      running_jobs_(0),
-      shutting_down_(false) {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+      external_policy_data_fetcher_(std::move(external_policy_data_fetcher)),
+      max_parallel_jobs_(max_parallel_fetches) {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
 }
 
 ExternalPolicyDataUpdater::~ExternalPolicyDataUpdater() {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  // No RunsTasksInCurrentSequence() check to avoid unit tests failures.
+  // In unit tests the browser process instance is deleted only after test ends
+  // and test task scheduler is shutted down. Therefore we need to delete some
+  // components of BrowserPolicyConnector (ResourceCache and
+  // CloudExternalDataManagerBase::Backend) manually when task runner doesn't
+  // accept new tasks (DeleteSoon in this case). This leads to the situation
+  // when this destructor is called not on |task_runner|.
+
+  // Raise the flag to prevent jobs from being started during the destruction of
+  // |job_map_|.
   shutting_down_ = true;
-  STLDeleteValues(&job_map_);
 }
 
 void ExternalPolicyDataUpdater::FetchExternalData(
-    const std::string key,
+    const std::string& key,
     const Request& request,
     const FetchSuccessCallback& callback) {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
   // Check whether a job exists for this |key| already.
-  FetchJob* job = job_map_[key];
+  FetchJob* job = job_map_[key].get();
   if (job) {
     // If the current |job| is handling the given |request| already, nothing
     // needs to be done.
-    if (job->request() == request)
+    if (job->request() == request) {
+      DVLOG(2) << "Fetching job already scheduled for " << key
+               << " with the same parameters.";
       return;
+    }
 
     // Otherwise, the current |job| is obsolete. If the |job| is on the queue,
     // its WeakPtr will be invalidated and skipped by StartNextJobs(). If |job|
     // is currently running, it will call OnJobFailed() immediately.
-    delete job;
+    DVLOG(2) << "Removing the old job for " << key << ".";
     job_map_.erase(key);
   }
 
   // Start a new job to handle |request|.
   job = new FetchJob(this, key, request, callback);
-  job_map_[key] = job;
+  job_map_[key] = base::WrapUnique(job);
   ScheduleJob(job);
 }
 
 void ExternalPolicyDataUpdater::CancelExternalDataFetch(
     const std::string& key) {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
   // If a |job| exists for this |key|, delete it. If the |job| is on the queue,
   // its WeakPtr will be invalidated and skipped by StartNextJobs(). If |job| is
   // currently running, it will call OnJobFailed() immediately.
-  std::map<std::string, FetchJob*>::iterator job = job_map_.find(key);
+  auto job = job_map_.find(key);
   if (job != job_map_.end()) {
-    delete job->second;
+    DVLOG(1) << "Cancelling the job for " << key << ".";
     job_map_.erase(job);
   }
 }
@@ -368,7 +381,7 @@ void ExternalPolicyDataUpdater::StartNextJobs() {
 }
 
 void ExternalPolicyDataUpdater::ScheduleJob(FetchJob* job) {
-  DCHECK_EQ(job_map_[job->key()], job);
+  DCHECK_EQ(job_map_[job->key()].get(), job);
 
   job_queue_.push(job->AsWeakPtr());
 
@@ -377,20 +390,20 @@ void ExternalPolicyDataUpdater::ScheduleJob(FetchJob* job) {
 
 void ExternalPolicyDataUpdater::OnJobSucceeded(FetchJob* job) {
   DCHECK(running_jobs_);
-  DCHECK_EQ(job_map_[job->key()], job);
+  DCHECK_EQ(job_map_[job->key()].get(), job);
 
   --running_jobs_;
   job_map_.erase(job->key());
-  delete job;
 
   StartNextJobs();
 }
 
 void ExternalPolicyDataUpdater::OnJobFailed(FetchJob* job) {
   DCHECK(running_jobs_);
-  DCHECK_EQ(job_map_[job->key()], job);
-
   --running_jobs_;
+
+  // Don't touch |job_map_|; deletion of |FetchJob|s causes a call to this
+  // method, so |job_map_| is possibly in an inconsistent state.
 
   // The job is not deleted when it fails because a retry attempt may have been
   // scheduled.

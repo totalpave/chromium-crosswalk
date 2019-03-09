@@ -7,6 +7,7 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "content/browser/frame_host/navigation_handle_impl.h"
 #include "content/browser/frame_host/navigator.h"
 #include "content/common/content_export.h"
 
@@ -15,7 +16,7 @@ namespace content {
 class NavigationControllerImpl;
 class InterstitialPageImpl;
 
-// Navigator implementation specific to InterstialPageImpl. It allows only one
+// Navigator implementation specific to InterstitialPageImpl. It allows only one
 // navigation to commit, since interstitial pages are not allowed to navigate.
 class CONTENT_EXPORT InterstitialPageNavigatorImpl : public Navigator {
  public:
@@ -23,14 +24,21 @@ class CONTENT_EXPORT InterstitialPageNavigatorImpl : public Navigator {
       InterstitialPageImpl* interstitial,
       NavigationControllerImpl* navigation_controller);
 
+  // Navigator implementation.
   NavigatorDelegate* GetDelegate() override;
   NavigationController* GetController() override;
-  void DidNavigate(RenderFrameHostImpl* render_frame_host,
-                   const FrameHostMsg_DidCommitProvisionalLoad_Params&
-                       input_params) override;
+  void DidNavigate(
+      RenderFrameHostImpl* render_frame_host,
+      const FrameHostMsg_DidCommitProvisionalLoad_Params& input_params,
+      std::unique_ptr<NavigationRequest> navigation_request,
+      bool was_within_same_document) override;
+
+  // Disables any further action when the interstitial page is preparing to
+  // delete itself.
+  void Disable();
 
  private:
-  ~InterstitialPageNavigatorImpl() override {}
+  ~InterstitialPageNavigatorImpl() override;
 
   // The InterstitialPage with which this navigator object is associated.
   // Non owned pointer.
@@ -38,6 +46,10 @@ class CONTENT_EXPORT InterstitialPageNavigatorImpl : public Navigator {
 
   // The NavigationController associated with this navigator.
   NavigationControllerImpl* controller_;
+
+  // Whether this interstitial is still enabled.  Becomes false when the
+  // interstitial page is asychronously deleting itself.
+  bool enabled_;
 
   DISALLOW_COPY_AND_ASSIGN(InterstitialPageNavigatorImpl);
 };

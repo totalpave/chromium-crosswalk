@@ -8,12 +8,14 @@
 #include <string>
 
 #include "base/macros.h"
-#include "ios/public/provider/web/web_ui_ios_controller.h"
+#include "ios/web/public/webui/web_ui_ios_controller.h"
 
 namespace web {
 class WebUIIOS;
 }
 
+// The WebUI controller for chrome://chrome-urls, chrome://histograms,
+// and chrome://credits.
 class AboutUI : public web::WebUIIOSController {
  public:
   explicit AboutUI(web::WebUIIOS* web_ui, const std::string& name);

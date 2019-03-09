@@ -5,17 +5,19 @@
 #ifndef CHROME_BROWSER_CHROMEOS_SETTINGS_CROS_SETTINGS_H_
 #define CHROME_BROWSER_CHROMEOS_SETTINGS_CROS_SETTINGS_H_
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "base/callback_forward.h"
 #include "base/callback_list.h"
-#include "base/containers/hash_tables.h"
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "chromeos/settings/cros_settings_provider.h"
+
+class PrefService;
 
 namespace base {
 class DictionaryValue;
@@ -28,26 +30,43 @@ namespace chromeos {
 class DeviceSettingsService;
 
 // This class manages per-device/global settings.
-class CrosSettings : public base::NonThreadSafe {
+class CrosSettings {
  public:
   // Manage singleton instance.
-  static void Initialize();
+  static void Initialize(PrefService* local_state);
   static bool IsInitialized();
   static void Shutdown();
   static CrosSettings* Get();
 
+  // Sets the singleton to |test_instance|. Does not take ownership of the
+  // instance. Should be matched with a call to |ShutdownForTesting| once the
+  // test is finished and before the instance is deleted.
+  static void SetForTesting(CrosSettings* test_instance);
+  static void ShutdownForTesting();
+
   // Checks if the given username is whitelisted and allowed to sign-in to
   // this device. |wildcard_match| may be NULL. If it's present, it'll be set to
   // true if the whitelist check was satisfied via a wildcard.
-  static bool IsWhitelisted(const std::string& username, bool* wildcard_match);
+  bool IsUserWhitelisted(const std::string& username,
+                         bool* wildcard_match) const;
+
+  // Creates an instance with no providers as yet. This is meant for unit tests,
+  // production code uses the singleton returned by Get() above.
+  CrosSettings();
 
   // Creates a device settings service instance. This is meant for unit tests,
   // production code uses the singleton returned by Get() above.
-  explicit CrosSettings(DeviceSettingsService* device_settings_service);
+  CrosSettings(DeviceSettingsService* device_settings_service,
+               PrefService* local_state);
   virtual ~CrosSettings();
 
   // Helper function to test if the given |path| is a valid cros setting.
   static bool IsCrosSettings(const std::string& path);
+
+  // TODO(https://crbug.com/433840): There are no longer any callers of
+  // CrosSettings::Set. Still TODO: delete CrosSettings::Set, convenience forms
+  // of Set, all implementations of CrosSettingsProvider::Set, and remove any
+  // dependencies that are no longer needed.
 
   // Sets |in_value| to given |path| in cros settings.
   void Set(const std::string& path, const base::Value& in_value);
@@ -106,15 +125,21 @@ class CrosSettings : public base::NonThreadSafe {
                        const std::string& email,
                        bool* wildcard_match) const;
 
+  // Same as above, but receives already populated user list.
+  static bool FindEmailInList(const base::ListValue* list,
+                              const std::string& email,
+                              bool* wildcard_match);
+
   // Adding/removing of providers.
-  bool AddSettingsProvider(CrosSettingsProvider* provider);
-  bool RemoveSettingsProvider(CrosSettingsProvider* provider);
+  bool AddSettingsProvider(std::unique_ptr<CrosSettingsProvider> provider);
+  std::unique_ptr<CrosSettingsProvider> RemoveSettingsProvider(
+      CrosSettingsProvider* provider);
 
   // Add an observer Callback for changes for the given |path|.
-  typedef base::CallbackList<void(void)>::Subscription ObserverSubscription;
+  using ObserverSubscription = base::CallbackList<void(void)>::Subscription;
   std::unique_ptr<ObserverSubscription> AddSettingsObserver(
       const std::string& path,
-      const base::Closure& callback);
+      const base::Closure& callback) WARN_UNUSED_RESULT;
 
   // Returns the provider that handles settings with the |path| or prefix.
   CrosSettingsProvider* GetProvider(const std::string& path) const;
@@ -126,13 +151,14 @@ class CrosSettings : public base::NonThreadSafe {
   void FireObservers(const std::string& path);
 
   // List of ChromeOS system settings providers.
-  std::vector<CrosSettingsProvider*> providers_;
+  std::vector<std::unique_ptr<CrosSettingsProvider>> providers_;
 
   // A map from settings names to a list of observers. Observers get fired in
   // the order they are added.
-  typedef base::hash_map<std::string, base::CallbackList<void(void)>*>
-      SettingsObserverMap;
-  SettingsObserverMap settings_observers_;
+  std::map<std::string, std::unique_ptr<base::CallbackList<void(void)>>>
+      settings_observers_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(CrosSettings);
 };
@@ -141,7 +167,7 @@ class CrosSettings : public base::NonThreadSafe {
 // construction and tears it down again on destruction.
 class ScopedTestCrosSettings {
  public:
-  ScopedTestCrosSettings();
+  explicit ScopedTestCrosSettings(PrefService* local_state);
   ~ScopedTestCrosSettings();
 
  private:

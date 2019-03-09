@@ -4,6 +4,7 @@
 
 #include "extensions/browser/app_window/app_window_contents.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -12,17 +13,15 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
-#include "content/public/browser/resource_dispatcher_host.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/renderer_preferences.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "extensions/common/extension_messages.h"
+#include "third_party/blink/public/mojom/renderer_preferences.mojom.h"
 
 namespace extensions {
 
-AppWindowContentsImpl::AppWindowContentsImpl(AppWindow* host)
-    : host_(host), is_blocking_requests_(false), is_window_ready_(false) {}
+AppWindowContentsImpl::AppWindowContentsImpl(AppWindow* host) : host_(host) {}
 
 AppWindowContentsImpl::~AppWindowContentsImpl() {}
 
@@ -35,7 +34,7 @@ void AppWindowContentsImpl::Initialize(content::BrowserContext* context,
       context, creator_frame->GetSiteInstance());
   create_params.opener_render_process_id = creator_frame->GetProcess()->GetID();
   create_params.opener_render_frame_id = creator_frame->GetRoutingID();
-  web_contents_.reset(content::WebContents::Create(create_params));
+  web_contents_ = content::WebContents::Create(create_params);
 
   Observe(web_contents_.get());
   web_contents_->GetMutableRendererPrefs()->
@@ -44,19 +43,14 @@ void AppWindowContentsImpl::Initialize(content::BrowserContext* context,
 }
 
 void AppWindowContentsImpl::LoadContents(int32_t creator_process_id) {
-  // If the new view is in the same process as the creator, block the created
-  // RVH from loading anything until the background page has had a chance to
-  // do any initialization it wants. If it's a different process, the new RVH
-  // shouldn't communicate with the background page anyway (e.g. sandboxed).
-  if (web_contents_->GetMainFrame()->GetProcess()->GetID() ==
+  // Sandboxed page that are not in the Chrome App package are loaded in a
+  // different process.
+  if (web_contents_->GetMainFrame()->GetProcess()->GetID() !=
       creator_process_id) {
-    SuspendRenderFrameHost(web_contents_->GetMainFrame());
-  } else {
     VLOG(1) << "AppWindow created in new process ("
             << web_contents_->GetMainFrame()->GetProcess()->GetID()
             << ") != creator (" << creator_process_id << "). Routing disabled.";
   }
-
   web_contents_->GetController().LoadURL(
       url_, content::Referrer(), ui::PAGE_TRANSITION_LINK,
       std::string());
@@ -65,36 +59,21 @@ void AppWindowContentsImpl::LoadContents(int32_t creator_process_id) {
 void AppWindowContentsImpl::NativeWindowChanged(
     NativeAppWindow* native_app_window) {
   base::ListValue args;
-  base::DictionaryValue* dictionary = new base::DictionaryValue();
-  args.Append(dictionary);
-  host_->GetSerializedState(dictionary);
+  std::unique_ptr<base::DictionaryValue> dictionary(
+      new base::DictionaryValue());
+  host_->GetSerializedState(dictionary.get());
+  args.Append(std::move(dictionary));
 
   content::RenderFrameHost* rfh = web_contents_->GetMainFrame();
-  rfh->Send(new ExtensionMsg_MessageInvoke(
-      rfh->GetRoutingID(), host_->extension_id(), "app.window",
-      "updateAppWindowProperties", args, false));
+  rfh->Send(new ExtensionMsg_MessageInvoke(rfh->GetRoutingID(),
+                                           host_->extension_id(), "app.window",
+                                           "updateAppWindowProperties", args));
 }
 
-void AppWindowContentsImpl::NativeWindowClosed() {
-  content::RenderViewHost* rvh = web_contents_->GetRenderViewHost();
-  rvh->Send(new ExtensionMsg_AppWindowClosed(rvh->GetRoutingID()));
-}
-
-void AppWindowContentsImpl::DispatchWindowShownForTests() const {
-  base::ListValue args;
+void AppWindowContentsImpl::NativeWindowClosed(bool send_onclosed) {
   content::RenderFrameHost* rfh = web_contents_->GetMainFrame();
-  rfh->Send(new ExtensionMsg_MessageInvoke(
-      rfh->GetRoutingID(), host_->extension_id(), "app.window",
-      "appWindowShownForTests", args, false));
-}
-
-void AppWindowContentsImpl::OnWindowReady() {
-  is_window_ready_ = true;
-  if (is_blocking_requests_) {
-    is_blocking_requests_ = false;
-    content::ResourceDispatcherHost::ResumeBlockedRequestsForFrameFromUI(
-        web_contents_->GetMainFrame());
-  }
+  rfh->Send(
+      new ExtensionMsg_AppWindowClosed(rfh->GetRoutingID(), send_onclosed));
 }
 
 content::WebContents* AppWindowContentsImpl::GetWebContents() const {
@@ -105,9 +84,11 @@ WindowController* AppWindowContentsImpl::GetWindowController() const {
   return nullptr;
 }
 
-bool AppWindowContentsImpl::OnMessageReceived(const IPC::Message& message) {
+bool AppWindowContentsImpl::OnMessageReceived(
+    const IPC::Message& message,
+    content::RenderFrameHost* sender) {
   bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(AppWindowContentsImpl, message)
+  IPC_BEGIN_MESSAGE_MAP_WITH_PARAM(AppWindowContentsImpl, message, sender)
     IPC_MESSAGE_HANDLER(ExtensionHostMsg_UpdateDraggableRegions,
                         UpdateDraggableRegions)
     IPC_MESSAGE_UNHANDLED(handled = false)
@@ -117,23 +98,14 @@ bool AppWindowContentsImpl::OnMessageReceived(const IPC::Message& message) {
 
 void AppWindowContentsImpl::ReadyToCommitNavigation(
     content::NavigationHandle* handle) {
-  if (!is_window_ready_)
-    host_->OnReadyToCommitFirstNavigation();
+  host_->OnReadyToCommitFirstNavigation();
 }
 
 void AppWindowContentsImpl::UpdateDraggableRegions(
+    content::RenderFrameHost* sender,
     const std::vector<DraggableRegion>& regions) {
-  host_->UpdateDraggableRegions(regions);
-}
-
-void AppWindowContentsImpl::SuspendRenderFrameHost(
-    content::RenderFrameHost* rfh) {
-  DCHECK(rfh);
-  // Don't bother blocking requests if the renderer side is already good to go.
-  if (is_window_ready_)
-    return;
-  is_blocking_requests_ = true;
-  content::ResourceDispatcherHost::BlockRequestsForFrameFromUI(rfh);
+  if (!sender->GetParent())  // Only process events from the main frame.
+    host_->UpdateDraggableRegions(regions);
 }
 
 }  // namespace extensions

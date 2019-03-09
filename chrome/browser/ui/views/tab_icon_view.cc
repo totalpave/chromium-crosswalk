@@ -15,14 +15,13 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/views/tab_icon_view_model.h"
-#include "grit/theme_resources.h"
+#include "chrome/grit/theme_resources.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/theme_provider.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/paint_throbber.h"
 #include "ui/native_theme/native_theme.h"
-#include "ui/resources/grit/ui_resources.h"
 
 #if defined(OS_WIN)
 #include "chrome/browser/win/app_icon.h"
@@ -45,9 +44,8 @@ void TabIconView::InitializeIfNeeded() {
     // The default window icon is the application icon, not the default
     // favicon.
     HICON app_icon = GetAppIcon();
-    std::unique_ptr<SkBitmap> bitmap(
-        IconUtil::CreateSkBitmapFromHICON(app_icon, gfx::Size(16, 16)));
-    g_default_favicon = new gfx::ImageSkia(gfx::ImageSkiaRep(*bitmap, 1.0f));
+    g_default_favicon = new gfx::ImageSkia(gfx::ImageSkiaRep(
+        IconUtil::CreateSkBitmapFromHICON(app_icon, gfx::Size(16, 16)), 1.0f));
     DestroyIcon(app_icon);
 #else
     ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
@@ -58,10 +56,13 @@ void TabIconView::InitializeIfNeeded() {
 
 TabIconView::TabIconView(TabIconViewModel* model,
                          views::MenuButtonListener* listener)
-    : views::MenuButton(base::string16(), listener, false),
+    : views::MenuButton(base::string16(), listener),
       model_(model),
       is_light_(false) {
   InitializeIfNeeded();
+  // Inheriting from Button causes this View to be focusable, but it us
+  // purely decorative and should not be exposed as focusable in accessibility.
+  SetFocusBehavior(FocusBehavior::NEVER);
 }
 
 TabIconView::~TabIconView() {
@@ -114,7 +115,7 @@ void TabIconView::PaintFavicon(gfx::Canvas* canvas,
                        dest_h, true);
 }
 
-gfx::Size TabIconView::GetPreferredSize() const {
+gfx::Size TabIconView::CalculatePreferredSize() const {
   return gfx::Size(gfx::kFaviconSize, gfx::kFaviconSize);
 }
 
@@ -122,7 +123,7 @@ const char* TabIconView::GetClassName() const {
   return "TabIconView";
 }
 
-void TabIconView::OnPaint(gfx::Canvas* canvas) {
+void TabIconView::PaintButtonContents(gfx::Canvas* canvas) {
   bool rendered = false;
 
   if (model_->ShouldTabIconViewAnimate()) {

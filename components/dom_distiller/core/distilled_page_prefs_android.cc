@@ -8,6 +8,8 @@
 #include "components/dom_distiller/core/dom_distiller_service.h"
 #include "jni/DistilledPagePrefs_jni.h"
 
+using base::android::JavaParamRef;
+
 namespace dom_distiller {
 
 namespace android {
@@ -59,18 +61,14 @@ jfloat DistilledPagePrefsAndroid::GetFontScaling(
   return distilled_page_prefs_->GetFontScaling();
 }
 
-jlong Init(JNIEnv* env,
-           const JavaParamRef<jobject>& obj,
-           jlong distilled_page_prefs_ptr) {
+jlong JNI_DistilledPagePrefs_Init(JNIEnv* env,
+                                  const JavaParamRef<jobject>& obj,
+                                  jlong distilled_page_prefs_ptr) {
   DistilledPagePrefs* distilled_page_prefs =
       reinterpret_cast<DistilledPagePrefs*>(distilled_page_prefs_ptr);
   DistilledPagePrefsAndroid* distilled_page_prefs_android =
       new DistilledPagePrefsAndroid(env, obj, distilled_page_prefs);
   return reinterpret_cast<intptr_t>(distilled_page_prefs_android);
-}
-
-bool DistilledPagePrefsAndroid::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 void DistilledPagePrefsAndroid::AddObserver(JNIEnv* env,
@@ -107,24 +105,26 @@ void DistilledPagePrefsObserverAndroid::OnChangeFontFamily(
     DistilledPagePrefs::FontFamily new_font_family) {
   JNIEnv* env = base::android::AttachCurrentThread();
   Java_DistilledPagePrefsObserverWrapper_onChangeFontFamily(
-      env, java_ref_.obj(), (int)new_font_family);
+      env, java_ref_, (int)new_font_family);
 }
 
 void DistilledPagePrefsObserverAndroid::OnChangeTheme(
     DistilledPagePrefs::Theme new_theme) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_DistilledPagePrefsObserverWrapper_onChangeTheme(
-      env, java_ref_.obj(), (int)new_theme);
+  Java_DistilledPagePrefsObserverWrapper_onChangeTheme(env, java_ref_,
+                                                       (int)new_theme);
 }
 
 void DistilledPagePrefsObserverAndroid::OnChangeFontScaling(
     float scaling) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_DistilledPagePrefsObserverWrapper_onChangeFontScaling(
-      env, java_ref_.obj(), scaling);
+  Java_DistilledPagePrefsObserverWrapper_onChangeFontScaling(env, java_ref_,
+                                                             scaling);
 }
 
-jlong InitObserverAndroid(JNIEnv* env, const JavaParamRef<jobject>& obj) {
+jlong JNI_DistilledPagePrefs_InitObserverAndroid(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj) {
   DistilledPagePrefsObserverAndroid* observer_android =
       new DistilledPagePrefsObserverAndroid(env, obj);
   return reinterpret_cast<intptr_t>(observer_android);

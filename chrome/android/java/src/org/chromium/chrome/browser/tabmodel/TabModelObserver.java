@@ -5,8 +5,6 @@
 package org.chromium.chrome.browser.tabmodel;
 
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabSelectionType;
 
 import java.util.List;
 
@@ -14,7 +12,6 @@ import java.util.List;
  * An interface to be notified about changes to a TabModel.
  */
 public interface TabModelObserver {
-
     /**
      * Called when a tab is selected.
      *
@@ -23,7 +20,7 @@ public interface TabModelObserver {
      * @param lastId The ID of the last selected tab, or {@link Tab#INVALID_TAB_ID} if no tab was
      *               selected.
      */
-    void didSelectTab(Tab tab, TabSelectionType type, int lastId);
+    void didSelectTab(Tab tab, @TabSelectionType int type, int lastId);
 
     /**
      * Called when a tab starts closing.
@@ -47,7 +44,7 @@ public interface TabModelObserver {
      * @param tab The tab about to be added.
      * @param type The type of tab launch.
      */
-    void willAddTab(Tab tab, TabLaunchType type);
+    void willAddTab(Tab tab, @TabLaunchType int type);
 
     /**
      * Called after a tab has been added to the {@link TabModel}.
@@ -55,7 +52,7 @@ public interface TabModelObserver {
      * @param tab The newly added tab.
      * @param type The type of tab launch.
      */
-    void didAddTab(Tab tab, TabLaunchType type);
+    void didAddTab(Tab tab, @TabLaunchType int type);
 
     /**
      * Called after a tab has been moved from one position in the {@link TabModel} to another.
@@ -92,9 +89,9 @@ public interface TabModelObserver {
     /**
      * Called when "all tabs" are pending closure.
      *
-     * @param tabIds The list of tabs IDs that are pending closure.
+     * @param tabs The tabs that are pending closure.
      */
-    void allTabsPendingClosure(List<Integer> tabIds);
+    void allTabsPendingClosure(List<Tab> tabs);
 
     /**
      * Called when an "all tabs" closure has been committed and can't be undone anymore.
@@ -107,4 +104,10 @@ public interface TabModelObserver {
      * @param tab The tab that has been removed.
      */
     void tabRemoved(Tab tab);
+
+    /**
+     * Called after all {@link org.chromium.chrome.browser.tab.TabState}s within {@link TabModel}
+     * are loaded from storage.
+     */
+    void restoreCompleted();
 }

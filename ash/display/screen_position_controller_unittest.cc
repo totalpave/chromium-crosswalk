@@ -6,71 +6,43 @@
 
 #include <memory>
 
-#include "ash/common/shell_window_ids.h"
-#include "ash/display/display_manager.h"
+#include "ash/public/cpp/shell_window_ids.h"
 #include "ash/screen_util.h"
 #include "ash/shell.h"
+#include "ash/shell_test_api.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/test/shell_test_api.h"
+#include "ash/window_factory.h"
+#include "base/run_loop.h"
+#include "base/test/scoped_feature_list.h"
 #include "ui/aura/env.h"
 #include "ui/aura/test/test_window_delegate.h"
 #include "ui/aura/window_tracker.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/layout.h"
-#include "ui/display/manager/display_layout.h"
+#include "ui/display/display_layout.h"
+#include "ui/display/display_switches.h"
+#include "ui/display/manager/display_manager.h"
 #include "ui/display/screen.h"
 #include "ui/events/test/event_generator.h"
 
-#if defined(OS_WIN)
-// TODO(scottmg): RootWindow doesn't get resized immediately on Windows
-// Ash. http://crbug.com/247916.
-#define MAYBE_ConvertHostPointToScreen DISABLED_ConvertHostPointToScreen
-#define MAYBE_ConvertHostPointToScreenHiDPI \
-  DISABLED_ConvertHostPointToScreenHiDPI
-#define MAYBE_ConvertHostPointToScreenRotate \
-  DISABLED_ConvertHostPointToScreenRotate
-#define MAYBE_ConvertHostPointToScreenUIScale \
-  DISABLED_ConvertHostPointToScreenUIScale
-#define MAYBE_ConvertToScreenWhileRemovingSecondaryDisplay \
-  DISABLED_ConvertToScreenWhileRemovingSecondaryDisplay
-#else
-#define MAYBE_ConvertHostPointToScreen ConvertHostPointToScreen
-#define MAYBE_ConvertHostPointToScreenHiDPI ConvertHostPointToScreenHiDPI
-#define MAYBE_ConvertHostPointToScreenRotate ConvertHostPointToScreenRotate
-#define MAYBE_ConvertHostPointToScreenUIScale ConvertHostPointToScreenUIScale
-#define MAYBE_ConvertToScreenWhileRemovingSecondaryDisplay \
-  ConvertToScreenWhileRemovingSecondaryDisplay
-#endif
-
 namespace ash {
-namespace test {
 
 namespace {
 
-void SetSecondaryDisplayLayout(display::DisplayPlacement::Position position) {
-  std::unique_ptr<display::DisplayLayout> layout(Shell::GetInstance()
-                                                     ->display_manager()
-                                                     ->GetCurrentDisplayLayout()
-                                                     .Copy());
-  layout->placement_list[0].position = position;
-  Shell::GetInstance()->display_manager()->SetLayoutForCurrentDisplays(
-      std::move(layout));
-}
-
 ScreenPositionController* GetScreenPositionController() {
-  ShellTestApi test_api(Shell::GetInstance());
+  ShellTestApi test_api(Shell::Get());
   return test_api.screen_position_controller();
 }
 
-class ScreenPositionControllerTest : public test::AshTestBase {
+class ScreenPositionControllerTest : public AshTestBase {
  public:
-  ScreenPositionControllerTest() {}
-  ~ScreenPositionControllerTest() override {}
+  ScreenPositionControllerTest() = default;
+  ~ScreenPositionControllerTest() override = default;
 
   void SetUp() override {
     AshTestBase::SetUp();
-    window_.reset(new aura::Window(&window_delegate_));
-    window_->SetType(ui::wm::WINDOW_TYPE_NORMAL);
+    window_ = window_factory::NewWindow(&window_delegate_);
+    window_->SetType(aura::client::WINDOW_TYPE_NORMAL);
     window_->Init(ui::LAYER_NOT_DRAWN);
     ParentWindowInPrimaryRootWindow(window_.get());
     window_->set_id(1);
@@ -90,6 +62,13 @@ class ScreenPositionControllerTest : public test::AshTestBase {
     return point.ToString();
   }
 
+  void SetSecondaryDisplayLayout(display::DisplayPlacement::Position position) {
+    std::unique_ptr<display::DisplayLayout> layout(
+        display_manager()->GetCurrentDisplayLayout().Copy());
+    layout->placement_list[0].position = position;
+    display_manager()->SetLayoutForCurrentDisplays(std::move(layout));
+  }
+
  protected:
   std::unique_ptr<aura::Window> window_;
   aura::test::TestWindowDelegate window_delegate_;
@@ -100,7 +79,7 @@ class ScreenPositionControllerTest : public test::AshTestBase {
 
 }  // namespace
 
-TEST_F(ScreenPositionControllerTest, MAYBE_ConvertHostPointToScreen) {
+TEST_F(ScreenPositionControllerTest, ConvertHostPointToScreen) {
   // Make sure that the point is in host coordinates. (crbug.com/521919)
   UpdateDisplay("100+100-200x200,100+300-200x200");
   // The point 150,210 should be in host coords, and detected as outside.
@@ -108,16 +87,17 @@ TEST_F(ScreenPositionControllerTest, MAYBE_ConvertHostPointToScreen) {
 
   UpdateDisplay("100+100-200x200,100+500-200x200");
 
-  aura::Window::Windows root_windows =
-      Shell::GetInstance()->GetAllRootWindows();
-  EXPECT_EQ("100,100",
-            root_windows[0]->GetHost()->GetBounds().origin().ToString());
+  aura::Window::Windows root_windows = Shell::Get()->GetAllRootWindows();
+  EXPECT_EQ(
+      "100,100",
+      root_windows[0]->GetHost()->GetBoundsInPixels().origin().ToString());
   EXPECT_EQ("200x200",
-            root_windows[0]->GetHost()->GetBounds().size().ToString());
-  EXPECT_EQ("100,500",
-            root_windows[1]->GetHost()->GetBounds().origin().ToString());
+            root_windows[0]->GetHost()->GetBoundsInPixels().size().ToString());
+  EXPECT_EQ(
+      "100,500",
+      root_windows[1]->GetHost()->GetBoundsInPixels().origin().ToString());
   EXPECT_EQ("200x200",
-            root_windows[1]->GetHost()->GetBounds().size().ToString());
+            root_windows[1]->GetHost()->GetBoundsInPixels().size().ToString());
 
   const gfx::Point window_pos(100, 100);
   window_->SetBoundsInScreen(
@@ -192,15 +172,14 @@ TEST_F(ScreenPositionControllerTest, MAYBE_ConvertHostPointToScreen) {
   EXPECT_EQ("50,0", ConvertHostPointToScreen(50, -400));
 }
 
-TEST_F(ScreenPositionControllerTest, MAYBE_ConvertHostPointToScreenHiDPI) {
+TEST_F(ScreenPositionControllerTest, ConvertHostPointToScreenHiDPI) {
   UpdateDisplay("50+50-200x200*2,50+300-300x300");
 
-  aura::Window::Windows root_windows =
-      Shell::GetInstance()->GetAllRootWindows();
+  aura::Window::Windows root_windows = Shell::Get()->GetAllRootWindows();
   EXPECT_EQ("50,50 200x200",
-            root_windows[0]->GetHost()->GetBounds().ToString());
+            root_windows[0]->GetHost()->GetBoundsInPixels().ToString());
   EXPECT_EQ("50,300 300x300",
-            root_windows[1]->GetHost()->GetBounds().ToString());
+            root_windows[1]->GetHost()->GetBoundsInPixels().ToString());
 
   // Put |window_| to the primary 2x display.
   window_->SetBoundsInScreen(gfx::Rect(20, 20, 50, 50),
@@ -224,7 +203,7 @@ TEST_F(ScreenPositionControllerTest, MAYBE_ConvertHostPointToScreenHiDPI) {
   EXPECT_EQ("80,80", ConvertHostPointToScreen(160, 160));
 }
 
-TEST_F(ScreenPositionControllerTest, MAYBE_ConvertHostPointToScreenRotate) {
+TEST_F(ScreenPositionControllerTest, ConvertHostPointToScreenRotate) {
   // 1st display is rotated 90 clockise, and 2nd display is rotated
   // 270 clockwise.
   UpdateDisplay("100+100-200x200/r,100+500-200x200/l");
@@ -233,59 +212,57 @@ TEST_F(ScreenPositionControllerTest, MAYBE_ConvertHostPointToScreenRotate) {
                              display::Screen::GetScreen()->GetPrimaryDisplay());
 
   // The point is on the 1st host.
-  EXPECT_EQ("70,149", ConvertHostPointToScreen(50, 70));
+  EXPECT_EQ("70,150", ConvertHostPointToScreen(50, 70));
   // The point is out of the host windows.
-  EXPECT_EQ("250,-51", ConvertHostPointToScreen(250, 250));
+  EXPECT_EQ("250,-50", ConvertHostPointToScreen(250, 250));
   // The point is on the 2nd host. Point on 2nd host (30,150) -
   // rotate 270 clockwise -> (149, 30) - layout [+(200,0)] -> (349,30).
-  EXPECT_EQ("349,30", ConvertHostPointToScreen(30, 450));
+  EXPECT_EQ("350,30", ConvertHostPointToScreen(30, 450));
 
   // Move |window_| to the 2nd.
   window_->SetBoundsInScreen(gfx::Rect(300, 20, 50, 50),
-                             ScreenUtil::GetSecondaryDisplay());
-  aura::Window::Windows root_windows =
-      Shell::GetInstance()->GetAllRootWindows();
+                             display_manager()->GetSecondaryDisplay());
+  aura::Window::Windows root_windows = Shell::Get()->GetAllRootWindows();
   EXPECT_EQ(root_windows[1], window_->GetRootWindow());
 
   // The point is on the 2nd host. (50,70) on 2n host -
   // roatate 270 clockwise -> (129,50) -layout [+(200,0)] -> (329,50)
-  EXPECT_EQ("329,50", ConvertHostPointToScreen(50, 70));
+  EXPECT_EQ("330,50", ConvertHostPointToScreen(50, 70));
   // The point is out of the host windows.
-  EXPECT_EQ("449,50", ConvertHostPointToScreen(50, -50));
+  EXPECT_EQ("450,50", ConvertHostPointToScreen(50, -50));
   // The point is on the 2nd host. Point on 2nd host (50,50) -
   // rotate 90 clockwise -> (50, 149)
-  EXPECT_EQ("50,149", ConvertHostPointToScreen(50, -350));
+  EXPECT_EQ("50,150", ConvertHostPointToScreen(50, -350));
 }
 
-TEST_F(ScreenPositionControllerTest, MAYBE_ConvertHostPointToScreenUIScale) {
+TEST_F(ScreenPositionControllerTest, ConvertHostPointToScreenZoomScale) {
   // 1st display is 2x density with 1.5 UI scale.
-  UpdateDisplay("100+100-200x200*2@1.5,100+500-200x200");
+  UpdateDisplay("100+100-200x200*2@0.8,100+500-200x200");
   // Put |window_| to the 1st.
   window_->SetBoundsInScreen(gfx::Rect(20, 20, 50, 50),
                              display::Screen::GetScreen()->GetPrimaryDisplay());
 
   // The point is on the 1st host.
-  EXPECT_EQ("45,45", ConvertHostPointToScreen(60, 60));
+  EXPECT_EQ("37,37", ConvertHostPointToScreen(60, 60));
   // The point is out of the host windows.
-  EXPECT_EQ("45,225", ConvertHostPointToScreen(60, 300));
+  EXPECT_EQ("37,187", ConvertHostPointToScreen(60, 300));
   // The point is on the 2nd host. Point on 2nd host (60,150) -
   // - screen [+(150,0)]
-  EXPECT_EQ("210,49", ConvertHostPointToScreen(60, 450));
+  EXPECT_EQ("185,50", ConvertHostPointToScreen(60, 450));
 
   // Move |window_| to the 2nd.
   window_->SetBoundsInScreen(gfx::Rect(300, 20, 50, 50),
-                             ScreenUtil::GetSecondaryDisplay());
-  aura::Window::Windows root_windows =
-      Shell::GetInstance()->GetAllRootWindows();
+                             display_manager()->GetSecondaryDisplay());
+  aura::Window::Windows root_windows = Shell::Get()->GetAllRootWindows();
   EXPECT_EQ(root_windows[1], window_->GetRootWindow());
 
   // The point is on the 2nd host. (50,70) - ro
-  EXPECT_EQ("210,70", ConvertHostPointToScreen(60, 70));
+  EXPECT_EQ("185,70", ConvertHostPointToScreen(60, 70));
   // The point is out of the host windows.
-  EXPECT_EQ("210,-50", ConvertHostPointToScreen(60, -50));
+  EXPECT_EQ("185,-50", ConvertHostPointToScreen(60, -50));
   // The point is on the 2nd host. Point on 1nd host (60, 60)
-  // 1/2 * 1.5 = (45,45)
-  EXPECT_EQ("45,45", ConvertHostPointToScreen(60, -340));
+  // 1/2 * 1 / 0.8 = (45,45)
+  EXPECT_EQ("37,37", ConvertHostPointToScreen(60, -340));
 }
 
 namespace {
@@ -295,10 +272,10 @@ namespace {
 class ConvertToScreenEventHandler : public ui::EventHandler {
  public:
   ConvertToScreenEventHandler() : could_convert_to_screen_(true) {
-    aura::Env::GetInstance()->AddPreTargetHandler(this);
+    Shell::Get()->aura_env()->AddPreTargetHandler(this);
   }
   ~ConvertToScreenEventHandler() override {
-    aura::Env::GetInstance()->RemovePreTargetHandler(this);
+    Shell::Get()->aura_env()->RemovePreTargetHandler(this);
   }
 
   bool could_convert_to_screen() const { return could_convert_to_screen_; }
@@ -326,24 +303,23 @@ class ConvertToScreenEventHandler : public ui::EventHandler {
 // detached from the root window prior to the root window being destroyed. Test
 // that no events are dispatched at this time.
 TEST_F(ScreenPositionControllerTest,
-       MAYBE_ConvertToScreenWhileRemovingSecondaryDisplay) {
+       ConvertToScreenWhileRemovingSecondaryDisplay) {
   UpdateDisplay("600x600,600x600");
-  RunAllPendingInMessageLoop();
+  base::RunLoop().RunUntilIdle();
 
   // Create a window on the secondary display.
   window_->SetBoundsInScreen(gfx::Rect(600, 0, 400, 400),
-                             ScreenUtil::GetSecondaryDisplay());
+                             display_manager()->GetSecondaryDisplay());
 
   // Move the mouse cursor over |window_|. Synthetic mouse moves are dispatched
   // asynchronously when a window which contains the mouse cursor is destroyed.
   // We want to check that none of these synthetic events are dispatched after
   // ScreenPositionClient has been detached from the root window.
-  GetEventGenerator().MoveMouseTo(800, 200);
+  GetEventGenerator()->MoveMouseTo(800, 200);
   EXPECT_TRUE(window_->GetBoundsInScreen().Contains(
-      aura::Env::GetInstance()->last_mouse_location()));
+      Shell::Get()->aura_env()->last_mouse_location()));
 
-  aura::Window::Windows root_windows =
-      Shell::GetInstance()->GetAllRootWindows();
+  aura::Window::Windows root_windows = Shell::Get()->GetAllRootWindows();
   aura::WindowTracker tracker;
   tracker.Add(root_windows[1]);
   std::unique_ptr<ConvertToScreenEventHandler> event_handler(
@@ -355,7 +331,7 @@ TEST_F(ScreenPositionControllerTest,
   // The secondary root window is not immediately destroyed.
   EXPECT_TRUE(tracker.Contains(root_windows[1]));
 
-  RunAllPendingInMessageLoop();
+  base::RunLoop().RunUntilIdle();
 
   // Check that we waited long enough and that the secondary root window was
   // destroyed.
@@ -366,5 +342,4 @@ TEST_F(ScreenPositionControllerTest,
   EXPECT_TRUE(event_handler->could_convert_to_screen());
 }
 
-}  // namespace test
 }  // namespace ash

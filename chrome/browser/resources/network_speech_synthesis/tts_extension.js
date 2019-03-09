@@ -30,8 +30,7 @@ TtsExtension.prototype = {
    * @const
    * @private
    */
-  SPEECH_SERVER_URL_:
-      'https://www.google.com/speech-api/v2/synthesize?' +
+  SPEECH_SERVER_URL_: 'https://www.google.com/speech-api/v2/synthesize?' +
       'enc=mpeg&client=chromium',
 
   /**
@@ -79,8 +78,8 @@ TtsExtension.prototype = {
    */
   init: function() {
     // Get voices from manifest.
-    var voices = chrome.app.getDetails().tts_engine.voices;
-    for (var i = 0; i < voices.length; i++) {
+    const voices = chrome.app.getDetails().tts_engine.voices;
+    for (let i = 0; i < voices.length; i++) {
       this.voiceNameToLangAndGender_[voices[i].voice_name] = {
         lang: voices[i].lang,
         gender: voices[i].gender
@@ -116,8 +115,9 @@ TtsExtension.prototype = {
     // Truncate the utterance if it's too long. Both Chrome's tts
     // extension api and the web speech api specify 32k as the
     // maximum limit for an utterance.
-    if (utterance.length > 32768)
+    if (utterance.length > 32768) {
       utterance = utterance.substr(0, 32768);
+    }
 
     try {
       // First, stop any pending audio.
@@ -129,57 +129,57 @@ TtsExtension.prototype = {
         callback: callback
       };
 
-      var lang = options.lang;
-      var gender = options.gender;
+      let lang = options.lang;
+      let gender = options.gender;
       if (options.voiceName) {
         lang = this.voiceNameToLangAndGender_[options.voiceName].lang;
         gender = this.voiceNameToLangAndGender_[options.voiceName].gender;
       }
 
-      if (!lang)
+      if (!lang) {
         lang = navigator.language;
+      }
 
       // Look up the specific voice name for this language and gender.
       // If it's not in the map, it doesn't matter - the language will
       // be used directly. This is only used for languages where more
       // than one gender is actually available.
-      var key = lang.toLowerCase() + '-' + gender;
-      var voiceName = this.LANG_AND_GENDER_TO_VOICE_NAME_[key];
+      const key = lang.toLowerCase() + '-' + gender;
+      const voiceName = this.LANG_AND_GENDER_TO_VOICE_NAME_[key];
 
-      var url = this.SPEECH_SERVER_URL_;
-      chrome.systemPrivate.getApiKey((function(key) {
-        url += '&key=' + key;
-        url += '&text=' + encodeURIComponent(utterance);
-        url += '&lang=' + lang.toLowerCase();
+      let url = this.SPEECH_SERVER_URL_;
+      chrome.systemPrivate.getApiKey(
+          (function(key) {
+            url += '&key=' + key;
+            url += '&text=' + encodeURIComponent(utterance);
+            url += '&lang=' + lang.toLowerCase();
 
-        if (voiceName)
-          url += '&name=' + voiceName;
+            if (voiceName) {
+              url += '&name=' + voiceName;
+            }
 
-        if (options.rate) {
-          // Input rate is between 0.1 and 10.0 with a default of 1.0.
-          // Output speed is between 0.0 and 1.0 with a default of 0.5.
-          url += '&speed=' + (options.rate / 2.0);
-        }
+            if (options.rate) {
+              // Input rate is between 0.1 and 10.0 with a default of 1.0.
+              // Output speed is between 0.0 and 1.0 with a default of 0.5.
+              url += '&speed=' + (options.rate / 2.0);
+            }
 
-        if (options.pitch) {
-          // Input pitch is between 0.0 and 2.0 with a default of 1.0.
-          // Output pitch is between 0.0 and 1.0 with a default of 0.5.
-          url += '&pitch=' + (options.pitch / 2.0);
-        }
+            if (options.pitch) {
+              // Input pitch is between 0.0 and 2.0 with a default of 1.0.
+              // Output pitch is between 0.0 and 1.0 with a default of 0.5.
+              url += '&pitch=' + (options.pitch / 2.0);
+            }
 
-        // This begins loading the audio but does not play it.
-        // When enough of the audio has loaded to begin playback,
-        // the 'canplaythrough' handler will call this.onStart_,
-        // which sends a start event to the ttsEngine callback and
-        // then begins playing audio.
-        this.audioElement_.src = url;
-      }).bind(this));
+            // This begins loading the audio but does not play it.
+            // When enough of the audio has loaded to begin playback,
+            // the 'canplaythrough' handler will call this.onStart_,
+            // which sends a start event to the ttsEngine callback and
+            // then begins playing audio.
+            this.audioElement_.src = url;
+          }).bind(this));
     } catch (err) {
       console.error(String(err));
-      callback({
-        'type': 'error',
-        'errorMessage': String(err)
-      });
+      callback({'type': 'error', 'errorMessage': String(err)});
       this.currentUtterance_ = null;
     }
   },
@@ -220,10 +220,7 @@ TtsExtension.prototype = {
         this.audioElement_.volume = this.currentUtterance_.options.volume;
       }
       this.audioElement_.play();
-      this.currentUtterance_.callback({
-          'type': 'start',
-          'charIndex': 0
-      });
+      this.currentUtterance_.callback({'type': 'start', 'charIndex': 0});
     }
   },
 

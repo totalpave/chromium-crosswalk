@@ -2,10 +2,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/jumbo.gni")
 import("//tools/grit/grit_rule.gni")
 import("//tools/grit/repack.gni")
+import("//ui/webui/webui_features.gni")
 
-# GYP version: ui/resources/ui_resources.gyp:ui_resources
 group("resources") {
   public_deps = [
     ":ui_resources_grd",
@@ -28,25 +29,28 @@ grit("ui_resources_grd") {
 
 grit("ui_unscaled_resources_grd") {
   source = "ui_unscaled_resources.grd"
-  use_qualified_include = true
   outputs = [
     "grit/ui_unscaled_resources.h",
-
-    # TODO(GYP_GONE) when GYP is gone, this line should be deleted, and the grit
-    # file updated to no longer list this as an output. We use resource bundles
-    # rather than .rc files, but the GYP build still expects this file to
-    # exist.
     "ui_unscaled_resources.rc",
   ]
 }
 
 grit("webui_resources_grd") {
+  defines = [ "optimize_webui=$optimize_webui" ]
   source = "../webui/resources/webui_resources.grd"
+
+  # The .grd contains references to generated files.
+  source_is_generated = true
+
   outputs = [
     "grit/webui_resources.h",
     "grit/webui_resources_map.cc",
     "grit/webui_resources_map.h",
     "webui_resources.pak",
+  ]
+  grit_flags = [
+    "-E",
+    "root_gen_dir=" + rebase_path(root_gen_dir, root_build_dir),
   ]
 }
 
@@ -66,14 +70,11 @@ if (!is_mac) {
 
 # On iOS and Mac the string resources need to go into a locale subfolder, which
 # introduces an extra dependency.
-#
-# GYP version: ui/resources/ui_resources.gyp:ui_test_pak
-#              (copy_ui_test_pak action)
 if (is_ios || is_mac) {
   group("ui_test_pak") {
     public_deps = [
       ":repack_ui_test_mac_locale_pack",
-      ":repack_ui_test_pak",
+      ":repack_ui_test_pak_100_percent",
     ]
   }
 
@@ -139,21 +140,27 @@ if (is_ios || is_mac) {
       "$root_out_dir/ui/en-US.pak",
     ]
     public_deps = [
-      ":repack_ui_test_pak",
+      ":repack_ui_test_pak_100_percent",
     ]
   }
 }
 
-# This group exists just for targets that need the data file
-# to exist in the build directory so it can be loaded for test purposes.
+# This group exists just for targets that need the data file to exist in the
+# build directory so it can be loaded for test purposes. If a target requires
+# 200 percent resources it should also depend on ui_test_pak_data_200_percent.
 group("ui_test_pak_data") {
   data_deps = [
-    ":repack_ui_test_pak",
+    ":repack_ui_test_pak_100_percent",
   ]
 }
 
-# GYP version: ui/resources/ui_resources.gyp:ui_test_pak
-repack("repack_ui_test_pak") {
+group("ui_test_pak_data_200_percent") {
+  data_deps = [
+    ":repack_ui_test_pak_200_percent",
+  ]
+}
+
+repack("repack_ui_test_pak_100_percent") {
   # Depend on ui_test_pak or ui_test_pak_data instead of this one.
   visibility = [
     ":ui_test_pak",
@@ -161,6 +168,7 @@ repack("repack_ui_test_pak") {
   ]
 
   sources = [
+    "$root_gen_dir/mojo/public/js/mojo_bindings_resources.pak",
     "$root_gen_dir/ui/resources/ui_resources_100_percent.pak",
     "$root_gen_dir/ui/resources/webui_resources.pak",
     "$root_gen_dir/ui/strings/app_locale_settings_en-US.pak",
@@ -177,12 +185,13 @@ repack("repack_ui_test_pak") {
   output = "$root_out_dir/ui_test.pak"
 
   deps = [
+    "//mojo/public/js:resources",
     "//ui/resources",
     "//ui/strings",
   ]
 
   if (!is_ios) {
-    deps += [ "//third_party/WebKit/public:resources_grit" ]
+    deps += [ "//third_party/blink/public:resources_grit" ]
   }
 
   if (!is_mac) {
@@ -199,19 +208,41 @@ repack("repack_ui_test_pak") {
   if (toolkit_views) {
     deps += [ "//ui/views/resources" ]
     sources += [
-      "$root_gen_dir/blink/public/resources/blink_resources.pak",
+      "$root_gen_dir/third_party/blink/public/resources/blink_resources.pak",
       "$root_gen_dir/ui/views/resources/views_resources_100_percent.pak",
     ]
   }
 
   if (use_aura && toolkit_views) {
-    deps += [ "//ui/app_list/resources" ]
-    sources += [ "$root_gen_dir/ui/app_list/resources/app_list_resources_100_percent.pak" ]
+    deps += [ "//ash/app_list/resources" ]
+    sources += [
+      "$root_gen_dir/ash/app_list/resources/app_list_resources_100_percent.pak",
+    ]
+  }
+}
+
+repack("repack_ui_test_pak_200_percent") {
+  visibility = [ ":ui_test_pak_data_200_percent" ]
+
+  sources = [
+    "$root_gen_dir/ui/resources/ui_resources_200_percent.pak",
+  ]
+
+  output = "$root_out_dir/ui_test_200_percent.pak"
+
+  deps = [
+    "//ui/resources",
+  ]
+
+  if (toolkit_views) {
+    deps += [ "//ui/views/resources" ]
+    sources +=
+        [ "$root_gen_dir/ui/views/resources/views_resources_200_percent.pak" ]
   }
 }
 
 # Repack just the strings for the framework locales on Mac and iOS. This
-# emulates repack_locales.py, but just for en-US. Note ui_test.pak is not simply
+# emulates repack_locales(), but just for en-US. Note ui_test.pak is not simply
 # copied, because it causes leaks from allocations within system libraries when
 # trying to load non-string resources. http://crbug.com/413034.
 repack("repack_ui_test_mac_locale_pack") {

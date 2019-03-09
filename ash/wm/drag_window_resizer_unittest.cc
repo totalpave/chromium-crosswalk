@@ -4,19 +4,17 @@
 
 #include "ash/wm/drag_window_resizer.h"
 
-#include "ash/aura/wm_window_aura.h"
-#include "ash/common/material_design/material_design_controller.h"
-#include "ash/common/shell_window_ids.h"
-#include "ash/common/wm/window_positioning_utils.h"
-#include "ash/display/display_manager.h"
 #include "ash/display/mouse_cursor_event_filter.h"
+#include "ash/public/cpp/shell_window_ids.h"
 #include "ash/root_window_controller.h"
+#include "ash/shelf/shelf_constants.h"
 #include "ash/shelf/shelf_layout_manager.h"
 #include "ash/shell.h"
-#include "ash/test/ash_md_test_base.h"
-#include "ash/test/cursor_manager_test_api.h"
-#include "ash/test/display_manager_test_api.h"
+#include "ash/test/ash_test_base.h"
+#include "ash/window_factory.h"
+#include "ash/wm/cursor_manager_test_api.h"
 #include "ash/wm/drag_window_controller.h"
+#include "ash/wm/window_positioning_utils.h"
 #include "ash/wm/window_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -27,8 +25,9 @@
 #include "ui/base/ui_base_types.h"
 #include "ui/compositor/layer_delegate.h"
 #include "ui/compositor/layer_tree_owner.h"
-#include "ui/display/manager/display_layout.h"
-#include "ui/display/manager/display_layout_builder.h"
+#include "ui/display/display_layout.h"
+#include "ui/display/display_layout_builder.h"
+#include "ui/display/manager/display_manager.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/window_util.h"
@@ -51,11 +50,8 @@ class TestLayerDelegate : public ui::LayerDelegate {
   void OnPaintLayer(const ui::PaintContext& context) override {
     paint_count_++;
   }
-  void OnDelegatedFrameDamage(const gfx::Rect& damage_rect_in_dip) override {}
-  void OnDeviceScaleFactorChanged(float device_scale_factor) override {}
-  base::Closure PrepareForLayerBoundsChange() override {
-    return base::Closure();
-  }
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override {}
 
   int paint_count_ = 0;
 
@@ -64,13 +60,13 @@ class TestLayerDelegate : public ui::LayerDelegate {
 
 }  // namespace
 
-class DragWindowResizerTest : public test::AshMDTestBase {
+class DragWindowResizerTest : public AshTestBase {
  public:
   DragWindowResizerTest() : transient_child_(nullptr) {}
-  ~DragWindowResizerTest() override {}
+  ~DragWindowResizerTest() override = default;
 
   void SetUp() override {
-    AshMDTestBase::SetUp();
+    AshTestBase::SetUp();
 
     UpdateDisplay(base::StringPrintf("800x%d", kRootHeight));
 
@@ -78,45 +74,39 @@ class DragWindowResizerTest : public test::AshMDTestBase {
     gfx::Rect root_bounds(root->bounds());
     EXPECT_EQ(kRootHeight, root_bounds.height());
     EXPECT_EQ(800, root_bounds.width());
-    Shell::GetInstance()->SetDisplayWorkAreaInsets(root, gfx::Insets());
-    window_.reset(new aura::Window(&delegate_));
-    window_->SetType(ui::wm::WINDOW_TYPE_NORMAL);
+    window_ = window_factory::NewWindow(&delegate_);
+    window_->SetType(aura::client::WINDOW_TYPE_NORMAL);
     window_->Init(ui::LAYER_NOT_DRAWN);
     ParentWindowInPrimaryRootWindow(window_.get());
     window_->set_id(1);
 
-    always_on_top_window_.reset(new aura::Window(&delegate2_));
-    always_on_top_window_->SetType(ui::wm::WINDOW_TYPE_NORMAL);
+    always_on_top_window_ = window_factory::NewWindow(&delegate2_);
+    always_on_top_window_->SetType(aura::client::WINDOW_TYPE_NORMAL);
     always_on_top_window_->SetProperty(aura::client::kAlwaysOnTopKey, true);
     always_on_top_window_->Init(ui::LAYER_NOT_DRAWN);
     ParentWindowInPrimaryRootWindow(always_on_top_window_.get());
     always_on_top_window_->set_id(2);
 
-    system_modal_window_.reset(new aura::Window(&delegate3_));
-    system_modal_window_->SetType(ui::wm::WINDOW_TYPE_NORMAL);
+    system_modal_window_ = window_factory::NewWindow(&delegate3_);
+    system_modal_window_->SetType(aura::client::WINDOW_TYPE_NORMAL);
     system_modal_window_->SetProperty(aura::client::kModalKey,
                                       ui::MODAL_TYPE_SYSTEM);
     system_modal_window_->Init(ui::LAYER_NOT_DRAWN);
     ParentWindowInPrimaryRootWindow(system_modal_window_.get());
     system_modal_window_->set_id(3);
 
-    transient_child_ = new aura::Window(&delegate4_);
-    transient_child_->SetType(ui::wm::WINDOW_TYPE_NORMAL);
+    transient_child_ = window_factory::NewWindow(&delegate4_).release();
+    transient_child_->SetType(aura::client::WINDOW_TYPE_NORMAL);
     transient_child_->Init(ui::LAYER_NOT_DRAWN);
     ParentWindowInPrimaryRootWindow(transient_child_);
     transient_child_->set_id(4);
 
-    transient_parent_.reset(new aura::Window(&delegate5_));
-    transient_parent_->SetType(ui::wm::WINDOW_TYPE_NORMAL);
+    transient_parent_ = window_factory::NewWindow(&delegate5_);
+    transient_parent_->SetType(aura::client::WINDOW_TYPE_NORMAL);
     transient_parent_->Init(ui::LAYER_NOT_DRAWN);
     ParentWindowInPrimaryRootWindow(transient_parent_.get());
     ::wm::AddTransientChild(transient_parent_.get(), transient_child_);
     transient_parent_->set_id(5);
-
-    panel_window_.reset(new aura::Window(&delegate6_));
-    panel_window_->SetType(ui::wm::WINDOW_TYPE_PANEL);
-    panel_window_->Init(ui::LAYER_NOT_DRAWN);
-    ParentWindowInPrimaryRootWindow(panel_window_.get());
   }
 
   void TearDown() override {
@@ -124,8 +114,7 @@ class DragWindowResizerTest : public test::AshMDTestBase {
     always_on_top_window_.reset();
     system_modal_window_.reset();
     transient_parent_.reset();
-    panel_window_.reset();
-    AshMDTestBase::TearDown();
+    AshTestBase::TearDown();
   }
 
  protected:
@@ -146,15 +135,14 @@ class DragWindowResizerTest : public test::AshMDTestBase {
       aura::Window* window,
       const gfx::Point& point_in_parent,
       int window_component) {
-    return CreateWindowResizer(WmWindowAura::Get(window), point_in_parent,
-                               window_component,
-                               aura::client::WINDOW_MOVE_SOURCE_MOUSE)
+    return CreateWindowResizer(window, point_in_parent, window_component,
+                               ::wm::WINDOW_MOVE_SOURCE_MOUSE)
         .release();
   }
 
   bool TestIfMouseWarpsAt(const gfx::Point& point_in_screen) {
-    return test::DisplayManagerTestApi::TestIfMouseWarpsAt(GetEventGenerator(),
-                                                           point_in_screen);
+    return AshTestBase::TestIfMouseWarpsAt(GetEventGenerator(),
+                                           point_in_screen);
   }
 
   aura::test::TestWindowDelegate delegate_;
@@ -167,7 +155,6 @@ class DragWindowResizerTest : public test::AshMDTestBase {
   std::unique_ptr<aura::Window> window_;
   std::unique_ptr<aura::Window> always_on_top_window_;
   std::unique_ptr<aura::Window> system_modal_window_;
-  std::unique_ptr<aura::Window> panel_window_;
   aura::Window* transient_child_;
   std::unique_ptr<aura::Window> transient_parent_;
 
@@ -175,19 +162,8 @@ class DragWindowResizerTest : public test::AshMDTestBase {
   DISALLOW_COPY_AND_ASSIGN(DragWindowResizerTest);
 };
 
-INSTANTIATE_TEST_CASE_P(
-    /* prefix intentionally left blank due to only one parameterization */,
-    DragWindowResizerTest,
-    testing::Values(MaterialDesignController::NON_MATERIAL,
-                    MaterialDesignController::MATERIAL_NORMAL,
-                    MaterialDesignController::MATERIAL_EXPERIMENTAL));
-
 // Verifies a window can be moved from the primary display to another.
-TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplays) {
-  if (!SupportsMultipleDisplays())
-    return;
-  const int height_offset = GetMdMaximizedWindowHeightOffset();
-
+TEST_F(DragWindowResizerTest, WindowDragWithMultiDisplays) {
   // The secondary display is logically on the right, but on the system (e.g. X)
   // layer, it's below the primary one. See UpdateDisplay() in ash_test_base.cc.
   UpdateDisplay("800x600,400x300");
@@ -249,13 +225,14 @@ TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplays) {
     // Window origin should be adjusted for minimum visibility (25px).
     int expected_x = -50 + wm::kMinimumOnScreenArea;
 
-    EXPECT_EQ(base::IntToString(expected_x) + ",10 50x60",
+    EXPECT_EQ(base::NumberToString(expected_x) + ",10 50x60",
               window_->bounds().ToString());
   }
   // Dropping a window that is larger than the destination work area
   // will shrink to fit to the work area.
   window_->SetBoundsInScreen(gfx::Rect(0, 0, 700, 500),
                              display::Screen::GetScreen()->GetPrimaryDisplay());
+  const int shelf_inset = 300 - ShelfConstants::shelf_size();
   EXPECT_EQ(root_windows[0], window_->GetRootWindow());
   {
     // Grab the top-right edge of the window and move the pointer to (0, 10)
@@ -267,7 +244,7 @@ TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplays) {
     resizer->CompleteDrag();
     EXPECT_EQ(root_windows[1], window_->GetRootWindow());
     // Window size should be adjusted to fit to the work area
-    EXPECT_EQ(gfx::Size(400, 253 + height_offset).ToString(),
+    EXPECT_EQ(gfx::Size(400, shelf_inset).ToString(),
               window_->bounds().size().ToString());
     gfx::Rect window_bounds_in_screen = window_->GetBoundsInScreen();
     gfx::Rect intersect(window_->GetRootWindow()->GetBoundsInScreen());
@@ -295,7 +272,7 @@ TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplays) {
     resizer->CompleteDrag();
     EXPECT_EQ(root_windows[1], window_->GetRootWindow());
     // Window size should be adjusted to fit to the work area
-    EXPECT_EQ(gfx::Size(400, 253 + height_offset).ToString(),
+    EXPECT_EQ(gfx::Size(400, shelf_inset).ToString(),
               window_->bounds().size().ToString());
     gfx::Rect window_bounds_in_screen = window_->GetBoundsInScreen();
     gfx::Rect intersect(window_->GetRootWindow()->GetBoundsInScreen());
@@ -308,10 +285,7 @@ TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplays) {
 
 // Verifies that dragging the active window to another display makes the new
 // root window the active root window.
-TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplaysActiveRoot) {
-  if (!SupportsMultipleDisplays())
-    return;
-
+TEST_F(DragWindowResizerTest, WindowDragWithMultiDisplaysActiveRoot) {
   // The secondary display is logically on the right, but on the system (e.g. X)
   // layer, it's below the primary one. See UpdateDisplay() in ash_test_base.cc.
   UpdateDisplay("800x600,800x600");
@@ -319,17 +293,17 @@ TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplaysActiveRoot) {
   ASSERT_EQ(2U, root_windows.size());
 
   aura::test::TestWindowDelegate delegate;
-  std::unique_ptr<aura::Window> window(new aura::Window(&delegate));
-  window->SetType(ui::wm::WINDOW_TYPE_NORMAL);
+  std::unique_ptr<aura::Window> window = window_factory::NewWindow(&delegate);
+  window->SetType(aura::client::WINDOW_TYPE_NORMAL);
   window->Init(ui::LAYER_TEXTURED);
   ParentWindowInPrimaryRootWindow(window.get());
   window->SetBoundsInScreen(gfx::Rect(0, 0, 50, 60),
                             display::Screen::GetScreen()->GetPrimaryDisplay());
   window->Show();
-  EXPECT_TRUE(ash::wm::CanActivateWindow(window.get()));
-  ash::wm::ActivateWindow(window.get());
+  EXPECT_TRUE(wm::CanActivateWindow(window.get()));
+  wm::ActivateWindow(window.get());
   EXPECT_EQ(root_windows[0], window->GetRootWindow());
-  EXPECT_EQ(root_windows[0], ash::Shell::GetTargetRootWindow());
+  EXPECT_EQ(root_windows[0], Shell::GetRootWindowForNewWindows());
   {
     // Grab (0, 0) of the window.
     std::unique_ptr<WindowResizer> resizer(
@@ -342,15 +316,12 @@ TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplaysActiveRoot) {
     // The whole window is on the secondary display now. The parent should be
     // changed.
     EXPECT_EQ(root_windows[1], window->GetRootWindow());
-    EXPECT_EQ(root_windows[1], ash::Shell::GetTargetRootWindow());
+    EXPECT_EQ(root_windows[1], Shell::GetRootWindowForNewWindows());
   }
 }
 
 // Verifies a window can be moved from the secondary display to primary.
-TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplaysRightToLeft) {
-  if (!SupportsMultipleDisplays())
-    return;
-
+TEST_F(DragWindowResizerTest, WindowDragWithMultiDisplaysRightToLeft) {
   UpdateDisplay("800x600,800x600");
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   ASSERT_EQ(2U, root_windows.size());
@@ -374,10 +345,7 @@ TEST_P(DragWindowResizerTest, WindowDragWithMultiDisplaysRightToLeft) {
 }
 
 // Verifies the drag window is shown correctly.
-TEST_P(DragWindowResizerTest, DragWindowController) {
-  if (!SupportsMultipleDisplays())
-    return;
-
+TEST_F(DragWindowResizerTest, DragWindowController) {
   UpdateDisplay("800x600,800x600");
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   ASSERT_EQ(2U, root_windows.size());
@@ -467,16 +435,12 @@ TEST_P(DragWindowResizerTest, DragWindowController) {
   }
 }
 
-TEST_P(DragWindowResizerTest, DragWindowControllerAcrossThreeDisplays) {
-  if (!SupportsMultipleDisplays())
-    return;
-
+TEST_F(DragWindowResizerTest, DragWindowControllerAcrossThreeDisplays) {
   UpdateDisplay("400x600,400x600,800x600");
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
 
   // Layout so that all three displays touch each other.
-  DisplayManager* display_manager = Shell::GetInstance()->display_manager();
-  display::DisplayIdList list = display_manager->GetCurrentDisplayIdList();
+  display::DisplayIdList list = display_manager()->GetCurrentDisplayIdList();
   ASSERT_EQ(3u, list.size());
   ASSERT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().id(), list[0]);
   display::DisplayLayoutBuilder builder(list[0]);
@@ -484,18 +448,18 @@ TEST_P(DragWindowResizerTest, DragWindowControllerAcrossThreeDisplays) {
                               display::DisplayPlacement::RIGHT, 0);
   builder.AddDisplayPlacement(list[2], list[0],
                               display::DisplayPlacement::BOTTOM, 0);
-  display_manager->SetLayoutForCurrentDisplays(builder.Build());
+  display_manager()->SetLayoutForCurrentDisplays(builder.Build());
   // Sanity check.
   ASSERT_EQ(gfx::Rect(0, 000, 400, 600),
-            display_manager->GetDisplayForId(list[0]).bounds());
+            display_manager()->GetDisplayForId(list[0]).bounds());
   ASSERT_EQ(gfx::Rect(400, 0, 400, 600),
-            display_manager->GetDisplayForId(list[1]).bounds());
+            display_manager()->GetDisplayForId(list[1]).bounds());
   ASSERT_EQ(gfx::Rect(0, 600, 800, 600),
-            display_manager->GetDisplayForId(list[2]).bounds());
+            display_manager()->GetDisplayForId(list[2]).bounds());
 
   // Create a window on 2nd display.
   window_->SetBoundsInScreen(gfx::Rect(400, 0, 100, 100),
-                             display_manager->GetDisplayForId(list[1]));
+                             display_manager()->GetDisplayForId(list[1]));
   ASSERT_EQ(root_windows[1], window_->GetRootWindow());
 
   // Hold the center of the window so that the window doesn't stick to the edge
@@ -571,9 +535,8 @@ TEST_P(DragWindowResizerTest, DragWindowControllerAcrossThreeDisplays) {
 
 // Verifies if the resizer sets and resets
 // MouseCursorEventFilter::mouse_warp_mode_ as expected.
-TEST_P(DragWindowResizerTest, WarpMousePointer) {
-  MouseCursorEventFilter* event_filter =
-      Shell::GetInstance()->mouse_cursor_filter();
+TEST_F(DragWindowResizerTest, WarpMousePointer) {
+  MouseCursorEventFilter* event_filter = Shell::Get()->mouse_cursor_filter();
   ASSERT_TRUE(event_filter);
   window_->SetBounds(gfx::Rect(0, 0, 50, 60));
 
@@ -615,18 +578,14 @@ TEST_P(DragWindowResizerTest, WarpMousePointer) {
 
 // Verifies cursor's device scale factor is updated whe a window is moved across
 // root windows with different device scale factors (http://crbug.com/154183).
-TEST_P(DragWindowResizerTest, CursorDeviceScaleFactor) {
-  if (!SupportsMultipleDisplays())
-    return;
-
+TEST_F(DragWindowResizerTest, CursorDeviceScaleFactor) {
   // The secondary display is logically on the right, but on the system (e.g. X)
   // layer, it's below the primary one. See UpdateDisplay() in ash_test_base.cc.
   UpdateDisplay("400x400,800x800*2");
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   ASSERT_EQ(2U, root_windows.size());
 
-  test::CursorManagerTestApi cursor_test_api(
-      Shell::GetInstance()->cursor_manager());
+  CursorManagerTestApi cursor_test_api(Shell::Get()->cursor_manager());
   // Move window from the root window with 1.0 device scale factor to the root
   // window with 2.0 device scale factor.
   {
@@ -651,7 +610,7 @@ TEST_P(DragWindowResizerTest, CursorDeviceScaleFactor) {
   {
     // Make sure the window is on the default container first.
     aura::Window* default_container =
-        GetRootWindowController(root_windows[1])
+        RootWindowController::ForWindow(root_windows[1])
             ->GetContainer(kShellWindowId_DefaultContainer);
     default_container->AddChild(window_.get());
     window_->SetBoundsInScreen(
@@ -672,10 +631,7 @@ TEST_P(DragWindowResizerTest, CursorDeviceScaleFactor) {
 }
 
 // Verifies several kinds of windows can be moved across displays.
-TEST_P(DragWindowResizerTest, MoveWindowAcrossDisplays) {
-  if (!SupportsMultipleDisplays())
-    return;
-
+TEST_F(DragWindowResizerTest, MoveWindowAcrossDisplays) {
   // The secondary display is logically on the right, but on the system (e.g. X)
   // layer, it's below the primary one. See UpdateDisplay() in ash_test_base.cc.
   UpdateDisplay("400x400,400x400");
@@ -696,7 +652,7 @@ TEST_P(DragWindowResizerTest, MoveWindowAcrossDisplays) {
     resizer->Drag(CalculateDragPoint(*resizer, 399, 200), 0);
     EXPECT_TRUE(TestIfMouseWarpsAt(gfx::Point(399, 200)));
     EXPECT_EQ("401,200",
-              aura::Env::GetInstance()->last_mouse_location().ToString());
+              Shell::Get()->aura_env()->last_mouse_location().ToString());
     resizer->CompleteDrag();
   }
 
@@ -713,7 +669,7 @@ TEST_P(DragWindowResizerTest, MoveWindowAcrossDisplays) {
     resizer->Drag(CalculateDragPoint(*resizer, 399, 200), 0);
     EXPECT_TRUE(TestIfMouseWarpsAt(gfx::Point(399, 200)));
     EXPECT_EQ("401,200",
-              aura::Env::GetInstance()->last_mouse_location().ToString());
+              Shell::Get()->aura_env()->last_mouse_location().ToString());
     resizer->CompleteDrag();
   }
 
@@ -723,7 +679,7 @@ TEST_P(DragWindowResizerTest, MoveWindowAcrossDisplays) {
     window->SetBoundsInScreen(
         gfx::Rect(0, 0, 50, 60),
         display::Screen::GetScreen()->GetPrimaryDisplay());
-    aura::Env::GetInstance()->set_last_mouse_location(gfx::Point(0, 0));
+    Shell::Get()->aura_env()->SetLastMouseLocation(gfx::Point(0, 0));
     // Grab (0, 0) of the window.
     std::unique_ptr<WindowResizer> resizer(
         CreateDragWindowResizer(window, gfx::Point(), HTCAPTION));
@@ -731,7 +687,7 @@ TEST_P(DragWindowResizerTest, MoveWindowAcrossDisplays) {
     resizer->Drag(CalculateDragPoint(*resizer, 399, 200), 0);
     EXPECT_TRUE(TestIfMouseWarpsAt(gfx::Point(399, 200)));
     EXPECT_EQ("401,200",
-              aura::Env::GetInstance()->last_mouse_location().ToString());
+              Shell::Get()->aura_env()->last_mouse_location().ToString());
     resizer->CompleteDrag();
   }
 
@@ -748,7 +704,7 @@ TEST_P(DragWindowResizerTest, MoveWindowAcrossDisplays) {
     resizer->Drag(CalculateDragPoint(*resizer, 399, 200), 0);
     EXPECT_FALSE(TestIfMouseWarpsAt(gfx::Point(399, 200)));
     EXPECT_EQ("399,200",
-              aura::Env::GetInstance()->last_mouse_location().ToString());
+              Shell::Get()->aura_env()->last_mouse_location().ToString());
     resizer->CompleteDrag();
   }
 
@@ -765,24 +721,7 @@ TEST_P(DragWindowResizerTest, MoveWindowAcrossDisplays) {
     resizer->Drag(CalculateDragPoint(*resizer, 399, 200), 0);
     EXPECT_TRUE(TestIfMouseWarpsAt(gfx::Point(399, 200)));
     EXPECT_EQ("401,200",
-              aura::Env::GetInstance()->last_mouse_location().ToString());
-    resizer->CompleteDrag();
-  }
-
-  // Panel window can be moved across display.
-  {
-    aura::Window* window = panel_window_.get();
-    window->SetBoundsInScreen(
-        gfx::Rect(0, 0, 50, 60),
-        display::Screen::GetScreen()->GetPrimaryDisplay());
-    // Grab (0, 0) of the window.
-    std::unique_ptr<WindowResizer> resizer(
-        CreateDragWindowResizer(window, gfx::Point(), HTCAPTION));
-    ASSERT_TRUE(resizer.get());
-    resizer->Drag(CalculateDragPoint(*resizer, 399, 200), 0);
-    EXPECT_TRUE(TestIfMouseWarpsAt(gfx::Point(399, 200)));
-    EXPECT_EQ("401,200",
-              aura::Env::GetInstance()->last_mouse_location().ToString());
+              Shell::Get()->aura_env()->last_mouse_location().ToString());
     resizer->CompleteDrag();
   }
 }

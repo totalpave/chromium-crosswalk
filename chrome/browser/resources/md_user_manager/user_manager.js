@@ -2,29 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-<include src="../../../../ui/login/screen.js">
-<include src="../../../../ui/login/bubble.js">
-<include src="../../../../ui/login/login_ui_tools.js">
-<include src="../../../../ui/login/display_manager.js">
-<include src="../../../../ui/login/account_picker/screen_account_picker.js">
-<include src="../../../../ui/login/account_picker/user_pod_row.js">
+// <include src="../../../../ui/login/screen.js">
+// <include src="../../../../ui/login/bubble.js">
+// <include src="../../../../ui/login/login_ui_tools.js">
+// <include src="../../../../ui/login/display_manager.js">
+// <include src="../../../../ui/login/account_picker/screen_account_picker.js">
+// <include src="../../../../ui/login/account_picker/user_pod_row.js">
 
 
 cr.define('cr.ui', function() {
-  var DisplayManager = cr.ui.login.DisplayManager;
+  const DisplayManager = cr.ui.login.DisplayManager;
 
   /**
    * Maximum possible height of the #login-header-bar, including the padding
    * and the border.
-   * @const {number}
+   * @type {number}
    */
-  var MAX_LOGIN_HEADER_BAR_HEIGHT = 57;
+  const MAX_LOGIN_HEADER_BAR_HEIGHT = 57;
 
   /**
    * Manages initialization of screens, transitions, and error messages.
    * @constructor
    * @extends {DisplayManager}
-  */
+   */
   function UserManager() {}
 
   cr.addSingletonGetter(UserManager);
@@ -52,11 +52,12 @@ cr.define('cr.ui', function() {
      * @type {{width: number, height: number}}
      */
     get clientAreaSize() {
-      var userManagerPages = document.querySelector('user-manager-pages');
-      var width = userManagerPages.offsetWidth;
+      const userManagerPages = document.querySelector('user-manager-pages');
+      const width = userManagerPages.offsetWidth;
       // Deduct the maximum possible height of the #login-header-bar from the
       // height of #animated-pages. Result is the remaining visible height.
-      var height = userManagerPages.offsetHeight - MAX_LOGIN_HEADER_BAR_HEIGHT;
+      const height =
+          userManagerPages.offsetHeight - MAX_LOGIN_HEADER_BAR_HEIGHT;
       return {width: width, height: height};
     }
   };
@@ -68,10 +69,11 @@ cr.define('cr.ui', function() {
    * @param {!Event} event The event containing ID of the selected page.
    */
   UserManager.onPageChanged_ = function(event) {
-    var userPodsPageVisible = event.detail.page == 'user-pods-page';
+    const userPodsPageVisible = event.detail.page == 'user-pods-page';
     cr.ui.UserManager.getInstance().userPodsPageVisible = userPodsPageVisible;
-    if (userPodsPageVisible)
+    if (userPodsPageVisible) {
       $('pod-row').rebuildPods();
+    }
   };
 
   /**
@@ -95,19 +97,25 @@ cr.define('cr.ui', function() {
    *     displayed.
    */
   UserManager.showUserManagerScreen = function(showGuest, showAddPerson) {
-    UserManager.getInstance().showScreen({id: 'account-picker',
-                                          data: {disableAddUser: false}});
+    UserManager.getInstance().showScreen(
+        {id: 'account-picker', data: {disableAddUser: false}});
     // Hide control options if the user does not have the right permissions.
-    var controlBar = document.querySelector('control-bar');
+    const controlBar = document.querySelector('control-bar');
     controlBar.showGuest = showGuest;
     controlBar.showAddPerson = showAddPerson;
 
     // Disable the context menu, as the Print/Inspect element items don't
     // make sense when displayed as a widget.
-    document.addEventListener('contextmenu', function(e) {e.preventDefault();});
+    document.addEventListener('contextmenu', function(e) {
+      e.preventDefault();
+    });
 
-    if (window.location.hash == '#tutorial')
+    if (window.location.hash == '#tutorial') {
       document.querySelector('user-manager-tutorial').startTutorial();
+    } else if (window.location.hash == '#create-user') {
+      document.querySelector('user-manager-pages')
+          .setSelectedPage('create-user-page');
+    }
   };
 
   /**
@@ -160,21 +168,18 @@ cr.define('cr.ui', function() {
   };
 
   // Export
-  return {
-    UserManager: UserManager
-  };
+  return {UserManager: UserManager};
 });
 
 // Alias to Oobe for use in src/ui/login/account_picker/user_pod_row.js
-var Oobe = cr.ui.UserManager;
+const Oobe = cr.ui.UserManager;
 
 // Allow selection events on components with editable text (password field)
 // bug (http://code.google.com/p/chromium/issues/detail?id=125863)
 disableTextSelectAndDrag(function(e) {
-  var src = e.target;
+  const src = e.target;
   return src instanceof HTMLTextAreaElement ||
-         src instanceof HTMLInputElement &&
-         /text|password|search/.test(src.type);
+      src instanceof HTMLInputElement && /text|password|search/.test(src.type);
 });
 
 document.addEventListener('DOMContentLoaded', cr.ui.UserManager.initialize);

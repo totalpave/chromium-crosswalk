@@ -13,6 +13,7 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/observer_list.h"
+#include "base/optional.h"
 #include "dbus/object_path.h"
 #include "dbus/property.h"
 #include "device/bluetooth/bluetooth_common.h"
@@ -71,8 +72,11 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothDeviceClient
   FakeBluetoothDeviceClient();
   ~FakeBluetoothDeviceClient() override;
 
+  // Causes Connect() calls to never finish.
+  void LeaveConnectionsPending();
+
   // BluetoothDeviceClient overrides
-  void Init(dbus::Bus* bus) override;
+  void Init(dbus::Bus* bus, const std::string& bluetooth_service_name) override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
   std::vector<dbus::ObjectPath> GetDevicesForAdapter(
@@ -101,9 +105,19 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothDeviceClient
   void GetConnInfo(const dbus::ObjectPath& object_path,
                    const ConnInfoCallback& callback,
                    const ErrorCallback& error_callback) override;
+  void SetLEConnectionParameters(const dbus::ObjectPath& object_path,
+                                 const ConnectionParameters& conn_params,
+                                 const base::Closure& callback,
+                                 const ErrorCallback& error_callback) override;
   void GetServiceRecords(const dbus::ObjectPath& object_path,
                          const ServiceRecordsCallback& callback,
                          const ErrorCallback& error_callback) override;
+  void ExecuteWrite(const dbus::ObjectPath& object_path,
+                    const base::Closure& callback,
+                    const ErrorCallback& error_callback) override;
+  void AbortWrite(const dbus::ObjectPath& object_path,
+                  const base::Closure& callback,
+                  const ErrorCallback& error_callback) override;
 
   void SetSimulationIntervalMs(int interval_ms);
 
@@ -155,14 +169,40 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothDeviceClient
   void RemoveAllDevices();
 
   // Create a test Bluetooth device with the given properties.
-  void CreateTestDevice(const dbus::ObjectPath& adapter_path,
-                        const std::string name,
-                        const std::string alias,
-                        const std::string device_address,
-                        const std::vector<std::string>& service_uuids,
-                        device::BluetoothTransport type);
+  void CreateTestDevice(
+      const dbus::ObjectPath& adapter_path,
+      const base::Optional<std::string> name,
+      const std::string alias,
+      const std::string device_address,
+      const std::vector<std::string>& service_uuids,
+      device::BluetoothTransport type,
+      const std::map<std::string, std::vector<uint8_t>>& service_data,
+      const std::map<uint16_t, std::vector<uint8_t>>& manufacturer_data);
 
   void set_delay_start_discovery(bool value) { delay_start_discovery_ = value; }
+
+  // Updates the inquiry RSSI property of fake device with object path
+  // |object_path| to |rssi|, if the fake device exists.
+  void UpdateDeviceRSSI(const dbus::ObjectPath& object_path, int16_t rssi);
+
+  // Updates service UUIDs, service data, and manufacturer data of the fake
+  // device with the given |object_path|. The |service_uuids| values are
+  // appended, while |service_data| and |manufacturer_data| are merged into the
+  // existing property values. Has no effect if the fake device does not exist.
+  void UpdateServiceAndManufacturerData(
+      const dbus::ObjectPath& object_path,
+      const std::vector<std::string>& service_uuids,
+      const std::map<std::string, std::vector<uint8_t>>& service_data,
+      const std::map<uint16_t, std::vector<uint8_t>>& manufacturer_data);
+
+  // Updates the EIR property of fake device with object path |object_path| to
+  // |eir|, if the fake device exists.
+  void UpdateEIR(const dbus::ObjectPath& object_path,
+                 const std::vector<uint8_t>& eir);
+
+  // Adds a pending prepare write request to |object_path|.
+  void AddPrepareWriteRequest(const dbus::ObjectPath& object_path,
+                              const std::vector<uint8_t>& value);
 
   static const char kTestPinCode[];
   static const int kTestPassKey;
@@ -180,6 +220,7 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothDeviceClient
   // we can emulate.
   static const char kPairedDevicePath[];
   static const char kPairedDeviceName[];
+  static const char kPairedDeviceAlias[];
   static const char kPairedDeviceAddress[];
   static const uint32_t kPairedDeviceClass;
 
@@ -243,8 +284,13 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothDeviceClient
   static const char kLowEnergyAddress[];
   static const uint32_t kLowEnergyClass;
 
+  static const char kDualPath[];
+  static const char kDualName[];
+  static const char kDualAddress[];
+
   static const char kPairedUnconnectableDevicePath[];
   static const char kPairedUnconnectableDeviceName[];
+  static const char kPairedUnconnectableDeviceAlias[];
   static const char kPairedUnconnectableDeviceAddress[];
   static const uint32_t kPairedUnconnectableDeviceClass;
 
@@ -252,11 +298,6 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothDeviceClient
   static const char kConnectedTrustedNotPairedDeviceAddress[];
   static const char kConnectedTrustedNotPairedDeviceName[];
   static const uint32_t kConnectedTrustedNotPairedDeviceClass;
-
-  static const char kCachedLowEnergyPath[];
-  static const char kCachedLowEnergyAddress[];
-  static const char kCachedLowEnergyName[];
-  static const uint32_t kCachedLowEnergyClass;
 
  private:
   // Property callback passed when we create Properties* structures.
@@ -280,9 +321,9 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothDeviceClient
   void AddInputDeviceIfNeeded(const dbus::ObjectPath& object_path,
                               Properties* properties);
 
-  // Updates the inquiry RSSI property of fake device with object path
-  // |object_path| to |rssi|, if the fake device exists.
-  void UpdateDeviceRSSI(const dbus::ObjectPath& object_path, int16_t rssi);
+  // If fake device with |object_path| exists, sets its inquiry RSSI property
+  // to false and notifies that the property changed.
+  void InvalidateDeviceRSSI(const dbus::ObjectPath& object_path);
 
   void PinCodeCallback(const dbus::ObjectPath& object_path,
                        const base::Closure& callback,
@@ -316,7 +357,7 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothDeviceClient
       BluetoothProfileServiceProvider::Delegate::Status status);
 
   // List of observers interested in event notifications from us.
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   using PropertiesMap =
       std::map<const dbus::ObjectPath, std::unique_ptr<Properties>>;
@@ -341,6 +382,12 @@ class DEVICE_BLUETOOTH_EXPORT FakeBluetoothDeviceClient
   // Controls the fake behavior to allow more extensive UI testing without
   // having to cycle the discovery simulation.
   bool delay_start_discovery_;
+
+  // Pending prepare write requests.
+  std::vector<std::pair<dbus::ObjectPath, std::vector<uint8_t>>>
+      prepare_write_requests_;
+
+  bool should_leave_connections_pending_;
 };
 
 }  // namespace bluez

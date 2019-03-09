@@ -10,9 +10,7 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
-#include "content/public/test/test_browser_thread_bundle.h"
 #include "extensions/browser/deferred_start_render_host.h"
 #include "extensions/browser/extensions_test.h"
 #include "extensions/browser/serial_extension_host_queue.h"
@@ -70,7 +68,7 @@ class LoadMonitoringExtensionHostQueueTest : public ExtensionsTest {
   // Creates a new DeferredStartRenderHost. Ownership is held by this class,
   // not passed to caller.
   StubDeferredStartRenderHost* CreateHost() {
-    stubs_.push_back(base::WrapUnique(new StubDeferredStartRenderHost()));
+    stubs_.push_back(std::make_unique<StubDeferredStartRenderHost>());
     return stubs_.back().get();
   }
 
@@ -101,7 +99,6 @@ class LoadMonitoringExtensionHostQueueTest : public ExtensionsTest {
     max_active_loading_ = max_active_loading;
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
   std::unique_ptr<LoadMonitoringExtensionHostQueue> queue_;
   std::vector<std::unique_ptr<StubDeferredStartRenderHost>> stubs_;
 

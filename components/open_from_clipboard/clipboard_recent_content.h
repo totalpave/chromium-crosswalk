@@ -5,12 +5,13 @@
 #ifndef COMPONENTS_OPEN_FROM_CLIPBOARD_CLIPBOARD_RECENT_CONTENT_H_
 #define COMPONENTS_OPEN_FROM_CLIPBOARD_CLIPBOARD_RECENT_CONTENT_H_
 
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
 #include "base/time/time.h"
-
-class GURL;
+#include "ui/gfx/image/image.h"
+#include "url/gurl.h"
 
 // Helper class returning an URL if the content of the clipboard can be turned
 // into an URL, and if it estimates that the content of the clipboard is not too
@@ -26,15 +27,19 @@ class ClipboardRecentContent {
   static ClipboardRecentContent* GetInstance();
 
   // Sets the global instance of ClipboardRecentContent singleton.
-  static void SetInstance(ClipboardRecentContent* instance);
+  static void SetInstance(std::unique_ptr<ClipboardRecentContent> new_instance);
 
-  // Returns true if the clipboard contains a recent URL that has not been
-  // supressed, and copies it in |url|. Otherwise, returns false. |url| must not
-  // be null.
-  virtual bool GetRecentURLFromClipboard(GURL* url) const = 0;
+  // Returns clipboard content as URL, if it has a compatible type,
+  // is recent enough and has not been suppressed.
+  virtual base::Optional<GURL> GetRecentURLFromClipboard() = 0;
 
-  // Reports that the URL contained in the pasteboard was displayed.
-  virtual void RecentURLDisplayed() = 0;
+  // Returns clipboard content as text, if it has a compatible type,
+  // is recent enough and has not been suppressed.
+  virtual base::Optional<base::string16> GetRecentTextFromClipboard() = 0;
+
+  // Returns clipboard content as image, if it has a compatible type,
+  // is recent enough and has not been suppressed.
+  virtual base::Optional<gfx::Image> GetRecentImageFromClipboard() = 0;
 
   // Returns how old the content of the clipboard is.
   virtual base::TimeDelta GetClipboardContentAge() const = 0;
@@ -42,6 +47,11 @@ class ClipboardRecentContent {
   // Prevent GetRecentURLFromClipboard from returning anything until the
   // clipboard's content changed.
   virtual void SuppressClipboardContent() = 0;
+
+ protected:
+  // GetRecentURLFromClipboard() should never return a URL from a clipboard
+  // older than this.
+  static base::TimeDelta MaximumAgeOfClipboard();
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ClipboardRecentContent);

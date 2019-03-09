@@ -16,7 +16,7 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
+#include "third_party/blink/public/web/web_document.h"
 
 class GURL;
 
@@ -32,13 +32,13 @@ class PhishingDOMFeatureExtractor {
  public:
   // Callback to be run when feature extraction finishes.  The callback
   // argument is true if extraction was successful, false otherwise.
-  typedef base::Callback<void(bool)> DoneCallback;
+  typedef base::OnceCallback<void(bool)> DoneCallback;
 
   // Creates a PhishingDOMFeatureExtractor instance.
   // |clock| is used for timing feature extractor operations, and may be
   // mocked for testing.  The caller maintains ownership of the clock.
   explicit PhishingDOMFeatureExtractor(FeatureExtractorClock* clock);
-  ~PhishingDOMFeatureExtractor();
+  virtual ~PhishingDOMFeatureExtractor();
 
   // Begins extracting features into the given FeatureMap for the page.
   // To avoid blocking the render thread for too long, the feature extractor
@@ -48,7 +48,7 @@ class PhishingDOMFeatureExtractor {
   // takes ownership of the callback.
   void ExtractFeatures(blink::WebDocument document,
                        FeatureMap* features,
-                       const DoneCallback& done_callback);
+                       DoneCallback done_callback);
 
   // Cancels any pending feature extraction.  The DoneCallback will not be run.
   // Must be called if there is a feature extraction in progress when the page

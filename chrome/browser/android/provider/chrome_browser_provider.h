@@ -28,19 +28,11 @@ namespace history {
 class TopSites;
 }
 
-namespace sql {
-class Statement;
-}
-
 // This class implements the native methods of ChromeBrowserProvider.java
 class ChromeBrowserProvider : public bookmarks::BaseBookmarkModelObserver,
                               public history::HistoryServiceObserver {
  public:
   ChromeBrowserProvider(JNIEnv* env, jobject obj);
-  void Destroy(JNIEnv*, const base::android::JavaParamRef<jobject>&);
-
-  // JNI registration.
-  static bool RegisterChromeBrowserProvider(JNIEnv* env);
 
   // Adds either a new bookmark or bookmark folder based on |is_folder|.  The
   // bookmark is added to the beginning of the specified parent and if the
@@ -209,16 +201,16 @@ class ChromeBrowserProvider : public bookmarks::BaseBookmarkModelObserver,
                     const history::RedirectList& redirects,
                     base::Time visit_time) override;
   void OnURLsDeleted(history::HistoryService* history_service,
-                     bool all_history,
-                     bool expired,
-                     const history::URLRows& deleted_rows,
-                     const std::set<GURL>& favicon_urls) override;
+                     const history::DeletionInfo& deletion_info) override;
   void OnKeywordSearchTermUpdated(history::HistoryService* history_service,
                                   const history::URLRow& row,
                                   history::KeywordID keyword_id,
                                   const base::string16& term) override;
   void OnKeywordSearchTermDeleted(history::HistoryService* history_service,
                                   history::URLID url_id) override;
+  bool GetJavaProviderOrDeleteSelf(
+      base::android::ScopedJavaLocalRef<jobject>* out_ref,
+      JNIEnv* env);
 
   JavaObjectWeakGlobalRef weak_java_provider_;
 

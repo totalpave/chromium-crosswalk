@@ -8,31 +8,27 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/no_destructor.h"
 #include "components/keyed_service/ios/browser_state_keyed_service_factory.h"
-
-namespace base {
-template <typename T>
-struct DefaultSingletonTraits;
-}  // namespace base
-
-namespace autofill {
-class PersonalDataManager;
-}
 
 namespace ios {
 class ChromeBrowserState;
 }
 
+namespace autofill {
+
+class PersonalDataManager;
+
 // Singleton that owns all PersonalDataManagers and associates them with
 // ios::ChromeBrowserState.
 class PersonalDataManagerFactory : public BrowserStateKeyedServiceFactory {
  public:
-  static autofill::PersonalDataManager* GetForBrowserState(
+  static PersonalDataManager* GetForBrowserState(
       ios::ChromeBrowserState* browser_state);
   static PersonalDataManagerFactory* GetInstance();
 
  private:
-  friend struct base::DefaultSingletonTraits<PersonalDataManagerFactory>;
+  friend class base::NoDestructor<PersonalDataManagerFactory>;
 
   PersonalDataManagerFactory();
   ~PersonalDataManagerFactory() override;
@@ -43,5 +39,7 @@ class PersonalDataManagerFactory : public BrowserStateKeyedServiceFactory {
 
   DISALLOW_COPY_AND_ASSIGN(PersonalDataManagerFactory);
 };
+
+}  // namespace autofill
 
 #endif  // IOS_CHROME_BROWSER_AUTOFILL_PERSONAL_DATA_MANAGER_FACTORY_H_

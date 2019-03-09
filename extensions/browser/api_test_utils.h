@@ -9,9 +9,8 @@
 #include <string>
 
 #include "base/memory/ref_counted.h"
-#include "extensions/common/manifest.h"
-
-class UIThreadExtensionFunction;
+#include "base/run_loop.h"
+#include "extensions/browser/extension_function.h"
 
 namespace base {
 class DictionaryValue;
@@ -24,7 +23,6 @@ class BrowserContext;
 }
 
 namespace extensions {
-class Extension;
 class ExtensionFunctionDispatcher;
 
 // TODO(yoz): crbug.com/394840: Remove duplicate functionality in
@@ -33,6 +31,33 @@ class ExtensionFunctionDispatcher;
 // TODO(ckehoe): Accept args as std::unique_ptr<base::Value>,
 // and migrate existing users to the new API.
 namespace api_test_utils {
+
+// A helper class to handle waiting for a function response.
+class SendResponseHelper {
+ public:
+  explicit SendResponseHelper(UIThreadExtensionFunction* function);
+  ~SendResponseHelper();
+
+  bool has_response() { return response_.get() != nullptr; }
+
+  // Asserts a response has been posted (has_response()) and returns the value.
+  bool GetResponse();
+
+  // Waits until a response is posted.
+  void WaitForResponse();
+
+ private:
+  // Response handler.
+  void OnResponse(ExtensionFunction::ResponseType response,
+                  const base::ListValue& results,
+                  const std::string& error,
+                  functions::HistogramValue histogram_value);
+
+  base::RunLoop run_loop_;
+  std::unique_ptr<bool> response_;
+
+  DISALLOW_COPY_AND_ASSIGN(SendResponseHelper);
+};
 
 enum RunFunctionFlags { NONE = 0, INCLUDE_INCOGNITO = 1 << 0 };
 
@@ -47,29 +72,9 @@ bool GetBoolean(const base::DictionaryValue* val, const std::string& key);
 int GetInteger(const base::DictionaryValue* val, const std::string& key);
 std::string GetString(const base::DictionaryValue* val, const std::string& key);
 
-// Creates an extension instance with a specified extension value that can be
-// attached to an ExtensionFunction before running.
-scoped_refptr<extensions::Extension> CreateExtension(
-    base::DictionaryValue* test_extension_value);
-
-scoped_refptr<extensions::Extension> CreateExtension(
-    extensions::Manifest::Location location,
-    base::DictionaryValue* test_extension_value,
-    const std::string& id_input);
-
-// Creates an extension instance with a specified location that can be attached
-// to an ExtensionFunction before running.
-scoped_refptr<extensions::Extension> CreateEmptyExtensionWithLocation(
-    extensions::Manifest::Location location);
-
 // Run |function| with |args| and return the result. Adds an error to the
 // current test if |function| returns an error. Takes ownership of
 // |function|. The caller takes ownership of the result.
-std::unique_ptr<base::Value> RunFunctionWithDelegateAndReturnSingleResult(
-    scoped_refptr<UIThreadExtensionFunction> function,
-    const std::string& args,
-    content::BrowserContext* context,
-    std::unique_ptr<ExtensionFunctionDispatcher> dispatcher);
 std::unique_ptr<base::Value> RunFunctionWithDelegateAndReturnSingleResult(
     scoped_refptr<UIThreadExtensionFunction> function,
     const std::string& args,

@@ -9,11 +9,9 @@
 
 goog.provide('cvox.InitGlobals');
 
-goog.require('cvox.ApiImplementation');
 goog.require('cvox.ChromeVox');
 goog.require('cvox.ChromeVoxEventWatcher');
 goog.require('cvox.CompositeTts');
-goog.require('cvox.ConsoleTts');
 goog.require('cvox.HostFactory');
 goog.require('cvox.NavigationManager');
 goog.require('cvox.Serializer');
@@ -23,7 +21,7 @@ goog.require('cvox.Serializer');
 /**
  * @constructor
  */
-cvox.InitGlobals = function() { };
+cvox.InitGlobals = function() {};
 
 
 /**
@@ -35,21 +33,20 @@ cvox.InitGlobals.initGlobals = function() {
   }
 
   cvox.ChromeVox.tts = new cvox.CompositeTts()
-      .add(cvox.HostFactory.getTts())
-      .add(cvox.History.getInstance())
-      .add(cvox.ConsoleTts.getInstance());
+                           .add(cvox.HostFactory.getTts())
+                           .add(cvox.History.getInstance());
 
   if (!cvox.ChromeVox.braille) {
     cvox.ChromeVox.braille = cvox.HostFactory.getBraille();
   }
-  cvox.ChromeVox.mathJax = cvox.HostFactory.getMathJax();
+
 
   cvox.ChromeVox.earcons = cvox.HostFactory.getEarcons();
   cvox.ChromeVox.isActive = true;
   cvox.ChromeVox.navigationManager = new cvox.NavigationManager();
   cvox.ChromeVox.navigationManager.updateIndicator();
-  cvox.ChromeVox.syncToNode = cvox.ApiImplementation.syncToNode;
-  cvox.ChromeVox.speakNode = cvox.ApiImplementation.speakNode;
+  cvox.ChromeVox.syncToNode = cvox.ChromeVox.navigationManager.syncToNode.bind(
+      cvox.ChromeVox.navigationManager);
 
   cvox.ChromeVox.serializer = new cvox.Serializer();
 

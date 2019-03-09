@@ -6,12 +6,12 @@
 
 #include <stddef.h>
 
-#include <queue>
 #include <set>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
+#include "base/containers/queue.h"
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
@@ -26,7 +26,8 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
-#include "net/url_request/url_request_test_util.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "services/network/test/test_shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace policy {
@@ -68,12 +69,13 @@ class MockOAuth2TokenService : public FakeOAuth2TokenService {
   ~MockOAuth2TokenService() override;
 
   // OAuth2TokenService:
-  void FetchOAuth2Token(RequestImpl* request,
-                        const std::string& account_id,
-                        net::URLRequestContextGetter* getter,
-                        const std::string& client_id,
-                        const std::string& client_secret,
-                        const ScopeSet& scopes) override;
+  void FetchOAuth2Token(
+      RequestImpl* request,
+      const std::string& account_id,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      const std::string& client_id,
+      const std::string& client_secret,
+      const ScopeSet& scopes) override;
 
   // OAuth2TokenService:
   void InvalidateAccessTokenImpl(const std::string& account_id,
@@ -87,7 +89,7 @@ class MockOAuth2TokenService : public FakeOAuth2TokenService {
   void SetTokenInvalid(const std::string& token);
 
  private:
-  std::queue<std::string> token_replies_;
+  base::queue<std::string> token_replies_;
   std::set<std::string> valid_tokens_;
 
   DISALLOW_COPY_AND_ASSIGN(MockOAuth2TokenService);
@@ -102,25 +104,25 @@ MockOAuth2TokenService::~MockOAuth2TokenService() {
 void MockOAuth2TokenService::FetchOAuth2Token(
     OAuth2TokenService::RequestImpl* request,
     const std::string& account_id,
-    net::URLRequestContextGetter* getter,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     const std::string& client_id,
     const std::string& client_secret,
     const FakeOAuth2TokenService::ScopeSet& scopes) {
   GoogleServiceAuthError response_error =
       GoogleServiceAuthError::AuthErrorNone();
-  const base::Time response_expiration = base::Time::Now();
-  std::string access_token;
+  OAuth2AccessTokenConsumer::TokenResponse token_response;
   if (token_replies_.empty()) {
     response_error =
         GoogleServiceAuthError::FromServiceError("Service unavailable.");
   } else {
-    access_token = token_replies_.front();
+    token_response.access_token = token_replies_.front();
+    token_response.expiration_time = base::Time::Now();
     token_replies_.pop();
   }
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&OAuth2TokenService::RequestImpl::InformConsumer,
-                            request->AsWeakPtr(), response_error, access_token,
-                            response_expiration));
+      FROM_HERE,
+      base::BindOnce(&OAuth2TokenService::RequestImpl::InformConsumer,
+                     request->AsWeakPtr(), response_error, token_response));
 }
 
 void MockOAuth2TokenService::AddTokenToQueue(const std::string& token) {
@@ -179,8 +181,8 @@ class UploadJobTestBase : public testing::Test, public UploadJob::Delegate {
 
   // testing::Test:
   void SetUp() override {
-    request_context_getter_ = new net::TestURLRequestContextGetter(
-        base::ThreadTaskRunnerHandle::Get());
+    url_loader_factory_ =
+        base::MakeRefCounted<network::TestSharedURLLoaderFactory>();
     oauth2_service_.AddAccount("robot@gmail.com");
     ASSERT_TRUE(test_server_.Start());
     // Set retry delay to prevent timeouts
@@ -197,8 +199,8 @@ class UploadJobTestBase : public testing::Test, public UploadJob::Delegate {
       std::unique_ptr<UploadJobImpl::MimeBoundaryGenerator>
           mime_boundary_generator) {
     std::unique_ptr<UploadJob> upload_job(new UploadJobImpl(
-        GetServerURL(), kRobotAccountId, &oauth2_service_,
-        request_context_getter_.get(), this, std::move(mime_boundary_generator),
+        GetServerURL(), kRobotAccountId, &oauth2_service_, url_loader_factory_,
+        this, std::move(mime_boundary_generator), TRAFFIC_ANNOTATION_FOR_TESTS,
         base::ThreadTaskRunnerHandle::Get()));
 
     std::map<std::string, std::string> header_entries;
@@ -216,7 +218,7 @@ class UploadJobTestBase : public testing::Test, public UploadJob::Delegate {
   content::TestBrowserThreadBundle test_browser_thread_bundle_;
   base::RunLoop run_loop_;
   net::EmbeddedTestServer test_server_;
-  scoped_refptr<net::TestURLRequestContextGetter> request_context_getter_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   MockOAuth2TokenService oauth2_service_;
 
   std::unique_ptr<UploadJob::ErrorCode> expected_error_;
@@ -228,9 +230,9 @@ class UploadFlowTest : public UploadJobTestBase {
 
   // UploadJobTestBase:
   void SetUp() override {
-    UploadJobTestBase::SetUp();
     test_server_.RegisterRequestHandler(
         base::Bind(&UploadFlowTest::HandlePostRequest, base::Unretained(this)));
+    UploadJobTestBase::SetUp();
     upload_attempt_count_ = 0;
   }
 
@@ -349,9 +351,9 @@ class UploadRequestTest : public UploadJobTestBase {
 
   // UploadJobTestBase:
   void SetUp() override {
-    UploadJobTestBase::SetUp();
     test_server_.RegisterRequestHandler(base::Bind(
         &UploadRequestTest::HandlePostRequest, base::Unretained(this)));
+    UploadJobTestBase::SetUp();
   }
 
   std::unique_ptr<net::test_server::HttpResponse> HandlePostRequest(
@@ -374,8 +376,8 @@ class UploadRequestTest : public UploadJobTestBase {
 TEST_F(UploadRequestTest, TestRequestStructure) {
   oauth2_service_.SetTokenValid(kTokenValid);
   oauth2_service_.AddTokenToQueue(kTokenValid);
-  std::unique_ptr<UploadJob> upload_job = PrepareUploadJob(
-      base::WrapUnique(new RepeatingMimeBoundaryGenerator('A')));
+  std::unique_ptr<UploadJob> upload_job =
+      PrepareUploadJob(std::make_unique<RepeatingMimeBoundaryGenerator>('A'));
   SetExpectedRequestContent(
       "--AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\n"
       "Content-Disposition: form-data; "

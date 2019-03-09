@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import sys
 
+DSYMUTIL_INVOKE = ['xcrun', 'dsymutil']
+
 # The linker_driver.py is responsible for forwarding a linker invocation to
 # the compiler driver, while processing special arguments itself.
 #
@@ -31,6 +33,14 @@ import sys
 #         "... -o out/gn/obj/foo/libbar.dylib ... -Wcrl,dsym,out/gn ..."
 #       The resulting dSYM would be out/gn/libbar.dylib.dSYM/.
 #
+#   -Wcrl,dsymutilpath,<dsymutil_path>
+#       Sets the path to the dsymutil to run with -Wcrl,dsym, in which case
+#       `xcrun` is not used to invoke it.
+#
+#   -Wcrl,unstripped,<unstripped_path_prefix>
+#       After invoking the linker, and before strip, this will save a copy of
+#       the unstripped linker output in the directory unstripped_path_prefix.
+#
 #   -Wcrl,strip,<strip_arguments>
 #       After invoking the linker, and optionally dsymutil, this will run
 #       the strip command on the linker's output. strip_arguments are
@@ -47,6 +57,13 @@ def Main(args):
 
   if len(args) < 2:
     raise RuntimeError("Usage: linker_driver.py [linker-invocation]")
+
+  for i in xrange(len(args)):
+    if args[i] != '--developer_dir':
+      continue
+    os.environ['DEVELOPER_DIR'] = args[i + 1]
+    del args[i:i+2]
+    break
 
   # Collect arguments to the linker driver (this script) and remove them from
   # the arguments being passed to the compiler driver.
@@ -126,13 +143,55 @@ def RunDsymUtil(dsym_path_prefix, full_args):
     raise ValueError('Unspecified dSYM output file')
 
   linker_out = _FindLinkerOutput(full_args)
-  (head, tail) = os.path.split(linker_out)
-  dsym_out = os.path.join(dsym_path_prefix, tail + '.dSYM')
+  base = os.path.basename(linker_out)
+  dsym_out = os.path.join(dsym_path_prefix, base + '.dSYM')
 
   # Remove old dSYMs before invoking dsymutil.
   _RemovePath(dsym_out)
-  subprocess.check_call(['xcrun', 'dsymutil', '-o', dsym_out, linker_out])
+  subprocess.check_call(DSYMUTIL_INVOKE + ['-o', dsym_out, linker_out])
   return [dsym_out]
+
+
+def SetDsymutilPath(dsymutil_path, full_args):
+  """Linker driver action for -Wcrl,dsymutilpath,<dsymutil_path>.
+
+  Sets the invocation command for dsymutil, which allows the caller to specify
+  an alternate dsymutil. This action is always processed before the RunDsymUtil
+  action.
+
+  Args:
+    dsymutil_path: string, The path to the dsymutil binary to run
+    full_args: list of string, Full argument list for the linker driver.
+
+  Returns:
+    No output - this step is run purely for its side-effect.
+  """
+  global DSYMUTIL_INVOKE
+  DSYMUTIL_INVOKE = [dsymutil_path]
+  return []
+
+
+def RunSaveUnstripped(unstripped_path_prefix, full_args):
+  """Linker driver action for -Wcrl,unstripped,<unstripped_path_prefix>. Copies
+  the linker output to |unstripped_path_prefix| before stripping.
+
+  Args:
+    unstripped_path_prefix: string, The path at which the unstripped output
+        should be located.
+    full_args: list of string, Full argument list for the linker driver.
+
+  Returns:
+    list of string, Build step outputs.
+  """
+  if not len(unstripped_path_prefix):
+    raise ValueError('Unspecified unstripped output file')
+
+  linker_out = _FindLinkerOutput(full_args)
+  base = os.path.basename(linker_out)
+  unstripped_out = os.path.join(unstripped_path_prefix, base + '.unstripped')
+
+  shutil.copyfile(linker_out, unstripped_out)
+  return [unstripped_out]
 
 
 def RunStrip(strip_args_string, full_args):
@@ -158,7 +217,15 @@ def _FindLinkerOutput(full_args):
   argument list. As this is a required linker argument, raises an error if it
   cannot be found.
   """
-  return full_args[full_args.index('-o') + 1]
+  # The linker_driver.py script may be used to wrap either the compiler linker
+  # (uses -o to configure the output) or lipo (uses -output to configure the
+  # output). Since wrapping the compiler linker is the most likely possibility
+  # use try/except and fallback to checking for -output if -o is not found.
+  try:
+    output_flag_index = full_args.index('-o')
+  except ValueError:
+    output_flag_index = full_args.index('-output')
+  return full_args[output_flag_index + 1]
 
 
 def _RemovePath(path):
@@ -177,7 +244,9 @@ order in which the actions are invoked. The first item in the tuple is the
 argument's -Wcrl,<sub_argument> and the second is the function to invoke.
 """
 _LINKER_DRIVER_ACTIONS = [
+    ('dsymutilpath,', SetDsymutilPath),
     ('dsym,', RunDsymUtil),
+    ('unstripped,', RunSaveUnstripped),
     ('strip,', RunStrip),
 ]
 

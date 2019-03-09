@@ -4,30 +4,42 @@
 
 package org.chromium.chrome.browser;
 
-import android.content.Context;
-import android.test.InstrumentationTestCase;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.filters.SmallTest;
+
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.test.util.AdvancedMockContext;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RetryOnFailure;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
 
 /**
  * Tests {@link BackgroundSyncLauncher}.
  */
-public class BackgroundSyncLauncherTest extends InstrumentationTestCase {
-    private Context mContext;
+@RunWith(ChromeJUnit4ClassRunner.class)
+public class BackgroundSyncLauncherTest {
     private BackgroundSyncLauncher mLauncher;
     private Boolean mShouldLaunchResult;
 
-    @Override
-    protected void setUp() throws Exception {
-        mContext = new AdvancedMockContext(getInstrumentation().getTargetContext());
+    @Before
+    public void setUp() throws ExecutionException, InterruptedException {
         BackgroundSyncLauncher.setGCMEnabled(false);
-        RecordHistogram.disableForTests();
-        mLauncher = BackgroundSyncLauncher.create(mContext);
+        RecordHistogram.setDisabledForTests(true);
+        mLauncher = BackgroundSyncLauncher.create();
+        // Ensure that the initial task is given enough time to complete.
+        waitForLaunchBrowserTask();
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        RecordHistogram.setDisabledForTests(false);
     }
 
     private void deleteLauncherInstance() {
@@ -35,64 +47,72 @@ public class BackgroundSyncLauncherTest extends InstrumentationTestCase {
         mLauncher = null;
     }
 
-    private Boolean shouldLaunchBrowserIfStoppedSync() {
+    private Boolean shouldLaunchBrowserIfStoppedSync() throws InterruptedException {
         mShouldLaunchResult = false;
 
         // Use a semaphore to wait for the callback to be called.
         final Semaphore semaphore = new Semaphore(0);
 
-        BackgroundSyncLauncher.ShouldLaunchCallback callback =
-                new BackgroundSyncLauncher.ShouldLaunchCallback() {
-                    @Override
-                    public void run(Boolean shouldLaunch) {
-                        mShouldLaunchResult = shouldLaunch;
-                        semaphore.release();
-                    }
-                };
+        BackgroundSyncLauncher.ShouldLaunchCallback callback = shouldLaunch -> {
+            mShouldLaunchResult = shouldLaunch;
+            semaphore.release();
+        };
 
-        BackgroundSyncLauncher.shouldLaunchBrowserIfStopped(mContext, callback);
-        try {
-            // Wait on the callback to be called.
-            semaphore.acquire();
-        } catch (InterruptedException e) {
-            fail("Failed to acquire semaphore");
-        }
+        BackgroundSyncLauncher.shouldLaunchBrowserIfStopped(callback);
+        // Wait on the callback to be called.
+        semaphore.acquire();
         return mShouldLaunchResult;
     }
 
+    private void waitForLaunchBrowserTask() throws ExecutionException, InterruptedException {
+        mLauncher.mLaunchBrowserIfStoppedTask.get();
+    }
+
+    @Test
     @SmallTest
     @Feature({"BackgroundSync"})
+    @RetryOnFailure
     public void testHasInstance() {
-        assertTrue(BackgroundSyncLauncher.hasInstance());
+        Assert.assertTrue(BackgroundSyncLauncher.hasInstance());
         mLauncher.destroy();
-        assertFalse(BackgroundSyncLauncher.hasInstance());
+        Assert.assertFalse(BackgroundSyncLauncher.hasInstance());
     }
 
+    @Test
     @SmallTest
     @Feature({"BackgroundSync"})
-    public void testDefaultNoLaunch() {
-        assertFalse(shouldLaunchBrowserIfStoppedSync());
+    public void testDefaultNoLaunch() throws InterruptedException {
+        Assert.assertFalse(shouldLaunchBrowserIfStoppedSync());
     }
 
+    @Test
     @SmallTest
     @Feature({"BackgroundSync"})
-    public void testSetLaunchWhenNextOnline() {
-        assertFalse(shouldLaunchBrowserIfStoppedSync());
-        mLauncher.launchBrowserIfStopped(mContext, true, 0);
-        assertTrue(shouldLaunchBrowserIfStoppedSync());
-        mLauncher.launchBrowserIfStopped(mContext, false, 0);
-        assertFalse(shouldLaunchBrowserIfStoppedSync());
+    @RetryOnFailure
+    public void testSetLaunchWhenNextOnline() throws ExecutionException, InterruptedException {
+        Assert.assertFalse(shouldLaunchBrowserIfStoppedSync());
+        mLauncher.launchBrowserIfStopped(true, 0);
+        waitForLaunchBrowserTask();
+        Assert.assertTrue(shouldLaunchBrowserIfStoppedSync());
+        mLauncher.launchBrowserIfStopped(false, 0);
+        waitForLaunchBrowserTask();
+        Assert.assertFalse(shouldLaunchBrowserIfStoppedSync());
     }
 
+    @Test
     @SmallTest
     @Feature({"BackgroundSync"})
-    public void testNewLauncherDisablesNextOnline() {
-        mLauncher.launchBrowserIfStopped(mContext, true, 0);
-        assertTrue(shouldLaunchBrowserIfStoppedSync());
+    @RetryOnFailure
+    public void testNewLauncherDisablesNextOnline()
+            throws ExecutionException, InterruptedException {
+        mLauncher.launchBrowserIfStopped(true, 0);
+        waitForLaunchBrowserTask();
+        Assert.assertTrue(shouldLaunchBrowserIfStoppedSync());
 
         // Simulate restarting the browser by deleting the launcher and creating a new one.
         deleteLauncherInstance();
-        mLauncher = BackgroundSyncLauncher.create(mContext);
-        assertFalse(shouldLaunchBrowserIfStoppedSync());
+        mLauncher = BackgroundSyncLauncher.create();
+        waitForLaunchBrowserTask();
+        Assert.assertFalse(shouldLaunchBrowserIfStoppedSync());
     }
 }

@@ -5,16 +5,13 @@
 #ifndef REMOTING_HOST_WIN_CHROMOTING_MODULE_H_
 #define REMOTING_HOST_WIN_CHROMOTING_MODULE_H_
 
-#include <atlbase.h>
-#include <atlcom.h>
-#include <atlctl.h>
-
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/win/atl.h"
 #include "base/win/scoped_com_initializer.h"
 
 // chromoting_lib.h contains MIDL-generated declarations.
-#include "remoting/host/chromoting_lib.h"
+#include "remoting/host/win/chromoting_lib.h"
 
 namespace base {
 namespace win {
