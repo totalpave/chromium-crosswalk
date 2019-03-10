@@ -304,6 +304,7 @@ allowed_hosts = [
 ]
 
 deps = {
+  "src/xwalk": "https://github.com/totalpave/crosswalk.git@1f823f5b1d2fa27c9bb9ea825683e988171dfb28",
   "src/buildtools/clang_format/script":
     Var("chromium_git") + "/chromium/llvm-project/cfe/tools/clang-format.git@" +
     Var("clang_format_revision"),
