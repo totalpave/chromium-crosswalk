@@ -2946,16 +2946,16 @@ hooks = [
   }
 ]
 
-include_rules = [
-  '+base',
-  '+build',
-  '+ipc',
-  '+library_loaders',
-  '+testing',
-  '+third_party/icu/source/common/unicode',
-  '+third_party/icu/source/i18n/unicode',
-  '+url'
-]
+#include_rules = [
+#  '+base',
+#  '+build',
+#  '+ipc',
+#  '+library_loaders',
+#  '+testing',
+#  '+third_party/icu/source/common/unicode',
+#  '+third_party/icu/source/i18n/unicode',
+#  '+url'
+#]
 
 recursedeps = [
   [
